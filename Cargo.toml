@@ -2,7 +2,14 @@
 name = "semantic-memory"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.75"
 description = "Hybrid semantic search with SQLite, FTS5, and HNSW — built for AI agents"
+license = "MIT"
+repository = "https://github.com/RecursiveIntell/semantic-memory"
+homepage = "https://github.com/RecursiveIntell/semantic-memory"
+keywords = ["search", "semantic", "sqlite", "hnsw", "embeddings"]
+categories = ["database", "text-processing"]
+readme = "README.md"
 
 [features]
 default = ["hnsw"]
