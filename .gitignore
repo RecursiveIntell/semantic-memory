@@ -25,6 +25,11 @@
 .DS_Store
 Thumbs.db
 
+# Project context docs (local development only)
+AGENTS.md
+CLAUDE.md
+START_HERE.md
+
 # Internal spec / prompt docs (development-only)
 SPEC.md
 IMPLEMENTATION_PROMPT.md
