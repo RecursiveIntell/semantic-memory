@@ -2,6 +2,7 @@ use crate::tokenizer::TokenCounter;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Configuration for the memory system.
 #[derive(Clone, Serialize, Deserialize)]
@@ -18,6 +19,12 @@ pub struct MemoryConfig {
 
     /// Chunking parameters.
     pub chunking: ChunkingConfig,
+
+    /// Connection pool configuration.
+    pub pool: PoolConfig,
+
+    /// Resource limits.
+    pub limits: MemoryLimits,
 
     /// Custom token counter. None = use EstimateTokenCounter (chars / 4).
     #[serde(skip)]
@@ -36,6 +43,8 @@ impl std::fmt::Debug for MemoryConfig {
             .field("embedding", &self.embedding)
             .field("search", &self.search)
             .field("chunking", &self.chunking)
+            .field("pool", &self.pool)
+            .field("limits", &self.limits)
             .field(
                 "token_counter",
                 &self.token_counter.as_ref().map(|_| "custom"),
@@ -53,6 +62,8 @@ impl Default for MemoryConfig {
             embedding: EmbeddingConfig::default(),
             search: SearchConfig::default(),
             chunking: ChunkingConfig::default(),
+            pool: PoolConfig::default(),
+            limits: MemoryLimits::default(),
             token_counter: None,
             #[cfg(feature = "hnsw")]
             hnsw: crate::hnsw::HnswConfig::default(),
@@ -170,5 +181,108 @@ impl Default for ChunkingConfig {
             max_size: 2000,
             overlap: 200,
         }
+    }
+}
+
+/// Connection pool configuration for SQLite.
+///
+/// Controls busy timeout and WAL checkpoint behavior. These defaults
+/// are tuned for a single-process server on local SSD storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolConfig {
+    /// SQLite busy timeout in milliseconds.
+    /// Default: 5000 (5 seconds).
+    pub busy_timeout_ms: u32,
+
+    /// WAL auto-checkpoint threshold in pages.
+    /// Default: 1000 (~4 MB with 4KB pages).
+    pub wal_autocheckpoint: u32,
+
+    /// Enable WAL mode. Should almost always be true.
+    /// Default: true.
+    pub enable_wal: bool,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            busy_timeout_ms: 5000,
+            wal_autocheckpoint: 1000,
+            enable_wal: true,
+        }
+    }
+}
+
+/// Resource limits for the memory system.
+///
+/// Prevents runaway resource usage. All limits have defaults tuned for
+/// a laptop-class server (8GB RAM, SSD storage).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLimits {
+    /// Maximum number of facts per namespace.
+    /// Default: 100_000.
+    pub max_facts_per_namespace: usize,
+
+    /// Maximum number of chunks per document.
+    /// Default: 1_000.
+    pub max_chunks_per_document: usize,
+
+    /// Maximum content size in bytes for a single fact or message.
+    /// Default: 1 MB (1_048_576 bytes).
+    pub max_content_bytes: usize,
+
+    /// Maximum number of concurrent embedding requests.
+    /// Hard-capped at 32 regardless of config.
+    /// Default: 8.
+    pub max_embedding_concurrency: usize,
+
+    /// Maximum total database size in bytes. 0 = unlimited.
+    /// Default: 0 (unlimited).
+    pub max_db_size_bytes: u64,
+
+    /// Embedding request timeout.
+    /// Default: 30 seconds.
+    #[serde(with = "duration_secs")]
+    pub embedding_timeout: Duration,
+}
+
+impl Default for MemoryLimits {
+    fn default() -> Self {
+        Self {
+            max_facts_per_namespace: 100_000,
+            max_chunks_per_document: 1_000,
+            max_content_bytes: 1_048_576,
+            max_embedding_concurrency: 8,
+            max_db_size_bytes: 0,
+            embedding_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl MemoryLimits {
+    /// Validate and clamp limits to hard caps.
+    pub fn validated(mut self) -> Self {
+        // Hard cap: concurrency at 32
+        if self.max_embedding_concurrency > 32 {
+            self.max_embedding_concurrency = 32;
+        }
+        if self.max_embedding_concurrency == 0 {
+            self.max_embedding_concurrency = 1;
+        }
+        self
+    }
+}
+
+mod duration_secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_secs())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let secs = u64::deserialize(d)?;
+        Ok(Duration::from_secs(secs))
     }
 }

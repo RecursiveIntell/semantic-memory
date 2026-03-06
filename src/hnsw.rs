@@ -12,7 +12,7 @@ use hnsw_rs::prelude::*;
 use rusqlite::params;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// Configuration for the HNSW index.
@@ -31,6 +31,11 @@ pub struct HnswConfig {
     /// Ratio of deleted/total above which compaction is recommended.
     /// Default: 0.3 (30%)
     pub compaction_threshold: f32,
+    /// If set, opportunistically flush HNSW to disk after this many seconds
+    /// have elapsed since the last flush. Checked on every insert; no
+    /// background task is spawned.
+    /// Default: None (no periodic flush).
+    pub flush_interval_secs: Option<u64>,
 }
 
 impl Default for HnswConfig {
@@ -42,6 +47,7 @@ impl Default for HnswConfig {
             dimensions: 768,
             max_elements: 100_000,
             compaction_threshold: 0.3,
+            flush_interval_secs: None,
         }
     }
 }
@@ -92,7 +98,16 @@ struct HnswIndexInner {
     deleted_ids: RwLock<std::collections::HashSet<usize>>,
     /// Whether the keymap has been modified since last flush.
     keymap_dirty: AtomicBool,
+    /// Epoch seconds of the last HNSW flush (for opportunistic periodic flush).
+    last_flush_epoch: AtomicU64,
     config: HnswConfig,
+}
+
+fn current_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Wrapper around hnsw_rs providing semantic-memory's HNSW operations.
@@ -124,6 +139,7 @@ impl HnswIndex {
                 next_id: AtomicUsize::new(0),
                 deleted_ids: RwLock::new(std::collections::HashSet::new()),
                 keymap_dirty: AtomicBool::new(false),
+                last_flush_epoch: AtomicU64::new(current_epoch_secs()),
                 config,
             }),
         })
@@ -138,19 +154,14 @@ impl HnswIndex {
     ///
     /// Key mappings are NOT persisted by hnsw_rs. After loading, the caller
     /// must load mappings from SQLite (via `load_keymap`).
-    pub fn load(
-        dir: &Path,
-        basename: &str,
-        config: HnswConfig,
-    ) -> Result<Self, MemoryError> {
+    pub fn load(dir: &Path, basename: &str, config: HnswConfig) -> Result<Self, MemoryError> {
         let mut reloader = Box::new(HnswIo::new(dir, basename));
 
         // SAFETY: hnsw_rs copies all data during load_hnsw(), so the graph
         // does not hold references to reloader memory after construction.
         // The 'static lifetime is a lie we tell the compiler; the real
         // invariant is enforced by keeping _reloader_keepalive alive.
-        let reloader_ref: &'static mut HnswIo =
-            unsafe { &mut *(reloader.as_mut() as *mut HnswIo) };
+        let reloader_ref: &'static mut HnswIo = unsafe { &mut *(reloader.as_mut() as *mut HnswIo) };
         let graph: Hnsw<'static, f32, DistCosine> = reloader_ref
             .load_hnsw()
             .map_err(|e| MemoryError::HnswError(format!("Failed to load HNSW index: {}", e)))?;
@@ -166,6 +177,7 @@ impl HnswIndex {
                 next_id: AtomicUsize::new(nb_point),
                 deleted_ids: RwLock::new(std::collections::HashSet::new()),
                 keymap_dirty: AtomicBool::new(false),
+                last_flush_epoch: AtomicU64::new(current_epoch_secs()),
                 config,
             }),
         })
@@ -196,12 +208,24 @@ impl HnswIndex {
 
         // Update mappings
         {
-            let mut k2i = self.inner.key_to_id.write().unwrap();
-            let mut i2k = self.inner.id_to_key.write().unwrap();
+            let mut k2i = self
+                .inner
+                .key_to_id
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut i2k = self
+                .inner
+                .id_to_key
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             // If key already exists, mark old id as deleted
             if let Some(old_id) = k2i.insert(key.clone(), id) {
                 i2k.remove(&old_id);
-                self.inner.deleted_ids.write().unwrap().insert(old_id);
+                self.inner
+                    .deleted_ids
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(old_id);
             }
             i2k.insert(id, key);
         }
@@ -218,12 +242,24 @@ impl HnswIndex {
     /// Since hnsw_rs doesn't support native deletion, we mark the ID as deleted
     /// and filter it out during search.
     pub fn delete(&self, key: &str) -> Result<(), MemoryError> {
-        let mut k2i = self.inner.key_to_id.write().unwrap();
-        let mut i2k = self.inner.id_to_key.write().unwrap();
+        let mut k2i = self
+            .inner
+            .key_to_id
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut i2k = self
+            .inner
+            .id_to_key
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
 
         if let Some(id) = k2i.remove(key) {
             i2k.remove(&id);
-            self.inner.deleted_ids.write().unwrap().insert(id);
+            self.inner
+                .deleted_ids
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id);
             self.inner.keymap_dirty.store(true, Ordering::Release);
         }
         // Not an error if key doesn't exist — idempotent delete
@@ -253,18 +289,29 @@ impl HnswIndex {
         }
 
         // Over-fetch to account for deleted items
-        let deleted = self.inner.deleted_ids.read().unwrap();
+        let deleted = self
+            .inner
+            .deleted_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let fetch_count = top_k + deleted.len();
         drop(deleted);
 
-        let neighbors = self.inner.graph.search(
-            query,
-            fetch_count,
-            self.inner.config.ef_search,
-        );
+        let neighbors = self
+            .inner
+            .graph
+            .search(query, fetch_count, self.inner.config.ef_search);
 
-        let deleted = self.inner.deleted_ids.read().unwrap();
-        let i2k = self.inner.id_to_key.read().unwrap();
+        let deleted = self
+            .inner
+            .deleted_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let i2k = self
+            .inner
+            .id_to_key
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut hits: Vec<HnswHit> = neighbors
             .into_iter()
@@ -279,7 +326,11 @@ impl HnswIndex {
             .collect();
 
         // Sort by distance ascending (closest first)
-        hits.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(hits)
     }
@@ -287,7 +338,12 @@ impl HnswIndex {
     /// Number of active (non-deleted) vectors in the index.
     pub fn len(&self) -> usize {
         let total = self.inner.graph.get_nb_point();
-        let deleted = self.inner.deleted_ids.read().unwrap().len();
+        let deleted = self
+            .inner
+            .deleted_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         total.saturating_sub(deleted)
     }
 
@@ -302,7 +358,12 @@ impl HnswIndex {
         if total == 0 {
             return 0.0;
         }
-        let deleted = self.inner.deleted_ids.read().unwrap().len();
+        let deleted = self
+            .inner
+            .deleted_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         deleted as f32 / total as f32
     }
 
@@ -321,14 +382,38 @@ impl HnswIndex {
         self.inner.keymap_dirty.load(Ordering::Acquire)
     }
 
+    /// Returns true if at least `interval_secs` have elapsed since the last flush.
+    ///
+    /// Cheap: just an atomic load and epoch comparison, no locks.
+    pub fn should_flush(&self, interval_secs: u64) -> bool {
+        let last = self.inner.last_flush_epoch.load(Ordering::Relaxed);
+        let now = current_epoch_secs();
+        now.saturating_sub(last) >= interval_secs
+    }
+
+    /// Update the last flush epoch to now. Call after a successful flush.
+    pub fn update_last_flush_epoch(&self) {
+        self.inner
+            .last_flush_epoch
+            .store(current_epoch_secs(), Ordering::Relaxed);
+    }
+
     /// Flush key mappings to SQLite. Called during MemoryStore::drop and flush_hnsw.
     pub fn flush_keymap(&self, conn: &rusqlite::Connection) -> Result<(), MemoryError> {
         if !self.is_keymap_dirty() {
             return Ok(());
         }
 
-        let k2i = self.inner.key_to_id.read().unwrap();
-        let deleted = self.inner.deleted_ids.read().unwrap();
+        let k2i = self
+            .inner
+            .key_to_id
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let deleted = self
+            .inner
+            .deleted_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let next_id = self.inner.next_id.load(Ordering::SeqCst);
 
         crate::db::with_transaction(conn, |tx| {
@@ -381,13 +466,13 @@ impl HnswIndex {
             .unwrap_or(false);
 
         if !table_exists {
-            tracing::warn!("hnsw_keymap table not found — key mappings will be empty until rebuild");
+            tracing::warn!(
+                "hnsw_keymap table not found — key mappings will be empty until rebuild"
+            );
             return Ok(());
         }
 
-        let mut stmt = conn.prepare(
-            "SELECT node_id, item_key, deleted FROM hnsw_keymap",
-        )?;
+        let mut stmt = conn.prepare("SELECT node_id, item_key, deleted FROM hnsw_keymap")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)? as usize,
@@ -418,15 +503,37 @@ impl HnswIndex {
             .unwrap_or_else(|| self.inner.graph.get_nb_point());
 
         // Apply loaded data
-        *self.inner.key_to_id.write().unwrap() = key_to_id;
-        *self.inner.id_to_key.write().unwrap() = id_to_key;
-        *self.inner.deleted_ids.write().unwrap() = deleted_ids;
+        *self
+            .inner
+            .key_to_id
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = key_to_id;
+        *self
+            .inner
+            .id_to_key
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = id_to_key;
+        *self
+            .inner
+            .deleted_ids
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = deleted_ids;
         self.inner.next_id.store(next_id, Ordering::SeqCst);
         self.inner.keymap_dirty.store(false, Ordering::Release);
 
         tracing::info!(
-            active = self.inner.key_to_id.read().unwrap().len(),
-            deleted = self.inner.deleted_ids.read().unwrap().len(),
+            active = self
+                .inner
+                .key_to_id
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            deleted = self
+                .inner
+                .deleted_ids
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
             next_id = next_id,
             "Loaded HNSW key mappings from SQLite"
         );

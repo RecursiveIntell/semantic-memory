@@ -78,9 +78,7 @@ async fn concurrent_search_during_rebuild() {
         Ok::<(), semantic_memory::MemoryError>(())
     });
 
-    let rebuild_handle = tokio::spawn(async move {
-        rebuild_store.rebuild_hnsw_index().await
-    });
+    let rebuild_handle = tokio::spawn(async move { rebuild_store.rebuild_hnsw_index().await });
 
     // Both tasks must complete without panic.
     let (search_result, rebuild_result) = tokio::try_join!(search_handle, rebuild_handle).unwrap();

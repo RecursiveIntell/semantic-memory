@@ -69,11 +69,7 @@ fn test_sq8_round_trip_accuracy() {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
 
-    assert!(
-        max_error < 0.01,
-        "Max quantization error: {}",
-        max_error
-    );
+    assert!(max_error < 0.01, "Max quantization error: {}", max_error);
 }
 
 #[test]
@@ -177,7 +173,7 @@ fn round_trip_symmetric_range() {
     // All quantized values must be in [-127, 127] (symmetric: -128 is forbidden).
     for (i, &val) in quantized.data.iter().enumerate() {
         assert!(
-            val >= -127 && val <= 127,
+            (-127..=127).contains(&val),
             "quantized value at dim {} is {} which is outside [-127, 127]",
             i,
             val
@@ -186,7 +182,7 @@ fn round_trip_symmetric_range() {
 
     // Zero point must also be in [-127, 127].
     assert!(
-        quantized.zero_point >= -127 && quantized.zero_point <= 127,
+        (-127..=127).contains(&quantized.zero_point),
         "zero_point {} is outside [-127, 127]",
         quantized.zero_point
     );
@@ -231,9 +227,19 @@ fn constant_vector_handling() {
     let result = q.quantize(&v).unwrap();
 
     // Constant vector: all data should be zero, scale = 1.0, zero_point = 0.
-    assert_eq!(result.data, vec![0i8; 768], "data should be all zeros for a constant vector");
-    assert_eq!(result.scale, 1.0, "scale should be 1.0 for a constant vector");
-    assert_eq!(result.zero_point, 0, "zero_point should be 0 for a constant vector");
+    assert_eq!(
+        result.data,
+        vec![0i8; 768],
+        "data should be all zeros for a constant vector"
+    );
+    assert_eq!(
+        result.scale, 1.0,
+        "scale should be 1.0 for a constant vector"
+    );
+    assert_eq!(
+        result.zero_point, 0,
+        "zero_point should be 0 for a constant vector"
+    );
 }
 
 #[test]
@@ -288,10 +294,7 @@ fn pack_unpack_wrong_dimensions() {
             );
         }
         Err(other) => {
-            panic!(
-                "expected MemoryError::QuantizationError, got: {:?}",
-                other
-            );
+            panic!("expected MemoryError::QuantizationError, got: {:?}", other);
         }
         Ok(_) => {
             panic!("expected error, got Ok");

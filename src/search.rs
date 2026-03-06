@@ -35,7 +35,9 @@ pub fn sanitize_fts_query(raw: &str) -> Option<String> {
     if tokens.is_empty() {
         None
     } else {
-        Some(tokens.join(" "))
+        // Use OR for better recall — implicit AND fails for natural language
+        // queries against fact-style statements
+        Some(tokens.join(" OR "))
     }
 }
 
@@ -484,12 +486,8 @@ pub(crate) fn vector_search(
             })
         })?;
 
-        let (msg_hits, msg_count) = scan_vector_rows(
-            rows,
-            query_embedding,
-            min_similarity,
-            "message",
-        )?;
+        let (msg_hits, msg_count) =
+            scan_vector_rows(rows, query_embedding, min_similarity, "message")?;
         hits.extend(msg_hits);
 
         if msg_count > VECTOR_SCAN_WARN_THRESHOLD {
@@ -668,7 +666,12 @@ pub fn hybrid_search_with_hnsw(
 
     // Convert HNSW hits to VectorHits via batched SQLite lookups
     let vector_hits = resolve_hnsw_hits_batched(
-        conn, config, namespaces, source_types, session_ids, hnsw_hits,
+        conn,
+        config,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
     )?;
 
     // RRF fusion + dedup
@@ -710,7 +713,9 @@ fn resolve_hnsw_hits_batched(
         }
         match hit.key.split_once(':') {
             Some(("fact", id)) if search_facts => fact_entries.push((id.to_string(), similarity)),
-            Some(("chunk", id)) if search_chunks => chunk_entries.push((id.to_string(), similarity)),
+            Some(("chunk", id)) if search_chunks => {
+                chunk_entries.push((id.to_string(), similarity))
+            }
             Some(("msg", id)) if search_messages => {
                 if let Ok(mid) = id.parse::<i64>() {
                     msg_entries.push((mid, similarity));
@@ -799,7 +804,8 @@ fn resolve_hnsw_hits_batched(
         })?;
 
         for row in rows {
-            let (chunk_id, content, document_id, document_title, chunk_index, updated_at, doc_ns) = row?;
+            let (chunk_id, content, document_id, document_title, chunk_index, updated_at, doc_ns) =
+                row?;
             if let Some(ns) = namespaces {
                 if !ns.contains(&doc_ns.as_str()) {
                     continue;
@@ -974,7 +980,12 @@ pub fn vector_only_search_with_hnsw(
     hnsw_hits: &[crate::hnsw::HnswHit],
 ) -> Result<Vec<SearchResult>, MemoryError> {
     let mut vector_hits = resolve_hnsw_hits_batched(
-        conn, config, namespaces, source_types, session_ids, hnsw_hits,
+        conn,
+        config,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
     )?;
     vector_hits.truncate(top_k);
 
@@ -1003,6 +1014,7 @@ fn source_dedup_key(source: &SearchSource) -> (u8, String) {
         SearchSource::Fact { fact_id, .. } => (0, fact_id.clone()),
         SearchSource::Chunk { chunk_id, .. } => (1, chunk_id.clone()),
         SearchSource::Message { message_id, .. } => (2, message_id.to_string()),
+        SearchSource::Episode { document_id, .. } => (3, document_id.clone()),
     }
 }
 

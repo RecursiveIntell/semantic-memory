@@ -44,9 +44,7 @@ async fn concurrent_insert_and_search_no_panic() {
     let searcher = tokio::spawn(async move {
         for _ in 0..20 {
             // Search may return 0 or more results depending on timing
-            let _ = search_store
-                .search("concurrent", Some(5), None, None)
-                .await;
+            let _ = search_store.search("concurrent", Some(5), None, None).await;
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     });
@@ -78,14 +76,9 @@ async fn concurrent_multiple_inserters() {
         let s = store.clone();
         handles.push(tokio::spawn(async move {
             for i in 0..10 {
-                s.add_fact(
-                    "multi",
-                    &format!("Task {} fact {}", task_id, i),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
+                s.add_fact("multi", &format!("Task {} fact {}", task_id, i), None, None)
+                    .await
+                    .unwrap();
             }
         }));
     }
@@ -105,7 +98,10 @@ async fn concurrent_multiple_inserters() {
 
     // All 50 facts should be present
     let stats = store.stats().await.unwrap();
-    assert_eq!(stats.total_facts, 50, "All concurrent inserts should succeed");
+    assert_eq!(
+        stats.total_facts, 50,
+        "All concurrent inserts should succeed"
+    );
 }
 
 #[tokio::test]

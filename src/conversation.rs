@@ -25,6 +25,8 @@ pub fn create_session(
 /// Append a message to a session.
 ///
 /// Updates the session's `updated_at` timestamp. Returns the message's auto-increment ID.
+/// This does NOT add the message to the FTS or vector index — use
+/// `add_message_with_fts` or `add_message_with_embedding` for searchable messages.
 pub fn add_message(
     conn: &Connection,
     session_id: &str,
@@ -172,7 +174,16 @@ pub fn add_message_with_embedding(
     metadata: Option<&serde_json::Value>,
     embedding_bytes: &[u8],
 ) -> Result<i64, MemoryError> {
-    add_message_with_embedding_q8(conn, session_id, role, content, token_count, metadata, embedding_bytes, None)
+    add_message_with_embedding_q8(
+        conn,
+        session_id,
+        role,
+        content,
+        token_count,
+        metadata,
+        embedding_bytes,
+        None,
+    )
 }
 
 /// Append an embedded message with optional quantized embedding.
@@ -203,6 +214,62 @@ pub fn add_message_with_embedding_q8(
         tx.execute(
             "INSERT INTO messages (session_id, role, content, token_count, metadata, embedding, embedding_q8) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![session_id, role.as_str(), content, token_count, metadata_str, embedding_bytes, q8_bytes],
+        )?;
+        let msg_id = tx.last_insert_rowid();
+
+        // INSERT into messages_rowid_map
+        tx.execute(
+            "INSERT INTO messages_rowid_map (message_id) VALUES (?1)",
+            params![msg_id],
+        )?;
+        let fts_rowid = tx.last_insert_rowid();
+
+        // INSERT into messages_fts
+        tx.execute(
+            "INSERT INTO messages_fts(rowid, content) VALUES (?1, ?2)",
+            params![fts_rowid, content],
+        )?;
+
+        // UPDATE sessions SET updated_at
+        tx.execute(
+            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
+            params![session_id],
+        )?;
+
+        Ok(msg_id)
+    })
+}
+
+/// Append a message to a session with FTS indexing but no embedding.
+///
+/// Same as `add_message` but also inserts into `messages_rowid_map` and
+/// `messages_fts`. The embedding and embedding_q8 columns are set to NULL.
+/// This is a fallback path when embedding fails: the message is still
+/// findable via BM25 search, just not via vector search.
+pub fn add_message_with_fts(
+    conn: &Connection,
+    session_id: &str,
+    role: Role,
+    content: &str,
+    token_count: Option<u32>,
+    metadata: Option<&serde_json::Value>,
+) -> Result<i64, MemoryError> {
+    // Verify session exists
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(MemoryError::SessionNotFound(session_id.to_string()));
+    }
+
+    let metadata_str = metadata.map(|m| m.to_string());
+    with_transaction(conn, |tx| {
+        // INSERT into messages (embedding = NULL, embedding_q8 = NULL)
+        tx.execute(
+            "INSERT INTO messages (session_id, role, content, token_count, metadata, embedding, embedding_q8) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL)",
+            params![session_id, role.as_str(), content, token_count, metadata_str],
         )?;
         let msg_id = tx.last_insert_rowid();
 
@@ -326,4 +393,20 @@ pub fn list_sessions(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(sessions)
+}
+
+/// Update a session's channel (display name).
+pub fn rename_session(
+    conn: &Connection,
+    session_id: &str,
+    new_channel: &str,
+) -> Result<(), MemoryError> {
+    let affected = conn.execute(
+        "UPDATE sessions SET channel = ?1, updated_at = datetime('now') WHERE id = ?2",
+        params![new_channel, session_id],
+    )?;
+    if affected == 0 {
+        return Err(MemoryError::SessionNotFound(session_id.to_string()));
+    }
+    Ok(())
 }

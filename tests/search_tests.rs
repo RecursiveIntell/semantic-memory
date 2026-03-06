@@ -1,7 +1,5 @@
 use semantic_memory::search::{cosine_similarity, sanitize_fts_query};
-use semantic_memory::{
-    MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSource, SearchSourceType,
-};
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -65,7 +63,7 @@ fn cosine_zero_vector() {
 #[test]
 fn sanitize_strips_fts_operators() {
     let result = sanitize_fts_query("hello \"world\" + test");
-    assert_eq!(result, Some("hello world test".to_string()));
+    assert_eq!(result, Some("hello OR world OR test".to_string()));
 }
 
 #[test]
@@ -77,13 +75,13 @@ fn sanitize_empty_after_stripping() {
 #[test]
 fn sanitize_normal_query_unchanged() {
     let result = sanitize_fts_query("hello world");
-    assert_eq!(result, Some("hello world".to_string()));
+    assert_eq!(result, Some("hello OR world".to_string()));
 }
 
 #[test]
 fn sanitize_unicode_preserved() {
     let result = sanitize_fts_query("中文 搜索");
-    assert_eq!(result, Some("中文 搜索".to_string()));
+    assert_eq!(result, Some("中文 OR 搜索".to_string()));
 }
 
 #[test]
@@ -175,6 +173,7 @@ fn rrf_fusion_order() {
             SearchSource::Fact { fact_id, .. } => fact_id.clone(),
             SearchSource::Chunk { chunk_id, .. } => chunk_id.clone(),
             SearchSource::Message { message_id, .. } => message_id.to_string(),
+            SearchSource::Episode { document_id, .. } => document_id.clone(),
         })
         .collect();
 
@@ -451,10 +450,7 @@ async fn dedup_keeps_different_content() {
 
 // ─── Recency Weighting (Fix 3) ──────────────────────────────
 
-fn test_store_with_recency(
-    half_life: Option<f64>,
-    recency_weight: f64,
-) -> (MemoryStore, TempDir) {
+fn test_store_with_recency(half_life: Option<f64>, recency_weight: f64) -> (MemoryStore, TempDir) {
     let tmp = TempDir::new().unwrap();
     let config = MemoryConfig {
         base_dir: tmp.path().to_path_buf(),

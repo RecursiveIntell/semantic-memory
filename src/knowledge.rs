@@ -20,7 +20,16 @@ pub fn insert_fact_with_fts(
     source: Option<&str>,
     metadata: Option<&serde_json::Value>,
 ) -> Result<(), MemoryError> {
-    insert_fact_with_fts_q8(conn, fact_id, namespace, content, embedding_bytes, None, source, metadata)
+    insert_fact_with_fts_q8(
+        conn,
+        fact_id,
+        namespace,
+        content,
+        embedding_bytes,
+        None,
+        source,
+        metadata,
+    )
 }
 
 /// Insert a fact with both f32 and quantized embeddings.
@@ -180,10 +189,7 @@ pub fn delete_namespace(conn: &Connection, namespace: &str) -> Result<usize, Mem
         }
 
         // 3. Delete all facts in the namespace
-        tx.execute(
-            "DELETE FROM facts WHERE namespace = ?1",
-            params![namespace],
-        )?;
+        tx.execute("DELETE FROM facts WHERE namespace = ?1", params![namespace])?;
 
         Ok(count)
     })

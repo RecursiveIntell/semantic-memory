@@ -59,7 +59,10 @@ async fn hnsw_persist_and_reload() {
             .search("Persistent fact", Some(5), None, None)
             .await
             .unwrap();
-        assert!(!results.is_empty(), "Hybrid search should work after reopen");
+        assert!(
+            !results.is_empty(),
+            "Hybrid search should work after reopen"
+        );
     }
 }
 
@@ -107,7 +110,11 @@ async fn hnsw_sidecar_deleted_triggers_rebuild() {
 
         // SQLite data should persist regardless
         let facts = store.list_facts("ns", 20, 0).await.unwrap();
-        assert_eq!(facts.len(), 10, "SQLite facts should survive sidecar deletion");
+        assert_eq!(
+            facts.len(),
+            10,
+            "SQLite facts should survive sidecar deletion"
+        );
 
         // FTS should still work (independent of HNSW)
         let results = store
@@ -143,8 +150,7 @@ async fn hnsw_files_created_on_flush() {
         base_dir: path.clone(),
         ..Default::default()
     };
-    let store =
-        MemoryStore::open_with_embedder(config, Box::new(MockEmbedder::new(768))).unwrap();
+    let store = MemoryStore::open_with_embedder(config, Box::new(MockEmbedder::new(768))).unwrap();
 
     // Add a fact so HNSW has something to save
     store
@@ -158,6 +164,12 @@ async fn hnsw_files_created_on_flush() {
     let graph_path = path.join("memory.hnsw.graph");
     let data_path = path.join("memory.hnsw.data");
 
-    assert!(graph_path.exists(), "HNSW graph file should exist after flush");
-    assert!(data_path.exists(), "HNSW data file should exist after flush");
+    assert!(
+        graph_path.exists(),
+        "HNSW graph file should exist after flush"
+    );
+    assert!(
+        data_path.exists(),
+        "HNSW data file should exist after flush"
+    );
 }

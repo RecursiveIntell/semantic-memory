@@ -1,8 +1,6 @@
 #![cfg(feature = "hnsw")]
 
-use semantic_memory::{
-    MemoryConfig, MemoryStore, MockEmbedder, SearchSource, SearchSourceType,
-};
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchSource, SearchSourceType};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -139,6 +137,9 @@ async fn vector_only_respects_source_type_filter() {
             }
             SearchSource::Message { .. } => {
                 panic!("Should not contain Message results when filtering to Facts only");
+            }
+            SearchSource::Episode { .. } => {
+                panic!("Should not contain Episode results when filtering to Facts only");
             }
             SearchSource::Fact { .. } => { /* expected */ }
         }

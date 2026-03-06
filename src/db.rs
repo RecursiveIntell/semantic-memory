@@ -1,6 +1,6 @@
 //! Database initialization, migrations, and connection management.
 
-use crate::config::EmbeddingConfig;
+use crate::config::{EmbeddingConfig, PoolConfig};
 use crate::error::MemoryError;
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -166,7 +166,7 @@ where
 }
 
 /// Open or create a SQLite database at `path`, configure pragmas, and run migrations.
-pub fn open_database(path: &Path) -> Result<Connection, MemoryError> {
+pub fn open_database(path: &Path, pool: &PoolConfig) -> Result<Connection, MemoryError> {
     // Create parent directories if needed
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -183,17 +183,39 @@ pub fn open_database(path: &Path) -> Result<Connection, MemoryError> {
     let conn = Connection::open(path)?;
 
     // Set pragmas BEFORE any other operation
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
+    let journal_mode = if pool.enable_wal { "WAL" } else { "DELETE" };
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode = {};
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;
-         PRAGMA synchronous = NORMAL;",
-    )?;
+         PRAGMA busy_timeout = {};
+         PRAGMA synchronous = NORMAL;
+         PRAGMA wal_autocheckpoint = {};",
+        journal_mode, pool.busy_timeout_ms, pool.wal_autocheckpoint,
+    ))?;
 
     run_migrations(&conn)?;
 
     Ok(conn)
 }
+
+/// V6 migration: episodes table for causal tracking.
+const MIGRATION_V6: &str = r#"
+-- V6: Episodes table for causal tracking (PRIMITIVES_CONTRACT §4)
+CREATE TABLE IF NOT EXISTS episodes (
+    document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    cause_ids TEXT NOT NULL,
+    effect_type TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT 'pending',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    verification_status TEXT NOT NULL DEFAULT '{"status":"unverified"}',
+    experiment_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_effect_type ON episodes(effect_type);
+CREATE INDEX IF NOT EXISTS idx_episodes_outcome ON episodes(outcome);
+CREATE INDEX IF NOT EXISTS idx_episodes_experiment_id ON episodes(experiment_id);
+"#;
 
 /// Ordered list of migrations. Each entry is (version, SQL).
 const MIGRATIONS: &[(u32, &str)] = &[
@@ -202,10 +224,30 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (3, MIGRATION_V3),
     (4, MIGRATION_V4),
     (5, MIGRATION_V5),
+    (6, MIGRATION_V6),
 ];
 
+/// Maximum schema version this build supports.
+pub const MAX_SCHEMA_VERSION: u32 = 6;
+
 /// Run all pending migrations.
+///
+/// Also sets PRAGMA user_version to track the schema version at the SQLite level.
+/// If the database's user_version exceeds [`MAX_SCHEMA_VERSION`], returns
+/// [`MemoryError::SchemaAhead`] to prevent data corruption from a newer schema.
 pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
+    // Check PRAGMA user_version for forward-compatibility guard
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    if user_version > MAX_SCHEMA_VERSION {
+        return Err(MemoryError::SchemaAhead {
+            found: user_version,
+            supported: MAX_SCHEMA_VERSION,
+        });
+    }
+
     // Create version table if it doesn't exist
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _schema_version (
@@ -248,6 +290,18 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
 
         tracing::info!("Applied migration V{}", version);
     }
+
+    // Sync PRAGMA user_version with the latest applied migration
+    let final_version: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM _schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // PRAGMA statements cannot use parameter binding
+    conn.execute_batch(&format!("PRAGMA user_version = {};", final_version))?;
 
     Ok(())
 }
@@ -323,6 +377,227 @@ pub fn clear_embeddings_dirty(conn: &Connection) -> Result<(), MemoryError> {
         "UPDATE embedding_metadata SET embeddings_dirty = 0 WHERE id = 1",
         [],
     )?;
+    Ok(())
+}
+
+/// How thorough the integrity check should be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Quick: check table existence and row counts only.
+    Quick,
+    /// Full: also verify FTS consistency and embedding dimensions.
+    Full,
+}
+
+/// Result of an integrity verification.
+#[derive(Debug, Clone)]
+pub struct IntegrityReport {
+    /// Whether the check passed overall.
+    pub ok: bool,
+    /// Schema version found in the database.
+    pub schema_version: u32,
+    /// Number of facts.
+    pub fact_count: usize,
+    /// Number of chunks.
+    pub chunk_count: usize,
+    /// Number of messages.
+    pub message_count: usize,
+    /// Number of facts missing embeddings.
+    pub facts_missing_embeddings: usize,
+    /// Number of chunks missing embeddings.
+    pub chunks_missing_embeddings: usize,
+    /// Individual issues found.
+    pub issues: Vec<String>,
+}
+
+/// Action to take when integrity issues are found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileAction {
+    /// Only report issues, don't fix anything.
+    ReportOnly,
+    /// Rebuild FTS indexes from source data.
+    RebuildFts,
+    /// Re-embed items that are missing embeddings.
+    ReEmbed,
+}
+
+/// Run integrity verification on the database.
+pub fn verify_integrity_sync(
+    conn: &Connection,
+    mode: VerifyMode,
+) -> Result<IntegrityReport, MemoryError> {
+    let mut issues = Vec::new();
+
+    let schema_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let fact_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let chunk_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let message_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let facts_missing_embeddings: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM facts WHERE embedding IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let chunks_missing_embeddings: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunks WHERE embedding IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if facts_missing_embeddings > 0 {
+        issues.push(format!(
+            "{} facts missing embeddings",
+            facts_missing_embeddings
+        ));
+    }
+    if chunks_missing_embeddings > 0 {
+        issues.push(format!(
+            "{} chunks missing embeddings",
+            chunks_missing_embeddings
+        ));
+    }
+
+    if mode == VerifyMode::Full {
+        // Verify FTS row counts match source tables
+        let fts_fact_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM facts_rowid_map", [], |row| row.get(0))
+            .unwrap_or(0);
+        if fts_fact_count != fact_count {
+            issues.push(format!(
+                "FTS fact index drift: {} in FTS vs {} in facts",
+                fts_fact_count, fact_count
+            ));
+        }
+
+        let fts_chunk_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM chunks_rowid_map", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+        if fts_chunk_count != chunk_count {
+            issues.push(format!(
+                "FTS chunk index drift: {} in FTS vs {} in chunks",
+                fts_chunk_count, chunk_count
+            ));
+        }
+
+        // Check SQLite internal integrity
+        let integrity_check: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap_or_else(|_| "error".to_string());
+        if integrity_check != "ok" {
+            issues.push(format!("SQLite integrity_check: {}", integrity_check));
+        }
+    }
+
+    Ok(IntegrityReport {
+        ok: issues.is_empty(),
+        schema_version,
+        fact_count,
+        chunk_count,
+        message_count,
+        facts_missing_embeddings,
+        chunks_missing_embeddings,
+        issues,
+    })
+}
+
+/// Reconcile FTS indexes by rebuilding them from source data.
+///
+/// Contentless FTS5 tables (content='') require special handling:
+/// drop and recreate the FTS table + rowid map, then re-populate.
+pub fn reconcile_fts(conn: &Connection) -> Result<(), MemoryError> {
+    with_transaction(conn, |tx| {
+        // ── Facts FTS rebuild ──
+        tx.execute_batch("DROP TABLE IF EXISTS facts_fts")?;
+        tx.execute_batch("DELETE FROM facts_rowid_map")?;
+        tx.execute_batch(
+            "CREATE VIRTUAL TABLE facts_fts USING fts5(
+                content,
+                content='',
+                content_rowid='rowid',
+                tokenize='porter unicode61'
+            )",
+        )?;
+        tx.execute_batch("INSERT INTO facts_rowid_map (fact_id) SELECT id FROM facts")?;
+        tx.execute_batch(
+            "INSERT INTO facts_fts (rowid, content)
+             SELECT rm.rowid, f.content
+             FROM facts_rowid_map rm
+             JOIN facts f ON f.id = rm.fact_id",
+        )?;
+
+        // ── Chunks FTS rebuild ──
+        tx.execute_batch("DROP TABLE IF EXISTS chunks_fts")?;
+        tx.execute_batch("DELETE FROM chunks_rowid_map")?;
+        tx.execute_batch(
+            "CREATE VIRTUAL TABLE chunks_fts USING fts5(
+                content,
+                content='',
+                content_rowid='rowid',
+                tokenize='porter unicode61'
+            )",
+        )?;
+        tx.execute_batch("INSERT INTO chunks_rowid_map (chunk_id) SELECT id FROM chunks")?;
+        tx.execute_batch(
+            "INSERT INTO chunks_fts (rowid, content)
+             SELECT rm.rowid, c.content
+             FROM chunks_rowid_map rm
+             JOIN chunks c ON c.id = rm.chunk_id",
+        )?;
+
+        // ── Messages FTS rebuild (V2+) ──
+        let has_messages_fts: bool = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_rowid_map'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if has_messages_fts {
+            tx.execute_batch("DROP TABLE IF EXISTS messages_fts")?;
+            tx.execute_batch("DELETE FROM messages_rowid_map")?;
+            tx.execute_batch(
+                "CREATE VIRTUAL TABLE messages_fts USING fts5(
+                    content,
+                    content='',
+                    content_rowid='rowid',
+                    tokenize='porter unicode61'
+                )",
+            )?;
+            tx.execute_batch(
+                "INSERT INTO messages_rowid_map (message_id) SELECT id FROM messages",
+            )?;
+            tx.execute_batch(
+                "INSERT INTO messages_fts (rowid, content)
+                 SELECT rm.rowid, m.content
+                 FROM messages_rowid_map rm
+                 JOIN messages m ON m.id = rm.message_id",
+            )?;
+        }
+
+        Ok(())
+    })?;
+
+    tracing::info!("FTS indexes reconciled");
     Ok(())
 }
 

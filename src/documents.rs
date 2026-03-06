@@ -29,7 +29,9 @@ pub fn insert_document_with_chunks(
         )?;
 
         // Insert each chunk
-        for (chunk_index, (content, embedding_bytes, q8_bytes, token_count)) in chunks.iter().enumerate() {
+        for (chunk_index, (content, embedding_bytes, q8_bytes, token_count)) in
+            chunks.iter().enumerate()
+        {
             let chunk_id = uuid::Uuid::new_v4().to_string();
 
             tx.execute(
@@ -71,7 +73,11 @@ pub fn insert_document_with_chunks_and_ids(
     chunks: &[ChunkRow],
     chunk_ids: &[String],
 ) -> Result<(), MemoryError> {
-    assert_eq!(chunks.len(), chunk_ids.len(), "chunks and chunk_ids must have same length");
+    assert_eq!(
+        chunks.len(),
+        chunk_ids.len(),
+        "chunks and chunk_ids must have same length"
+    );
     let metadata_str = metadata.map(|m| m.to_string());
     with_transaction(conn, |tx| {
         // Insert document
@@ -154,6 +160,19 @@ pub fn delete_document_with_chunks(
 
         Ok(())
     })
+}
+
+/// Count the number of chunks for a document.
+pub fn count_chunks_for_document(
+    conn: &Connection,
+    document_id: &str,
+) -> Result<usize, MemoryError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
+        params![document_id],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
 }
 
 /// List documents in a namespace with chunk counts.

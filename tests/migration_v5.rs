@@ -36,10 +36,7 @@ async fn v5_migration_adds_columns() {
         .search("v5 migration quantized", Some(5), None, None)
         .await
         .unwrap();
-    assert!(
-        !results.is_empty(),
-        "Search should work after V5 migration"
-    );
+    assert!(!results.is_empty(), "Search should work after V5 migration");
 }
 
 /// 8.2 - Reopening a MemoryStore runs migrations idempotently (no errors on second open).
@@ -51,12 +48,7 @@ async fn v5_migration_idempotent() {
     {
         let store = test_store_in(tmp.path());
         store
-            .add_fact(
-                "general",
-                "idempotent migration test fact",
-                None,
-                None,
-            )
+            .add_fact("general", "idempotent migration test fact", None, None)
             .await
             .unwrap();
     }

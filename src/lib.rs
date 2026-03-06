@@ -41,7 +41,10 @@ pub mod tokenizer;
 pub mod types;
 
 // Re-export primary public types.
-pub use config::{ChunkingConfig, EmbeddingConfig, MemoryConfig, SearchConfig};
+pub use config::{
+    ChunkingConfig, EmbeddingConfig, MemoryConfig, MemoryLimits, PoolConfig, SearchConfig,
+};
+pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
 pub use embedder::{Embedder, MockEmbedder, OllamaEmbedder};
 pub use error::MemoryError;
 #[cfg(feature = "hnsw")]
@@ -50,8 +53,10 @@ pub use quantize::{pack_quantized, unpack_quantized, QuantizedVector, Quantizer}
 pub use storage::StoragePaths;
 pub use tokenizer::{EstimateTokenCounter, TokenCounter};
 pub use types::{
-    Document, Fact, MemoryStats, Message, Role, SearchResult, SearchSource, SearchSourceType,
-    Session, TextChunk,
+    Document, EmbeddingDisplacement, EpisodeMeta, EpisodeOutcome, ExplainedResult, Fact,
+    GraphDirection, GraphEdge, GraphEdgeType, GraphView, MemoryStats, Message, Role,
+    ScoreBreakdown, SearchResult, SearchSource, SearchSourceType, Session, TextChunk,
+    VerificationStatus,
 };
 
 use std::sync::{Arc, Mutex};
@@ -92,7 +97,9 @@ impl Drop for MemoryStoreInner {
         }));
         match result {
             Ok(Err(e)) => tracing::error!("Failed to save HNSW index on drop: {}", e),
-            Err(_) => tracing::warn!("HNSW save panicked on drop (directory may have been removed)"),
+            Err(_) => {
+                tracing::warn!("HNSW save panicked on drop (directory may have been removed)")
+            }
             Ok(Ok(())) => {}
         }
 
@@ -116,6 +123,74 @@ fn as_str_slice(opt: &Option<Vec<String>>) -> Option<Vec<&str>> {
     opt.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect())
 }
 
+/// Rebuild an HNSW index from all embeddings stored in SQLite.
+///
+/// Used during startup when sidecar files are missing (FIX-9) or stale (FIX-10).
+/// This is a synchronous function since it runs inside the blocking `open()` path.
+#[cfg(feature = "hnsw")]
+fn rebuild_hnsw_from_sqlite(
+    conn: &rusqlite::Connection,
+    config: &HnswConfig,
+) -> Result<HnswIndex, MemoryError> {
+    let new_index = HnswIndex::new(config.clone())?;
+
+    // Load fact embeddings
+    {
+        let mut stmt =
+            conn.prepare("SELECT id, embedding FROM facts WHERE embedding IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (id, blob) = row?;
+            if let Ok(emb) = db::bytes_to_embedding(&blob) {
+                let key = format!("fact:{}", id);
+                if let Err(e) = new_index.insert(key.clone(), &emb) {
+                    tracing::warn!("Failed to insert {} into HNSW: {}", key, e);
+                }
+            }
+        }
+    }
+
+    // Load chunk embeddings
+    {
+        let mut stmt =
+            conn.prepare("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (id, blob) = row?;
+            if let Ok(emb) = db::bytes_to_embedding(&blob) {
+                let key = format!("chunk:{}", id);
+                if let Err(e) = new_index.insert(key.clone(), &emb) {
+                    tracing::warn!("Failed to insert {} into HNSW: {}", key, e);
+                }
+            }
+        }
+    }
+
+    // Load message embeddings
+    {
+        let mut stmt =
+            conn.prepare("SELECT id, embedding FROM messages WHERE embedding IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (id, blob) = row?;
+            if let Ok(emb) = db::bytes_to_embedding(&blob) {
+                let key = format!("msg:{}", id);
+                if let Err(e) = new_index.insert(key.clone(), &emb) {
+                    tracing::warn!("Failed to insert {} into HNSW: {}", key, e);
+                }
+            }
+        }
+    }
+
+    Ok(new_index)
+}
+
 impl MemoryStore {
     /// Run a closure that needs the database connection on a blocking thread.
     ///
@@ -128,7 +203,7 @@ impl MemoryStore {
     {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = inner.conn.lock().expect("mutex poisoned");
+            let conn = inner.conn.lock().unwrap_or_else(|e| e.into_inner());
             f(&conn)
         })
         .await
@@ -161,7 +236,7 @@ impl MemoryStore {
             ))
         })?;
 
-        let conn = db::open_database(&paths.sqlite_path)?;
+        let conn = db::open_database(&paths.sqlite_path, &config.pool)?;
         db::check_embedding_metadata(&conn, &config.embedding)?;
 
         // Ensure HNSW dimensions match the embedding config
@@ -196,11 +271,45 @@ impl MemoryStore {
                         if let Err(e) = index.load_keymap(&conn) {
                             tracing::warn!("Failed to load HNSW key mappings: {}. Mappings will be empty until rebuild.", e);
                         }
-                        tracing::info!(
-                            "HNSW index loaded ({} active keys)",
-                            index.len()
-                        );
-                        index
+
+                        // Stale index detection: compare HNSW entry count vs SQLite
+                        // embedding count. A mismatch means the app crashed before
+                        // flushing HNSW, or keys were lost.
+                        let hnsw_count = index.len();
+                        let sqlite_count: i64 = conn
+                            .query_row(
+                                "SELECT (SELECT COUNT(*) FROM facts WHERE embedding IS NOT NULL) +
+                                    (SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL) +
+                                    (SELECT COUNT(*) FROM messages WHERE embedding IS NOT NULL)",
+                                [],
+                                |row| row.get(0),
+                            )
+                            .unwrap_or(0);
+
+                        let drift = (sqlite_count as i64 - hnsw_count as i64).abs();
+                        if drift > 0 {
+                            tracing::warn!(
+                                hnsw_count,
+                                sqlite_count,
+                                drift,
+                                "HNSW index is stale — {} entries differ from SQLite. \
+                                 Likely caused by unclean shutdown. Triggering inline rebuild.",
+                                drift
+                            );
+                            // Discard the stale index and rebuild from SQLite
+                            let rebuilt = rebuild_hnsw_from_sqlite(&conn, &hnsw_config)?;
+                            tracing::info!(
+                                active = rebuilt.len(),
+                                "HNSW index rebuilt after stale detection"
+                            );
+                            rebuilt
+                        } else {
+                            tracing::info!(
+                                "HNSW index loaded ({} active keys, in sync with SQLite)",
+                                hnsw_count
+                            );
+                            index
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -211,8 +320,37 @@ impl MemoryStore {
                     }
                 }
             } else {
-                tracing::info!("Creating new empty HNSW index");
-                HnswIndex::new(hnsw_config)?
+                // Check if SQLite has embeddings that should be in the index.
+                // This happens when: sidecar files were deleted, data dir was
+                // partially copied, app crashed before first flush, or HNSW was
+                // added after data already existed.
+                let orphan_count: i64 = conn
+                    .query_row(
+                        "SELECT (SELECT COUNT(*) FROM facts WHERE embedding IS NOT NULL) +
+                            (SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL) +
+                            (SELECT COUNT(*) FROM messages WHERE embedding IS NOT NULL)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+
+                if orphan_count > 0 {
+                    tracing::warn!(
+                        orphan_count,
+                        "HNSW sidecar files missing but {} embeddings exist in SQLite — \
+                         rebuilding index inline",
+                        orphan_count
+                    );
+                    let new_index = rebuild_hnsw_from_sqlite(&conn, &hnsw_config)?;
+                    tracing::info!(
+                        active = new_index.len(),
+                        "HNSW index rebuilt from SQLite embeddings"
+                    );
+                    new_index
+                } else {
+                    tracing::info!("Creating new empty HNSW index (no embeddings in SQLite)");
+                    HnswIndex::new(hnsw_config)?
+                }
             }
         };
 
@@ -280,8 +418,8 @@ impl MemoryStore {
         // Load all message embeddings
         let msg_data: Vec<(i64, Vec<u8>)> = self
             .with_conn(|conn| {
-                let mut stmt = conn
-                    .prepare("SELECT id, embedding FROM messages WHERE embedding IS NOT NULL")?;
+                let mut stmt =
+                    conn.prepare("SELECT id, embedding FROM messages WHERE embedding IS NOT NULL")?;
                 let result = stmt
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -306,19 +444,56 @@ impl MemoryStore {
 
         // Hot-swap: acquire write lock and replace the index
         {
-            let mut guard = self.inner.hnsw_index.write().unwrap();
+            let mut guard = self
+                .inner
+                .hnsw_index
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             *guard = new_index;
         }
 
         // Persist the new index (read lock is fine now)
         {
-            let guard = self.inner.hnsw_index.read().unwrap();
+            let guard = self
+                .inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             guard.save(&self.inner.paths.hnsw_dir, &self.inner.paths.hnsw_basename)?;
-            let conn = self.inner.conn.lock().expect("mutex poisoned");
+            let conn = self.inner.conn.lock().unwrap_or_else(|e| e.into_inner());
             guard.flush_keymap(&conn)?;
         }
 
         Ok(())
+    }
+
+    /// Opportunistically flush HNSW if the configured interval has elapsed.
+    ///
+    /// Cheap no-op when `flush_interval_secs` is None or the interval hasn't
+    /// elapsed yet (just an atomic load + epoch comparison).
+    #[cfg(feature = "hnsw")]
+    fn maybe_flush_hnsw(&self) {
+        if let Some(interval) = self.inner.config.hnsw.flush_interval_secs {
+            let guard = self
+                .inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if guard.should_flush(interval) {
+                drop(guard); // release read lock before flushing
+                if let Err(e) = self.flush_hnsw() {
+                    tracing::warn!("Opportunistic HNSW flush failed: {}", e);
+                } else {
+                    let guard = self
+                        .inner
+                        .hnsw_index
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    guard.update_last_flush_epoch();
+                    tracing::info!("Opportunistic HNSW flush completed");
+                }
+            }
+        }
     }
 
     /// Persist the HNSW graph, vector data, and key mappings to disk.
@@ -326,11 +501,15 @@ impl MemoryStore {
     /// Called automatically on drop, but can be called explicitly for durability.
     #[cfg(feature = "hnsw")]
     pub fn flush_hnsw(&self) -> Result<(), MemoryError> {
-        let guard = self.inner.hnsw_index.read().unwrap();
+        let guard = self
+            .inner
+            .hnsw_index
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         guard.save(&self.inner.paths.hnsw_dir, &self.inner.paths.hnsw_basename)?;
 
         // Flush key mappings to SQLite
-        let conn = self.inner.conn.lock().expect("mutex poisoned");
+        let conn = self.inner.conn.lock().unwrap_or_else(|e| e.into_inner());
         guard.flush_keymap(&conn)?;
         Ok(())
     }
@@ -340,11 +519,59 @@ impl MemoryStore {
     /// Only rebuilds if the deleted ratio exceeds the compaction threshold.
     #[cfg(feature = "hnsw")]
     pub async fn compact_hnsw(&self) -> Result<(), MemoryError> {
-        if !self.inner.hnsw_index.read().unwrap().needs_compaction() {
+        if !self
+            .inner
+            .hnsw_index
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .needs_compaction()
+        {
             tracing::info!("HNSW compaction not needed (deleted ratio below threshold)");
             return Ok(());
         }
         self.rebuild_hnsw_index().await
+    }
+
+    // ─── Integrity & Diagnostics ────────────────────────────────
+
+    /// Verify database integrity.
+    ///
+    /// In `Quick` mode, checks table existence and row counts.
+    /// In `Full` mode, also verifies FTS consistency and runs SQLite integrity_check.
+    pub async fn verify_integrity(
+        &self,
+        mode: db::VerifyMode,
+    ) -> Result<db::IntegrityReport, MemoryError> {
+        self.with_conn(move |conn| db::verify_integrity_sync(conn, mode))
+            .await
+    }
+
+    /// Reconcile detected integrity issues.
+    ///
+    /// - `ReportOnly`: no-op, just returns the integrity report.
+    /// - `RebuildFts`: rebuilds all FTS indexes from source data.
+    /// - `ReEmbed`: not yet implemented (requires async embedding calls).
+    pub async fn reconcile(
+        &self,
+        action: db::ReconcileAction,
+    ) -> Result<db::IntegrityReport, MemoryError> {
+        match action {
+            db::ReconcileAction::ReportOnly => self.verify_integrity(db::VerifyMode::Full).await,
+            db::ReconcileAction::RebuildFts => {
+                self.with_conn(db::reconcile_fts).await?;
+                self.verify_integrity(db::VerifyMode::Full).await
+            }
+            db::ReconcileAction::ReEmbed => {
+                // Re-embedding requires the embedder (async). For now, just report.
+                tracing::warn!("ReEmbed action not yet implemented — reporting only");
+                self.verify_integrity(db::VerifyMode::Full).await
+            }
+        }
+    }
+
+    /// Get the current configuration.
+    pub fn config(&self) -> &MemoryConfig {
+        &self.inner.config
     }
 
     // ─── Session Management ─────────────────────────────────────
@@ -353,6 +580,18 @@ impl MemoryStore {
     pub async fn create_session(&self, channel: &str) -> Result<String, MemoryError> {
         let channel = channel.to_string();
         self.with_conn(move |conn| conversation::create_session(conn, &channel, None))
+            .await
+    }
+
+    /// Rename a session's channel (display name).
+    pub async fn rename_session(
+        &self,
+        session_id: &str,
+        new_channel: &str,
+    ) -> Result<(), MemoryError> {
+        let sid = session_id.to_string();
+        let ch = new_channel.to_string();
+        self.with_conn(move |conn| conversation::rename_session(conn, &sid, &ch))
             .await
     }
 
@@ -367,10 +606,47 @@ impl MemoryStore {
     }
 
     /// Delete a session and all its messages.
+    ///
+    /// Cleans up HNSW entries for embedded messages before CASCADE delete.
     pub async fn delete_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        let session_id = session_id.to_string();
-        self.with_conn(move |conn| conversation::delete_session(conn, &session_id))
-            .await
+        // Collect message IDs with embeddings for HNSW cleanup
+        #[cfg(feature = "hnsw")]
+        let message_ids: Vec<i64> = {
+            let sid = session_id.to_string();
+            self.with_conn(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM messages WHERE session_id = ?1 AND embedding IS NOT NULL",
+                )?;
+                let ids = stmt
+                    .query_map(rusqlite::params![sid], |row| row.get(0))?
+                    .collect::<Result<Vec<i64>, _>>()?;
+                Ok(ids)
+            })
+            .await?
+        };
+
+        // Delete session (CASCADE handles messages, FTS cleanup inside transaction)
+        let sid = session_id.to_string();
+        self.with_conn(move |conn| conversation::delete_session(conn, &sid))
+            .await?;
+
+        // Remove orphaned HNSW entries
+        #[cfg(feature = "hnsw")]
+        {
+            let guard = self
+                .inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            for msg_id in &message_ids {
+                let key = format!("msg:{}", msg_id);
+                if let Err(e) = guard.delete(&key) {
+                    tracing::warn!("Failed to remove HNSW entry {}: {}", key, e);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // ─── Message Storage ────────────────────────────────────────
@@ -384,6 +660,15 @@ impl MemoryStore {
         token_count: Option<u32>,
         metadata: Option<serde_json::Value>,
     ) -> Result<i64, MemoryError> {
+        // Enforce content size limit
+        let limits = &self.inner.config.limits;
+        if content.len() > limits.max_content_bytes {
+            return Err(MemoryError::ContentTooLarge {
+                size: content.len(),
+                limit: limits.max_content_bytes,
+            });
+        }
+
         let effective_token_count =
             token_count.or_else(|| Some(self.inner.token_counter.count_tokens(content) as u32));
         let sid = session_id.to_string();
@@ -391,6 +676,36 @@ impl MemoryStore {
         let meta = metadata;
         self.with_conn(move |conn| {
             conversation::add_message(conn, &sid, role, &ct, effective_token_count, meta.as_ref())
+        })
+        .await
+    }
+
+    /// Append a message to a session with FTS indexing but no embedding.
+    ///
+    /// Fallback path when embedding fails: messages still appear in conversation
+    /// history and are findable via BM25 search, just not via vector search.
+    pub async fn add_message_fts(
+        &self,
+        session_id: &str,
+        role: Role,
+        content: &str,
+        token_count: Option<u32>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<i64, MemoryError> {
+        let effective_token_count =
+            token_count.or_else(|| Some(self.inner.token_counter.count_tokens(content) as u32));
+        let sid = session_id.to_string();
+        let ct = content.to_string();
+        let meta = metadata;
+        self.with_conn(move |conn| {
+            conversation::add_message_with_fts(
+                conn,
+                &sid,
+                role,
+                &ct,
+                effective_token_count,
+                meta.as_ref(),
+            )
         })
         .await
     }
@@ -434,13 +749,46 @@ impl MemoryStore {
         source: Option<&str>,
         metadata: Option<serde_json::Value>,
     ) -> Result<String, MemoryError> {
+        // Enforce content size limit
+        let limits = &self.inner.config.limits;
+        if content.len() > limits.max_content_bytes {
+            return Err(MemoryError::ContentTooLarge {
+                size: content.len(),
+                limit: limits.max_content_bytes,
+            });
+        }
+
+        // Enforce namespace fact count limit
+        let ns_check = namespace.to_string();
+        let max_facts = limits.max_facts_per_namespace;
+        let count: usize = self
+            .with_conn(move |conn| {
+                let c: usize = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
+                        rusqlite::params![ns_check],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                Ok(c)
+            })
+            .await?;
+        if count >= max_facts {
+            return Err(MemoryError::NamespaceFull {
+                namespace: namespace.to_string(),
+                count,
+                limit: max_facts,
+            });
+        }
+
         let embedding = self.inner.embedder.embed(content).await?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         let fact_id = uuid::Uuid::new_v4().to_string();
 
         // Quantize for storage
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
-        let q8_bytes = quantizer.quantize(&embedding)
+        let q8_bytes = quantizer
+            .quantize(&embedding)
             .map(|qv| quantize::pack_quantized(&qv))
             .ok();
 
@@ -467,7 +815,12 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         {
             let key = format!("fact:{}", fact_id);
-            self.inner.hnsw_index.read().unwrap().insert(key, &embedding)?;
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key, &embedding)?;
+            self.maybe_flush_hnsw();
         }
 
         Ok(fact_id)
@@ -487,7 +840,8 @@ impl MemoryStore {
 
         // Quantize for storage
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
-        let q8_bytes = quantizer.quantize(embedding)
+        let q8_bytes = quantizer
+            .quantize(embedding)
             .map(|qv| quantize::pack_quantized(&qv))
             .ok();
 
@@ -514,7 +868,12 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         {
             let key = format!("fact:{}", fact_id);
-            self.inner.hnsw_index.read().unwrap().insert(key, embedding)?;
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key, embedding)?;
+            self.maybe_flush_hnsw();
         }
 
         Ok(fact_id)
@@ -536,7 +895,11 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         {
             let key = format!("fact:{}", fact_id);
-            self.inner.hnsw_index.read().unwrap().update(key, &embedding)?;
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .update(key, &embedding)?;
         }
 
         Ok(())
@@ -552,7 +915,11 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         {
             let key = format!("fact:{}", fact_id);
-            self.inner.hnsw_index.read().unwrap().delete(&key)?;
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .delete(&key)?;
         }
 
         Ok(())
@@ -585,7 +952,11 @@ impl MemoryStore {
         {
             for fact_id in &fact_ids {
                 let key = format!("fact:{}", fact_id);
-                self.inner.hnsw_index.read().unwrap().delete(&key)?;
+                self.inner
+                    .hnsw_index
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .delete(&key)?;
             }
         }
 
@@ -635,6 +1006,14 @@ impl MemoryStore {
             self.inner.token_counter.as_ref(),
         );
 
+        let max_chunks = self.inner.config.limits.max_chunks_per_document;
+        if text_chunks.len() > max_chunks {
+            return Err(MemoryError::ContentTooLarge {
+                size: text_chunks.len(),
+                limit: max_chunks,
+            });
+        }
+
         let chunk_texts: Vec<String> = text_chunks.iter().map(|c| c.content.clone()).collect();
         let embeddings = self.inner.embedder.embed_batch(chunk_texts).await?;
 
@@ -643,7 +1022,8 @@ impl MemoryStore {
             .iter()
             .zip(embeddings.iter())
             .map(|(tc, emb)| {
-                let q8 = quantizer.quantize(emb)
+                let q8 = quantizer
+                    .quantize(emb)
                     .map(|qv| quantize::pack_quantized(&qv))
                     .ok();
                 (
@@ -711,8 +1091,13 @@ impl MemoryStore {
         {
             for (chunk_id, embedding) in chunk_ids.iter().zip(embeddings.iter()) {
                 let key = format!("chunk:{}", chunk_id);
-                self.inner.hnsw_index.read().unwrap().insert(key, embedding)?;
+                self.inner
+                    .hnsw_index
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key, embedding)?;
             }
+            self.maybe_flush_hnsw();
         }
 
         Ok(doc_id)
@@ -725,8 +1110,7 @@ impl MemoryStore {
         let chunk_ids: Vec<String> = {
             let did = document_id.to_string();
             self.with_conn(move |conn| {
-                let mut stmt =
-                    conn.prepare("SELECT id FROM chunks WHERE document_id = ?1")?;
+                let mut stmt = conn.prepare("SELECT id FROM chunks WHERE document_id = ?1")?;
                 let ids = stmt
                     .query_map(rusqlite::params![did], |row| row.get(0))?
                     .collect::<Result<Vec<String>, _>>()?;
@@ -744,7 +1128,11 @@ impl MemoryStore {
         {
             for chunk_id in &chunk_ids {
                 let key = format!("chunk:{}", chunk_id);
-                self.inner.hnsw_index.read().unwrap().delete(&key)?;
+                self.inner
+                    .hnsw_index
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .delete(&key)?;
             }
         }
 
@@ -763,6 +1151,13 @@ impl MemoryStore {
             .await
     }
 
+    /// Count the number of chunks for a document.
+    pub async fn count_chunks_for_document(&self, document_id: &str) -> Result<usize, MemoryError> {
+        let did = document_id.to_string();
+        self.with_conn(move |conn| documents::count_chunks_for_document(conn, &did))
+            .await
+    }
+
     // ─── Search ─────────────────────────────────────────────────
 
     /// Hybrid search across facts and document chunks.
@@ -777,10 +1172,14 @@ impl MemoryStore {
 
         let query_embedding = self.inner.embedder.embed(query).await?;
 
-        // HNSW-based vector search
+        // HNSW-based vector search — non-fatal fallback to BM25-only if HNSW fails
         #[cfg(feature = "hnsw")]
         let hnsw_hits = {
-            let guard = self.inner.hnsw_index.read().unwrap();
+            let guard = self
+                .inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             if guard.needs_compaction() {
                 tracing::warn!(
                     deleted_ratio = guard.deleted_ratio(),
@@ -788,7 +1187,13 @@ impl MemoryStore {
                 );
             }
             let candidates = k * 3;
-            guard.search(&query_embedding, candidates)?
+            match guard.search(&query_embedding, candidates) {
+                Ok(hits) => hits,
+                Err(e) => {
+                    tracing::error!("HNSW search failed, falling back to BM25-only: {}", e);
+                    Vec::new()
+                }
+            }
         };
 
         let q = query.to_string();
@@ -878,7 +1283,11 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         let hnsw_hits = {
             let candidates = k * 3;
-            self.inner.hnsw_index.read().unwrap().search(&query_embedding, candidates)?
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .search(&query_embedding, candidates)?
         };
 
         let config = self.inner.config.search.clone();
@@ -902,12 +1311,26 @@ impl MemoryStore {
             #[cfg(feature = "hnsw")]
             {
                 search::vector_only_search_with_hnsw(
-                    conn, &config, k, ns_slice, st_slice, None, &hnsw_hits_owned,
+                    conn,
+                    &config,
+                    k,
+                    ns_slice,
+                    st_slice,
+                    None,
+                    &hnsw_hits_owned,
                 )
             }
             #[cfg(not(feature = "hnsw"))]
             {
-                search::vector_only_search(conn, &query_embedding, &config, k, ns_slice, st_slice, None)
+                search::vector_only_search(
+                    conn,
+                    &query_embedding,
+                    &config,
+                    k,
+                    ns_slice,
+                    st_slice,
+                    None,
+                )
             }
         })
         .await
@@ -932,7 +1355,8 @@ impl MemoryStore {
 
         // Quantize for storage
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
-        let q8_bytes = quantizer.quantize(&embedding)
+        let q8_bytes = quantizer
+            .quantize(&embedding)
             .map(|qv| quantize::pack_quantized(&qv))
             .ok();
 
@@ -958,7 +1382,12 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         {
             let key = format!("msg:{}", msg_id);
-            self.inner.hnsw_index.read().unwrap().insert(key, &embedding)?;
+            self.inner
+                .hnsw_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key, &embedding)?;
+            self.maybe_flush_hnsw();
         }
 
         Ok(msg_id)
@@ -993,6 +1422,217 @@ impl MemoryStore {
             )
         })
         .await
+    }
+
+    // ─── Episodes ──────────────────────────────────────────────
+
+    /// Ingest a causal episode attached to a document.
+    ///
+    /// The document must already exist. The episode is created with `Pending` outcome.
+    pub async fn ingest_episode(
+        &self,
+        document_id: &str,
+        meta: &types::EpisodeMeta,
+    ) -> Result<(), MemoryError> {
+        let doc_id = document_id.to_string();
+        let cause_ids_json =
+            serde_json::to_string(&meta.cause_ids).unwrap_or_else(|_| "[]".to_string());
+        let effect_type = meta.effect_type.clone();
+        let outcome = meta.outcome.as_str().to_string();
+        let confidence = meta.confidence;
+        let verification_json = serde_json::to_string(&meta.verification_status)
+            .unwrap_or_else(|_| r#"{"status":"unverified"}"#.to_string());
+        let experiment_id = meta.experiment_id.clone();
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO episodes \
+                 (document_id, cause_ids, effect_type, outcome, confidence, verification_status, experiment_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    doc_id,
+                    cause_ids_json,
+                    effect_type,
+                    outcome,
+                    confidence,
+                    verification_json,
+                    experiment_id,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Update the outcome of an existing episode.
+    pub async fn update_episode_outcome(
+        &self,
+        document_id: &str,
+        outcome: types::EpisodeOutcome,
+        confidence: f32,
+        experiment_id: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        let doc_id = document_id.to_string();
+        let outcome_str = outcome.as_str().to_string();
+        let exp_id = experiment_id.map(|s| s.to_string());
+
+        let updated = self
+            .with_conn(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE episodes SET outcome = ?1, confidence = ?2, experiment_id = COALESCE(?3, experiment_id) \
+                     WHERE document_id = ?4",
+                    rusqlite::params![outcome_str, confidence, exp_id, doc_id],
+                )?;
+                Ok(rows)
+            })
+            .await?;
+
+        if updated == 0 {
+            return Err(MemoryError::DocumentNotFound(document_id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Search for episodes by effect_type and/or outcome.
+    pub async fn search_episodes(
+        &self,
+        effect_type: Option<&str>,
+        outcome: Option<&types::EpisodeOutcome>,
+        limit: usize,
+    ) -> Result<Vec<(String, types::EpisodeMeta)>, MemoryError> {
+        let et = effect_type.map(|s| s.to_string());
+        let oc = outcome.map(|o| o.as_str().to_string());
+
+        self.with_conn(move |conn| {
+            let mut sql = String::from(
+                "SELECT document_id, cause_ids, effect_type, outcome, confidence, \
+                 verification_status, experiment_id FROM episodes WHERE 1=1",
+            );
+            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+            if let Some(ref et) = et {
+                sql.push_str(&format!(" AND effect_type = ?{}", params_vec.len() + 1));
+                params_vec.push(Box::new(et.clone()));
+            }
+            if let Some(ref oc) = oc {
+                sql.push_str(&format!(" AND outcome = ?{}", params_vec.len() + 1));
+                params_vec.push(Box::new(oc.clone()));
+            }
+            sql.push_str(&format!(" ORDER BY created_at DESC LIMIT {}", limit));
+
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params_vec.iter().map(|p| p.as_ref()).collect();
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(&*param_refs, |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut results = Vec::new();
+            for (doc_id, cause_ids_json, effect_type, outcome_str, confidence, vs_json, exp_id) in
+                rows
+            {
+                let cause_ids: Vec<String> =
+                    serde_json::from_str(&cause_ids_json).unwrap_or_default();
+                let outcome = types::EpisodeOutcome::from_str_value(&outcome_str)
+                    .unwrap_or(types::EpisodeOutcome::Pending);
+                let verification_status: types::VerificationStatus =
+                    serde_json::from_str(&vs_json).unwrap_or(types::VerificationStatus::Unverified);
+
+                results.push((
+                    doc_id,
+                    types::EpisodeMeta {
+                        cause_ids,
+                        effect_type,
+                        outcome,
+                        confidence: confidence as f32,
+                        verification_status,
+                        experiment_id: exp_id,
+                    },
+                ));
+            }
+            Ok(results)
+        })
+        .await
+    }
+
+    // ─── Explainable Search ───────────────────────────────────
+
+    /// Search with full score breakdown for each result.
+    pub async fn search_explained(
+        &self,
+        query: &str,
+        top_k: Option<usize>,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+    ) -> Result<Vec<types::ExplainedResult>, MemoryError> {
+        // Delegate to the regular search and annotate with breakdowns
+        let results = self.search(query, top_k, namespaces, source_types).await?;
+
+        let explained: Vec<types::ExplainedResult> = results
+            .into_iter()
+            .map(|r| {
+                let breakdown = types::ScoreBreakdown {
+                    rrf_score: r.score,
+                    bm25_score: r.bm25_rank.map(|rank| 1.0 / (60.0 + rank as f64)),
+                    vector_score: r.cosine_similarity,
+                    recency_score: None, // TODO: expose from search internals
+                    bm25_rank: r.bm25_rank,
+                    vector_rank: r.vector_rank,
+                };
+                types::ExplainedResult {
+                    result: r,
+                    breakdown,
+                }
+            })
+            .collect();
+
+        Ok(explained)
+    }
+
+    // ─── Embedding Displacement ───────────────────────────────
+
+    /// Compute embedding displacement between two texts.
+    pub async fn embedding_displacement(
+        &self,
+        text_a: &str,
+        text_b: &str,
+    ) -> Result<types::EmbeddingDisplacement, MemoryError> {
+        let emb_a = self.inner.embedder.embed(text_a).await?;
+        let emb_b = self.inner.embedder.embed(text_b).await?;
+        Ok(Self::embedding_displacement_from_vecs(&emb_a, &emb_b))
+    }
+
+    /// Compute embedding displacement from pre-computed vectors.
+    pub fn embedding_displacement_from_vecs(a: &[f32], b: &[f32]) -> types::EmbeddingDisplacement {
+        let cosine_sim = search::cosine_similarity(a, b);
+
+        let euclidean_dist: f32 = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f32>()
+            .sqrt();
+
+        let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        types::EmbeddingDisplacement {
+            cosine_similarity: cosine_sim,
+            euclidean_distance: euclidean_dist,
+            magnitude_a: mag_a,
+            magnitude_b: mag_b,
+        }
     }
 
     // ─── Utility ────────────────────────────────────────────────
@@ -1088,7 +1728,8 @@ impl MemoryStore {
                 .iter()
                 .zip(embeddings.iter())
                 .map(|((id, _), emb)| {
-                    let q8 = quantizer.quantize(emb)
+                    let q8 = quantizer
+                        .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
                     (id.clone(), db::embedding_to_bytes(emb), q8)
@@ -1136,7 +1777,8 @@ impl MemoryStore {
                 .iter()
                 .zip(embeddings.iter())
                 .map(|((id, _), emb)| {
-                    let q8 = quantizer.quantize(emb)
+                    let q8 = quantizer
+                        .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
                     (id.clone(), db::embedding_to_bytes(emb), q8)
@@ -1185,7 +1827,8 @@ impl MemoryStore {
                 .iter()
                 .zip(embeddings.iter())
                 .map(|((id, _), emb)| {
-                    let q8 = quantizer.quantize(emb)
+                    let q8 = quantizer
+                        .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
                     (*id, db::embedding_to_bytes(emb), q8)

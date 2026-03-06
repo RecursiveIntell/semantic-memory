@@ -96,7 +96,10 @@ async fn both_features_handle_empty_store() {
         .search_fts_only("nonexistent", Some(5), None, None)
         .await
         .unwrap();
-    assert!(fts.is_empty(), "FTS on empty store should return no results");
+    assert!(
+        fts.is_empty(),
+        "FTS on empty store should return no results"
+    );
 }
 
 #[tokio::test]

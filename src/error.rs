@@ -70,7 +70,65 @@ pub enum MemoryError {
         in_hnsw_not_sqlite: usize,
     },
 
+    /// Database schema is newer than this library version can handle.
+    #[error(
+        "Schema version {found} is ahead of max supported {supported} — upgrade semantic-memory"
+    )]
+    SchemaAhead {
+        /// Schema version found in the database.
+        found: u32,
+        /// Maximum version supported by this build.
+        supported: u32,
+    },
+
+    /// Content exceeds configured size limit.
+    #[error("Content too large: {size} bytes exceeds limit of {limit} bytes")]
+    ContentTooLarge {
+        /// Actual content size in bytes.
+        size: usize,
+        /// Configured limit in bytes.
+        limit: usize,
+    },
+
+    /// Namespace fact count would exceed the configured limit.
+    #[error("Namespace '{namespace}' has {count} facts, limit is {limit}")]
+    NamespaceFull {
+        /// Namespace that is full.
+        namespace: String,
+        /// Current fact count.
+        count: usize,
+        /// Configured limit.
+        limit: usize,
+    },
+
     /// Catch-all for other errors.
     #[error("{0}")]
     Other(String),
+}
+
+impl MemoryError {
+    /// Returns a stable string discriminant for programmatic matching.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Database(_) => "database",
+            Self::EmbeddingRequest(_) => "embedding_request",
+            Self::DimensionMismatch { .. } => "dimension_mismatch",
+            Self::InvalidEmbedding { .. } => "invalid_embedding",
+            Self::ModelMismatch { .. } => "model_mismatch",
+            Self::SessionNotFound(_) => "session_not_found",
+            Self::FactNotFound(_) => "fact_not_found",
+            Self::DocumentNotFound(_) => "document_not_found",
+            Self::EmbedderUnavailable(_) => "embedder_unavailable",
+            Self::MigrationFailed { .. } => "migration_failed",
+            Self::HnswError(_) => "hnsw_error",
+            Self::InvalidKey(_) => "invalid_key",
+            Self::QuantizationError(_) => "quantization_error",
+            Self::StorageError(_) => "storage_error",
+            Self::IntegrityError { .. } => "integrity_error",
+            Self::SchemaAhead { .. } => "schema_ahead",
+            Self::ContentTooLarge { .. } => "content_too_large",
+            Self::NamespaceFull { .. } => "namespace_full",
+            Self::Other(_) => "other",
+        }
+    }
 }

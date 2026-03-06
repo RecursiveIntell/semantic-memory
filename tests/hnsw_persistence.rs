@@ -129,15 +129,10 @@ async fn deletions_survive_reopen() {
         let store = reopen_store(&base_dir);
 
         // Deleted facts should NOT appear.
-        for i in 0..3 {
+        for (i, _fact_id) in fact_ids.iter().enumerate().take(3) {
             let query = format!("Deletable fact item {}", i);
             let results = store
-                .search_fts_only(
-                    &query,
-                    Some(10),
-                    None,
-                    Some(&[SearchSourceType::Facts]),
-                )
+                .search_fts_only(&query, Some(10), None, Some(&[SearchSourceType::Facts]))
                 .await
                 .unwrap();
 
@@ -181,12 +176,7 @@ async fn keymap_flush_on_explicit_flush() {
     let mut fact_ids = Vec::new();
     for i in 0..5 {
         let id = store
-            .add_fact(
-                "flush",
-                &format!("Flushed fact entry {}", i),
-                None,
-                None,
-            )
+            .add_fact("flush", &format!("Flushed fact entry {}", i), None, None)
             .await
             .unwrap();
         fact_ids.push(id);
@@ -245,12 +235,7 @@ async fn rebuild_preserves_keymap() {
 
         for i in 0..8 {
             let id = store
-                .add_fact(
-                    "rebuild",
-                    &format!("Rebuild test fact {}", i),
-                    None,
-                    None,
-                )
+                .add_fact("rebuild", &format!("Rebuild test fact {}", i), None, None)
                 .await
                 .unwrap();
             fact_ids.push(id);

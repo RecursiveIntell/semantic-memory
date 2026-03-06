@@ -110,7 +110,9 @@ pub fn unpack_quantized(bytes: &[u8], dimensions: usize) -> Result<QuantizedVect
     if bytes.len() != expected_len {
         return Err(MemoryError::QuantizationError(format!(
             "expected {} bytes for {} dimensions, got {}",
-            expected_len, dimensions, bytes.len()
+            expected_len,
+            dimensions,
+            bytes.len()
         )));
     }
     let scale = f32::from_le_bytes(bytes[0..4].try_into().unwrap());

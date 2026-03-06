@@ -52,7 +52,7 @@ impl std::str::FromStr for Role {
     }
 }
 
-/// Indicates whether a search result came from a fact, document chunk, or message.
+/// Indicates whether a search result came from a fact, document chunk, message, or episode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchSourceType {
     /// Result is from the facts table.
@@ -61,6 +61,8 @@ pub enum SearchSourceType {
     Chunks,
     /// Result is from the messages table.
     Messages,
+    /// Result is from the episodes table.
+    Episodes,
 }
 
 /// A conversation session.
@@ -200,6 +202,214 @@ pub enum SearchSource {
         /// Message role (user, assistant, etc.).
         role: String,
     },
+    /// Result came from an episode (causal record). SearchSource::Episode variant.
+    Episode {
+        /// Document ID the episode is attached to.
+        document_id: String,
+        /// Type of effect (e.g. "test_failure", "regression").
+        effect_type: String,
+        /// Current outcome.
+        outcome: String,
+    },
+}
+
+// ─── Episode Types ─────────────────────────────────────────────
+
+/// Metadata for a causal episode (PRIMITIVES_CONTRACT §4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodeMeta {
+    /// IDs of the facts/chunks/messages that caused this episode.
+    pub cause_ids: Vec<String>,
+    /// Type of effect (e.g. "test_failure", "regression", "improvement").
+    pub effect_type: String,
+    /// Current outcome assessment.
+    pub outcome: EpisodeOutcome,
+    /// Confidence in the causal link (0.0 to 1.0).
+    pub confidence: f32,
+    /// Verification status.
+    pub verification_status: VerificationStatus,
+    /// Links to an EvidenceBundle.run_id (if experimentally verified).
+    pub experiment_id: Option<String>,
+}
+
+/// Outcome of an episode's causal hypothesis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EpisodeOutcome {
+    /// Causal link confirmed by experiment.
+    Confirmed,
+    /// Causal link refuted by experiment.
+    Refuted,
+    /// Evidence is inconclusive.
+    Inconclusive,
+    /// Not yet tested.
+    Pending,
+}
+
+impl EpisodeOutcome {
+    /// Convert to the string stored in SQLite.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Refuted => "refuted",
+            Self::Inconclusive => "inconclusive",
+            Self::Pending => "pending",
+        }
+    }
+
+    /// Parse from the string stored in SQLite.
+    pub fn from_str_value(s: &str) -> Option<Self> {
+        match s {
+            "confirmed" => Some(Self::Confirmed),
+            "refuted" => Some(Self::Refuted),
+            "inconclusive" => Some(Self::Inconclusive),
+            "pending" => Some(Self::Pending),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for EpisodeOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Verification status for an episode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum VerificationStatus {
+    /// Not yet verified.
+    Unverified,
+    /// Successfully verified.
+    Verified {
+        /// Method used for verification.
+        method: String,
+        /// When verification occurred (ISO 8601).
+        at: String,
+    },
+    /// Verification attempt failed.
+    Failed {
+        /// Reason for failure.
+        reason: String,
+        /// When verification was attempted (ISO 8601).
+        at: String,
+    },
+}
+
+// ─── Score Breakdown ───────────────────────────────────────────
+
+/// Detailed score breakdown for explainable search results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreBreakdown {
+    /// Final fused RRF score.
+    pub rrf_score: f64,
+    /// BM25 component score (if this result appeared in BM25 results).
+    pub bm25_score: Option<f64>,
+    /// Vector similarity component score.
+    pub vector_score: Option<f64>,
+    /// Recency boost component score.
+    pub recency_score: Option<f64>,
+    /// BM25 rank (1-based).
+    pub bm25_rank: Option<usize>,
+    /// Vector rank (1-based).
+    pub vector_rank: Option<usize>,
+}
+
+/// Search result with full score explanation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainedResult {
+    /// The search result.
+    pub result: SearchResult,
+    /// Score breakdown.
+    pub breakdown: ScoreBreakdown,
+}
+
+// ─── Graph Types (PRIMITIVES_CONTRACT §8) ──────────────────────
+
+/// Trait for querying the memory store as a graph.
+pub trait GraphView: Send + Sync {
+    /// Find neighboring nodes up to `max_depth` hops away.
+    fn neighbors(
+        &self,
+        node_id: &str,
+        direction: GraphDirection,
+        max_depth: usize,
+    ) -> Result<Vec<GraphEdge>, MemoryError>;
+
+    /// Find a path between two nodes (BFS, max depth).
+    fn path(
+        &self,
+        from: &str,
+        to: &str,
+        max_depth: usize,
+    ) -> Result<Option<Vec<String>>, MemoryError>;
+}
+
+/// Direction for graph traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphDirection {
+    /// Follow outgoing edges.
+    Outgoing,
+    /// Follow incoming edges.
+    Incoming,
+    /// Follow edges in both directions.
+    Both,
+}
+
+/// An edge in the memory graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEdge {
+    /// Source node ID.
+    pub source: String,
+    /// Target node ID.
+    pub target: String,
+    /// Type of relationship.
+    pub edge_type: GraphEdgeType,
+    /// Edge weight (interpretation depends on edge_type).
+    pub weight: f64,
+    /// Optional metadata.
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Type of relationship between graph nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GraphEdgeType {
+    /// Semantic similarity. GraphEdgeType::Semantic variant.
+    Semantic {
+        /// Cosine similarity between embeddings.
+        cosine_similarity: f32,
+    },
+    /// Temporal proximity. GraphEdgeType::Temporal variant.
+    Temporal {
+        /// Time delta in seconds.
+        delta_secs: u64,
+    },
+    /// Causal relationship. GraphEdgeType::Causal variant.
+    Causal {
+        /// Confidence in the causal link.
+        confidence: f32,
+        /// EvidenceBundle run_ids supporting this link.
+        evidence_ids: Vec<String>,
+    },
+    /// Entity co-occurrence. GraphEdgeType::Entity variant.
+    Entity {
+        /// Relationship type (e.g. "mentions", "modifies").
+        relation: String,
+    },
+}
+
+/// Embedding displacement between two text embeddings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingDisplacement {
+    /// Cosine similarity between the two embeddings.
+    pub cosine_similarity: f32,
+    /// Euclidean distance between the two embeddings.
+    pub euclidean_distance: f32,
+    /// Magnitude of the first embedding.
+    pub magnitude_a: f32,
+    /// Magnitude of the second embedding.
+    pub magnitude_b: f32,
 }
 
 /// Database statistics.

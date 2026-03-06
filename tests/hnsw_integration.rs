@@ -4,7 +4,9 @@
 
 #![cfg(feature = "hnsw")]
 
-use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, Role, SearchSource, SearchSourceType};
+use semantic_memory::{
+    MemoryConfig, MemoryStore, MockEmbedder, Role, SearchSource, SearchSourceType,
+};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -27,12 +29,7 @@ async fn hnsw_insert_and_search_facts() {
         .await
         .unwrap();
     store
-        .add_fact(
-            "science",
-            "Water boils at 100 degrees Celsius",
-            None,
-            None,
-        )
+        .add_fact("science", "Water boils at 100 degrees Celsius", None, None)
         .await
         .unwrap();
     store
@@ -41,8 +38,14 @@ async fn hnsw_insert_and_search_facts() {
         .unwrap();
 
     // Search should return results
-    let results = store.search("Earth orbit", Some(5), None, None).await.unwrap();
-    assert!(!results.is_empty(), "Should find facts via HNSW-backed search");
+    let results = store
+        .search("Earth orbit", Some(5), None, None)
+        .await
+        .unwrap();
+    assert!(
+        !results.is_empty(),
+        "Should find facts via HNSW-backed search"
+    );
 }
 
 #[tokio::test]
@@ -51,7 +54,12 @@ async fn hnsw_multi_domain_search() {
 
     // Add facts — use "programming" so FTS will match
     store
-        .add_fact("general", "Rust programming is great for systems", None, None)
+        .add_fact(
+            "general",
+            "Rust programming is great for systems",
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -65,17 +73,33 @@ async fn hnsw_multi_domain_search() {
     // Add embedded message
     let sid = store.create_session("test").await.unwrap();
     store
-        .add_message_embedded(&sid, Role::User, "Tell me about Rust programming", None, None)
+        .add_message_embedded(
+            &sid,
+            Role::User,
+            "Tell me about Rust programming",
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Search across facts + chunks (messages excluded by default)
-    let results = store.search("programming", Some(10), None, None).await.unwrap();
-    assert!(!results.is_empty(), "Multi-domain search should return results");
+    let results = store
+        .search("programming", Some(10), None, None)
+        .await
+        .unwrap();
+    assert!(
+        !results.is_empty(),
+        "Multi-domain search should return results"
+    );
 
     // Verify we get results from multiple source types
-    let has_fact = results.iter().any(|r| matches!(r.source, SearchSource::Fact { .. }));
-    let has_chunk = results.iter().any(|r| matches!(r.source, SearchSource::Chunk { .. }));
+    let has_fact = results
+        .iter()
+        .any(|r| matches!(r.source, SearchSource::Fact { .. }));
+    let has_chunk = results
+        .iter()
+        .any(|r| matches!(r.source, SearchSource::Chunk { .. }));
     assert!(has_fact, "Should find facts in multi-domain search");
     assert!(has_chunk, "Should find chunks in multi-domain search");
 
@@ -139,7 +163,10 @@ async fn hnsw_delete_removes_from_search() {
         .search_fts_only("Temporary", Some(5), None, None)
         .await
         .unwrap();
-    assert!(!results.is_empty(), "Fact should be searchable before delete");
+    assert!(
+        !results.is_empty(),
+        "Fact should be searchable before delete"
+    );
 
     // Delete it
     store.delete_fact(&fact_id).await.unwrap();
@@ -172,12 +199,7 @@ async fn hnsw_source_type_filtering() {
 
     // Search only facts
     let fact_results = store
-        .search(
-            "testing",
-            Some(10),
-            None,
-            Some(&[SearchSourceType::Facts]),
-        )
+        .search("testing", Some(10), None, Some(&[SearchSourceType::Facts]))
         .await
         .unwrap();
     for r in &fact_results {
@@ -189,12 +211,7 @@ async fn hnsw_source_type_filtering() {
 
     // Search only chunks
     let chunk_results = store
-        .search(
-            "testing",
-            Some(10),
-            None,
-            Some(&[SearchSourceType::Chunks]),
-        )
+        .search("testing", Some(10), None, Some(&[SearchSourceType::Chunks]))
         .await
         .unwrap();
     for r in &chunk_results {
