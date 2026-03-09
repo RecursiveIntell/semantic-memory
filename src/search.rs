@@ -1,8 +1,9 @@
 //! Hybrid search engine: BM25 + vector similarity + Reciprocal Rank Fusion.
 
 use crate::config::SearchConfig;
+use crate::episodes;
 use crate::error::MemoryError;
-use crate::types::{SearchResult, SearchSource, SearchSourceType};
+use crate::types::{ExplainedResult, ScoreBreakdown, SearchResult, SearchSource, SearchSourceType};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -27,16 +28,15 @@ pub fn sanitize_fts_query(raw: &str) -> Option<String> {
             }
         })
         .collect();
-    // Filter out bare FTS5 boolean operators that would cause query errors
+
     let tokens: Vec<&str> = cleaned
         .split_whitespace()
         .filter(|t| !matches!(t.to_uppercase().as_str(), "AND" | "OR" | "NOT" | "NEAR"))
         .collect();
+
     if tokens.is_empty() {
         None
     } else {
-        // Use OR for better recall — implicit AND fails for natural language
-        // queries against fact-style statements
         Some(tokens.join(" OR "))
     }
 }
@@ -53,79 +53,70 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-/// Compute the number of days since an ISO 8601 timestamp (SQLite format).
 fn days_since(iso_timestamp: &str) -> Option<f64> {
     let dt = chrono::NaiveDateTime::parse_from_str(iso_timestamp, "%Y-%m-%d %H:%M:%S").ok()?;
     let now = chrono::Utc::now().naive_utc();
     let duration = now - dt;
-    Some(duration.num_seconds() as f64 / 86400.0)
+    Some(duration.num_seconds() as f64 / 86_400.0)
 }
 
-/// An RRF candidate accumulating scores from BM25 and vector search.
-struct RrfCandidate {
-    content: String,
-    source: SearchSource,
-    bm25_rank: Option<usize>,
-    vector_rank: Option<usize>,
-    cosine_similarity: Option<f64>,
-    updated_at: Option<String>,
+fn recency_contribution(config: &SearchConfig, updated_at: Option<&str>) -> Option<f64> {
+    match (config.recency_half_life_days, updated_at) {
+        (Some(half_life), Some(ts)) if half_life > 0.0 => {
+            let age_days = days_since(ts).unwrap_or(0.0).max(0.0);
+            let decay = 2.0_f64.powf(-age_days / half_life);
+            Some(config.recency_weight * decay / (config.rrf_k + 1.0))
+        }
+        _ => None,
+    }
 }
 
-impl RrfCandidate {
-    fn score(&self, config: &SearchConfig) -> f64 {
-        let bm25_score = self
-            .bm25_rank
-            .map(|r| config.bm25_weight / (config.rrf_k + r as f64))
-            .unwrap_or(0.0);
-        let vector_score = self
-            .vector_rank
-            .map(|r| config.vector_weight / (config.rrf_k + r as f64))
-            .unwrap_or(0.0);
-
-        let recency_score = match (config.recency_half_life_days, &self.updated_at) {
-            (Some(half_life), Some(ts)) if half_life > 0.0 => {
-                let age_days = days_since(ts).unwrap_or(0.0).max(0.0);
-                let decay = 2.0_f64.powf(-age_days / half_life);
-                config.recency_weight * decay / (config.rrf_k + 1.0)
-            }
-            (Some(half_life), _) if half_life <= 0.0 => {
-                tracing::warn!("recency_half_life_days <= 0, ignoring recency boost");
-                0.0
-            }
-            _ => 0.0,
-        };
-
-        bm25_score + vector_score + recency_score
+fn source_dedup_key(source: &SearchSource) -> (u8, String) {
+    match source {
+        SearchSource::Fact { fact_id, .. } => (0, fact_id.clone()),
+        SearchSource::Chunk { chunk_id, .. } => (1, chunk_id.clone()),
+        SearchSource::Message { message_id, .. } => (2, message_id.to_string()),
+        SearchSource::Episode { episode_id, .. } => (3, episode_id.clone()),
+        SearchSource::Projection { projection_id, .. } => (4, projection_id.clone()),
     }
 }
 
 /// A BM25 search hit from FTS5.
+#[derive(Debug, Clone)]
 pub struct Bm25Hit {
-    /// Item ID (fact_id or chunk_id).
+    /// Search item key such as `fact:{uuid}` or `episode:{episode_id}`.
     pub id: String,
-    /// Text content.
+    /// Text content returned to callers.
     pub content: String,
     /// Source info.
     pub source: SearchSource,
-    /// Timestamp for recency scoring.
+    /// Raw BM25 score reported by SQLite FTS5.
+    pub raw_score: f64,
+    /// Timestamp used for recency scoring.
     pub updated_at: Option<String>,
 }
 
 /// A vector search hit.
+#[derive(Debug, Clone)]
 pub struct VectorHit {
-    /// Item ID (fact_id or chunk_id).
+    /// Search item key such as `fact:{uuid}` or `episode:{episode_id}`.
     pub id: String,
-    /// Text content.
+    /// Text content returned to callers.
     pub content: String,
     /// Source info.
     pub source: SearchSource,
-    /// Cosine similarity score.
+    /// Final similarity used for vector ranking.
     pub similarity: f64,
-    /// Timestamp for recency scoring.
+    /// Timestamp used for recency scoring.
     pub updated_at: Option<String>,
+    /// Rank from the underlying retrieval stage before exact reranking.
+    pub source_rank: Option<usize>,
+    /// Similarity from the underlying retrieval stage before exact reranking.
+    pub source_similarity: Option<f64>,
+    /// Whether exact f32 reranking changed or confirmed this candidate ordering.
+    pub reranked_from_f32: bool,
 }
 
-/// Row data extracted from a SQLite query for vector similarity scoring.
 struct VectorRow {
     id: String,
     content: String,
@@ -134,10 +125,64 @@ struct VectorRow {
     source: SearchSource,
 }
 
-/// Decode embedding BLOBs and compute cosine similarity for a set of rows.
-///
-/// Shared logic for the facts, chunks, and messages vector search loops.
-/// Returns the matching hits and the total row count scanned.
+struct RrfCandidate {
+    content: String,
+    source: SearchSource,
+    updated_at: Option<String>,
+    bm25_score: Option<f64>,
+    bm25_rank: Option<usize>,
+    vector_score: Option<f64>,
+    vector_rank: Option<usize>,
+    vector_source_rank: Option<usize>,
+    vector_source_score: Option<f64>,
+    vector_reranked_from_f32: bool,
+}
+
+impl RrfCandidate {
+    fn explained(self, config: &SearchConfig) -> ExplainedResult {
+        let bm25_contribution = self
+            .bm25_rank
+            .map(|rank| config.bm25_weight / (config.rrf_k + rank as f64));
+        let vector_contribution = self
+            .vector_rank
+            .map(|rank| config.vector_weight / (config.rrf_k + rank as f64));
+        let recency_score = recency_contribution(config, self.updated_at.as_deref());
+        let rrf_score = bm25_contribution.unwrap_or(0.0)
+            + vector_contribution.unwrap_or(0.0)
+            + recency_score.unwrap_or(0.0);
+
+        let breakdown = ScoreBreakdown {
+            rrf_score,
+            bm25_score: self.bm25_score,
+            vector_score: self.vector_score,
+            recency_score,
+            bm25_rank: self.bm25_rank,
+            vector_rank: self.vector_rank,
+            vector_source_rank: self.vector_source_rank,
+            vector_source_score: self.vector_source_score,
+            bm25_contribution,
+            vector_contribution,
+            vector_reranked_from_f32: self.vector_reranked_from_f32,
+            bm25_weight: config.bm25_weight,
+            vector_weight: config.vector_weight,
+            recency_weight: config.recency_half_life_days.map(|_| config.recency_weight),
+            rrf_k: config.rrf_k,
+        };
+
+        ExplainedResult {
+            result: SearchResult {
+                content: self.content,
+                source: self.source,
+                score: rrf_score,
+                bm25_rank: breakdown.bm25_rank,
+                vector_rank: breakdown.vector_rank,
+                cosine_similarity: breakdown.vector_score,
+            },
+            breakdown,
+        }
+    }
+}
+
 fn scan_vector_rows(
     rows: impl Iterator<Item = Result<VectorRow, rusqlite::Error>>,
     query_embedding: &[f32],
@@ -160,11 +205,14 @@ fn scan_vector_rows(
             );
             continue;
         }
-        let stored_embedding: &[f32] =
-            bytemuck::try_cast_slice(&row.blob).map_err(|_| MemoryError::InvalidEmbedding {
+
+        let stored_embedding = bytemuck::try_cast_slice::<u8, f32>(&row.blob).map_err(|_| {
+            MemoryError::InvalidEmbedding {
                 expected_bytes: row.blob.len() - (row.blob.len() % 4),
                 actual_bytes: row.blob.len(),
-            })?;
+            }
+        })?;
+
         if stored_embedding.len() != expected_dims {
             tracing::warn!(
                 expected = expected_dims,
@@ -175,14 +223,17 @@ fn scan_vector_rows(
             continue;
         }
 
-        let sim = cosine_similarity(query_embedding, stored_embedding) as f64;
-        if sim >= min_similarity {
+        let similarity = cosine_similarity(query_embedding, stored_embedding) as f64;
+        if similarity >= min_similarity {
             hits.push(VectorHit {
                 id: row.id,
                 content: row.content,
                 source: row.source,
-                similarity: sim,
+                similarity,
                 updated_at: row.updated_at,
+                source_rank: None,
+                source_similarity: None,
+                reranked_from_f32: false,
             });
         }
     }
@@ -190,7 +241,23 @@ fn scan_vector_rows(
     Ok((hits, row_count))
 }
 
-/// Run BM25 search over facts_fts, chunks_fts, and optionally messages_fts.
+fn rank_vector_hits(mut hits: Vec<VectorHit>, pool_size: usize) -> Vec<VectorHit> {
+    hits.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for (idx, hit) in hits.iter_mut().enumerate() {
+        hit.source_rank = Some(idx + 1);
+        hit.source_similarity = Some(hit.similarity);
+    }
+
+    hits.truncate(pool_size);
+    hits
+}
+
+/// Run BM25 search over facts_fts, chunks_fts, episodes_fts, and optionally messages_fts.
 pub(crate) fn bm25_search(
     conn: &Connection,
     sanitized_query: &str,
@@ -207,41 +274,44 @@ pub(crate) fn bm25_search(
     let search_chunks = source_types
         .map(|st| st.contains(&SearchSourceType::Chunks))
         .unwrap_or(true);
-    // Messages are NOT included by default — only when explicitly requested
     let search_messages = source_types
         .map(|st| st.contains(&SearchSourceType::Messages))
         .unwrap_or(false);
+    let search_episodes = source_types
+        .map(|st| st.contains(&SearchSourceType::Episodes))
+        .unwrap_or(true);
 
-    // Search facts
     if search_facts {
-        let (ns_clause, ns_params) = build_namespace_clause("f.namespace", namespaces, 3);
+        let (ns_clause, ns_params) = build_filter_clause("f.namespace", namespaces, 3);
         let sql = format!(
             "SELECT fm.fact_id, f.content, f.namespace, bm25(facts_fts) AS score, f.updated_at
              FROM facts_fts
              JOIN facts_rowid_map fm ON facts_fts.rowid = fm.rowid
              JOIN facts f ON f.id = fm.fact_id
              WHERE facts_fts MATCH ?1 {}
-             ORDER BY bm25(facts_fts)
+             ORDER BY score ASC
              LIMIT ?2",
             ns_clause
         );
 
-        let mut all_params: Vec<SqlValue> = vec![
+        let mut params = vec![
             SqlValue::Text(sanitized_query.to_string()),
             SqlValue::Integer(pool_size as i64),
         ];
-        all_params.extend(ns_params.clone());
+        params.extend(ns_params);
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&all_params), |row| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
             let fact_id: String = row.get(0)?;
             let content: String = row.get(1)?;
             let namespace: String = row.get(2)?;
+            let raw_score: f64 = row.get(3)?;
             let updated_at: Option<String> = row.get(4)?;
             Ok(Bm25Hit {
-                id: fact_id.clone(),
+                id: format!("fact:{fact_id}"),
                 content,
                 source: SearchSource::Fact { fact_id, namespace },
+                raw_score,
                 updated_at,
             })
         })?;
@@ -251,37 +321,38 @@ pub(crate) fn bm25_search(
         }
     }
 
-    // Search chunks
     if search_chunks {
-        let (ns_clause, ns_params) = build_namespace_clause("d.namespace", namespaces, 3);
+        let (ns_clause, ns_params) = build_filter_clause("d.namespace", namespaces, 3);
         let sql = format!(
-            "SELECT cm.chunk_id, c.content, c.document_id, d.title, c.chunk_index, bm25(chunks_fts) AS score, c.created_at
+            "SELECT cm.chunk_id, c.content, c.document_id, d.title, c.chunk_index,
+                    bm25(chunks_fts) AS score, c.created_at
              FROM chunks_fts
              JOIN chunks_rowid_map cm ON chunks_fts.rowid = cm.rowid
              JOIN chunks c ON c.id = cm.chunk_id
              JOIN documents d ON d.id = c.document_id
              WHERE chunks_fts MATCH ?1 {}
-             ORDER BY bm25(chunks_fts)
+             ORDER BY score ASC
              LIMIT ?2",
             ns_clause
         );
 
-        let mut all_params: Vec<SqlValue> = vec![
+        let mut params = vec![
             SqlValue::Text(sanitized_query.to_string()),
             SqlValue::Integer(pool_size as i64),
         ];
-        all_params.extend(ns_params.clone());
+        params.extend(ns_params);
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&all_params), |row| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
             let chunk_id: String = row.get(0)?;
             let content: String = row.get(1)?;
             let document_id: String = row.get(2)?;
             let document_title: String = row.get(3)?;
             let chunk_index: i64 = row.get(4)?;
+            let raw_score: f64 = row.get(5)?;
             let updated_at: Option<String> = row.get(6)?;
             Ok(Bm25Hit {
-                id: chunk_id.clone(),
+                id: format!("chunk:{chunk_id}"),
                 content,
                 source: SearchSource::Chunk {
                     chunk_id,
@@ -289,6 +360,7 @@ pub(crate) fn bm25_search(
                     document_title,
                     chunk_index: chunk_index as usize,
                 },
+                raw_score,
                 updated_at,
             })
         })?;
@@ -298,41 +370,92 @@ pub(crate) fn bm25_search(
         }
     }
 
-    // Search messages (only when explicitly requested)
     if search_messages {
-        let (sid_clause, sid_params) = build_namespace_clause("m.session_id", session_ids, 3);
+        let (sid_clause, sid_params) = build_filter_clause("m.session_id", session_ids, 3);
         let sql = format!(
-            "SELECT mm.message_id, m.content, m.session_id, m.role, bm25(messages_fts) AS score, m.created_at
+            "SELECT mm.message_id, m.content, m.session_id, m.role,
+                    bm25(messages_fts) AS score, m.created_at
              FROM messages_fts
              JOIN messages_rowid_map mm ON messages_fts.rowid = mm.rowid
              JOIN messages m ON m.id = mm.message_id
              WHERE messages_fts MATCH ?1 {}
-             ORDER BY bm25(messages_fts)
+             ORDER BY score ASC
              LIMIT ?2",
             sid_clause
         );
 
-        let mut all_params: Vec<SqlValue> = vec![
+        let mut params = vec![
             SqlValue::Text(sanitized_query.to_string()),
             SqlValue::Integer(pool_size as i64),
         ];
-        all_params.extend(sid_params.clone());
+        params.extend(sid_params);
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&all_params), |row| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
             let message_id: i64 = row.get(0)?;
             let content: String = row.get(1)?;
             let session_id: String = row.get(2)?;
             let role: String = row.get(3)?;
+            let raw_score: f64 = row.get(4)?;
             let updated_at: Option<String> = row.get(5)?;
             Ok(Bm25Hit {
-                id: format!("msg:{}", message_id),
+                id: format!("msg:{message_id}"),
                 content,
                 source: SearchSource::Message {
                     message_id,
                     session_id,
                     role,
                 },
+                raw_score,
+                updated_at,
+            })
+        })?;
+
+        for row in rows {
+            hits.push(row?);
+        }
+    }
+
+    if search_episodes {
+        let (ns_clause, ns_params) = build_filter_clause("d.namespace", namespaces, 3);
+        let sql = format!(
+            "SELECT e.episode_id, e.document_id, e.search_text, e.effect_type, e.outcome,
+                    bm25(episodes_fts) AS score, e.updated_at
+             FROM episodes_fts
+             JOIN episodes_rowid_map rm ON episodes_fts.rowid = rm.rowid
+             JOIN episodes e ON e.episode_id = rm.episode_id
+             JOIN documents d ON d.id = e.document_id
+             WHERE episodes_fts MATCH ?1 {}
+             ORDER BY score ASC
+             LIMIT ?2",
+            ns_clause
+        );
+
+        let mut params = vec![
+            SqlValue::Text(sanitized_query.to_string()),
+            SqlValue::Integer(pool_size as i64),
+        ];
+        params.extend(ns_params);
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
+            let episode_id: String = row.get(0)?;
+            let document_id: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let effect_type: String = row.get(3)?;
+            let outcome: String = row.get(4)?;
+            let raw_score: f64 = row.get(5)?;
+            let updated_at: Option<String> = row.get(6)?;
+            Ok(Bm25Hit {
+                id: episodes::episode_item_key(&episode_id),
+                content,
+                source: SearchSource::Episode {
+                    episode_id,
+                    document_id,
+                    effect_type,
+                    outcome,
+                },
+                raw_score,
                 updated_at,
             })
         })?;
@@ -345,9 +468,7 @@ pub(crate) fn bm25_search(
     Ok(hits)
 }
 
-/// Run vector similarity search over facts, chunks, and optionally messages.
-///
-/// Uses buffer reuse to avoid per-row allocations during the brute-force scan.
+/// Run brute-force vector search over facts, chunks, episodes, and optionally messages.
 pub(crate) fn vector_search(
     conn: &Connection,
     query_embedding: &[f32],
@@ -368,14 +489,19 @@ pub(crate) fn vector_search(
     let search_messages = source_types
         .map(|st| st.contains(&SearchSourceType::Messages))
         .unwrap_or(false);
+    let search_episodes = source_types
+        .map(|st| st.contains(&SearchSourceType::Episodes))
+        .unwrap_or(true);
 
-    // Vector search over facts
     if search_facts {
-        let (ns_clause, ns_params) = build_namespace_clause("namespace", namespaces, 1);
+        let (ns_clause, ns_params) = build_filter_clause("namespace", namespaces, 1);
         let sql = format!(
-            "SELECT id, content, namespace, embedding, updated_at FROM facts WHERE embedding IS NOT NULL {}",
+            "SELECT id, content, namespace, embedding, updated_at
+             FROM facts
+             WHERE embedding IS NOT NULL {}",
             ns_clause
         );
+
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&ns_params), |row| {
             let id: String = row.get(0)?;
@@ -384,7 +510,7 @@ pub(crate) fn vector_search(
             let blob: Vec<u8> = row.get(3)?;
             let updated_at: Option<String> = row.get(4)?;
             Ok(VectorRow {
-                id: id.clone(),
+                id: format!("fact:{id}"),
                 content,
                 blob,
                 updated_at,
@@ -402,16 +528,14 @@ pub(crate) fn vector_search(
         if fact_count > VECTOR_SCAN_WARN_THRESHOLD {
             tracing::warn!(
                 count = fact_count,
-                "facts table exceeds vector scan threshold ({} rows). \
-                 Consider namespace partitioning or pruning old data.",
+                "facts table exceeds vector scan threshold ({} rows)",
                 fact_count
             );
         }
     }
 
-    // Vector search over chunks
     if search_chunks {
-        let (ns_clause, ns_params) = build_namespace_clause("d.namespace", namespaces, 1);
+        let (ns_clause, ns_params) = build_filter_clause("d.namespace", namespaces, 1);
         let sql = format!(
             "SELECT c.id, c.content, c.document_id, d.title, c.chunk_index, c.embedding, c.created_at
              FROM chunks c
@@ -419,6 +543,7 @@ pub(crate) fn vector_search(
              WHERE c.embedding IS NOT NULL {}",
             ns_clause
         );
+
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&ns_params), |row| {
             let id: String = row.get(0)?;
@@ -429,7 +554,7 @@ pub(crate) fn vector_search(
             let blob: Vec<u8> = row.get(5)?;
             let updated_at: Option<String> = row.get(6)?;
             Ok(VectorRow {
-                id: id.clone(),
+                id: format!("chunk:{id}"),
                 content,
                 blob,
                 updated_at,
@@ -449,22 +574,21 @@ pub(crate) fn vector_search(
         if chunk_count > VECTOR_SCAN_WARN_THRESHOLD {
             tracing::warn!(
                 count = chunk_count,
-                "chunks table exceeds vector scan threshold ({} rows). \
-                 Consider namespace partitioning or pruning old data.",
+                "chunks table exceeds vector scan threshold ({} rows)",
                 chunk_count
             );
         }
     }
 
-    // Vector search over messages (only when explicitly requested)
     if search_messages {
-        let (sid_clause, sid_params) = build_namespace_clause("m.session_id", session_ids, 1);
+        let (sid_clause, sid_params) = build_filter_clause("m.session_id", session_ids, 1);
         let sql = format!(
             "SELECT m.id, m.content, m.session_id, m.role, m.embedding, m.created_at
              FROM messages m
              WHERE m.embedding IS NOT NULL {}",
             sid_clause
         );
+
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&sid_params), |row| {
             let message_id: i64 = row.get(0)?;
@@ -474,7 +598,7 @@ pub(crate) fn vector_search(
             let blob: Vec<u8> = row.get(4)?;
             let updated_at: Option<String> = row.get(5)?;
             Ok(VectorRow {
-                id: format!("msg:{}", message_id),
+                id: format!("msg:{message_id}"),
                 content,
                 blob,
                 updated_at,
@@ -486,29 +610,147 @@ pub(crate) fn vector_search(
             })
         })?;
 
-        let (msg_hits, msg_count) =
+        let (message_hits, message_count) =
             scan_vector_rows(rows, query_embedding, min_similarity, "message")?;
-        hits.extend(msg_hits);
+        hits.extend(message_hits);
 
-        if msg_count > VECTOR_SCAN_WARN_THRESHOLD {
+        if message_count > VECTOR_SCAN_WARN_THRESHOLD {
             tracing::warn!(
-                count = msg_count,
-                "messages table exceeds vector scan threshold ({} rows). \
-                 Consider pruning old sessions.",
-                msg_count
+                count = message_count,
+                "messages table exceeds vector scan threshold ({} rows)",
+                message_count
             );
         }
     }
 
-    // Sort by similarity descending, take top pool_size
-    hits.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    hits.truncate(pool_size);
+    if search_episodes {
+        let (ns_clause, ns_params) = build_filter_clause("d.namespace", namespaces, 1);
+        let sql = format!(
+            "SELECT e.episode_id, e.document_id, e.search_text, e.effect_type, e.outcome, e.embedding, e.updated_at
+             FROM episodes e
+             JOIN documents d ON d.id = e.document_id
+             WHERE e.embedding IS NOT NULL {}",
+            ns_clause
+        );
 
-    Ok(hits)
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(&ns_params), |row| {
+            let episode_id: String = row.get(0)?;
+            let document_id: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let effect_type: String = row.get(3)?;
+            let outcome: String = row.get(4)?;
+            let blob: Vec<u8> = row.get(5)?;
+            let updated_at: Option<String> = row.get(6)?;
+            Ok(VectorRow {
+                id: episodes::episode_item_key(&episode_id),
+                content,
+                blob,
+                updated_at,
+                source: SearchSource::Episode {
+                    episode_id,
+                    document_id,
+                    effect_type,
+                    outcome,
+                },
+            })
+        })?;
+
+        let (episode_hits, episode_count) =
+            scan_vector_rows(rows, query_embedding, min_similarity, "episode")?;
+        hits.extend(episode_hits);
+
+        if episode_count > VECTOR_SCAN_WARN_THRESHOLD {
+            tracing::warn!(
+                count = episode_count,
+                "episodes table exceeds vector scan threshold ({} rows)",
+                episode_count
+            );
+        }
+    }
+
+    Ok(rank_vector_hits(hits, pool_size))
+}
+
+fn rrf_fuse_detailed(
+    bm25_hits: &[Bm25Hit],
+    vector_hits: &[VectorHit],
+    config: &SearchConfig,
+    top_k: usize,
+) -> Vec<ExplainedResult> {
+    let mut candidates: HashMap<(u8, String), RrfCandidate> = HashMap::new();
+
+    for (rank_0, hit) in bm25_hits.iter().enumerate() {
+        let key = source_dedup_key(&hit.source);
+        let rank = rank_0 + 1;
+        candidates
+            .entry(key)
+            .and_modify(|candidate| {
+                candidate.bm25_rank = Some(rank);
+                candidate.bm25_score = Some(hit.raw_score);
+                if candidate.updated_at.is_none() {
+                    candidate.updated_at = hit.updated_at.clone();
+                }
+            })
+            .or_insert_with(|| RrfCandidate {
+                content: hit.content.clone(),
+                source: hit.source.clone(),
+                updated_at: hit.updated_at.clone(),
+                bm25_score: Some(hit.raw_score),
+                bm25_rank: Some(rank),
+                vector_score: None,
+                vector_rank: None,
+                vector_source_rank: None,
+                vector_source_score: None,
+                vector_reranked_from_f32: false,
+            });
+    }
+
+    for (rank_0, hit) in vector_hits.iter().enumerate() {
+        let key = source_dedup_key(&hit.source);
+        let rank = rank_0 + 1;
+        candidates
+            .entry(key)
+            .and_modify(|candidate| {
+                candidate.vector_rank = Some(rank);
+                candidate.vector_score = Some(hit.similarity);
+                candidate.vector_source_rank = hit.source_rank.or(Some(rank));
+                candidate.vector_source_score = hit.source_similarity.or(Some(hit.similarity));
+                candidate.vector_reranked_from_f32 = hit.reranked_from_f32;
+                if candidate.updated_at.is_none() {
+                    candidate.updated_at = hit.updated_at.clone();
+                }
+            })
+            .or_insert_with(|| RrfCandidate {
+                content: hit.content.clone(),
+                source: hit.source.clone(),
+                updated_at: hit.updated_at.clone(),
+                bm25_score: None,
+                bm25_rank: None,
+                vector_score: Some(hit.similarity),
+                vector_rank: Some(rank),
+                vector_source_rank: hit.source_rank.or(Some(rank)),
+                vector_source_score: hit.source_similarity.or(Some(hit.similarity)),
+                vector_reranked_from_f32: hit.reranked_from_f32,
+            });
+    }
+
+    let mut explained: Vec<ExplainedResult> = candidates
+        .into_values()
+        .map(|candidate| candidate.explained(config))
+        .collect();
+
+    explained.sort_by(|a, b| {
+        b.result
+            .score
+            .partial_cmp(&a.result.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                source_dedup_key(&a.result.source).cmp(&source_dedup_key(&b.result.source))
+            })
+    });
+    explained.truncate(top_k);
+    explained
 }
 
 /// Fuse BM25 and vector results via Reciprocal Rank Fusion.
@@ -518,81 +760,73 @@ pub fn rrf_fuse(
     config: &SearchConfig,
     top_k: usize,
 ) -> Vec<SearchResult> {
-    let mut candidates: HashMap<String, RrfCandidate> = HashMap::new();
+    rrf_fuse_detailed(bm25_hits, vector_hits, config, top_k)
+        .into_iter()
+        .map(|result| result.result)
+        .collect()
+}
 
-    // Walk BM25 results (ranks are 1-based)
-    for (rank_0, hit) in bm25_hits.iter().enumerate() {
-        let rank = rank_0 + 1;
-        candidates
-            .entry(hit.id.clone())
-            .and_modify(|c| {
-                c.bm25_rank = Some(rank);
-                // Prefer the most recent timestamp if both sources provide one
-                if c.updated_at.is_none() {
-                    c.updated_at = hit.updated_at.clone();
-                }
-            })
-            .or_insert(RrfCandidate {
-                content: hit.content.clone(),
-                source: hit.source.clone(),
-                bm25_rank: Some(rank),
-                vector_rank: None,
-                cosine_similarity: None,
-                updated_at: hit.updated_at.clone(),
-            });
-    }
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hybrid_search_detailed(
+    conn: &Connection,
+    query: &str,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    let bm25_hits = match sanitize_fts_query(query) {
+        Some(sanitized) => bm25_search(
+            conn,
+            &sanitized,
+            config.candidate_pool_size,
+            namespaces,
+            source_types,
+            session_ids,
+        )?,
+        None => Vec::new(),
+    };
 
-    // Walk vector results (ranks are 1-based)
-    for (rank_0, hit) in vector_hits.iter().enumerate() {
-        let rank = rank_0 + 1;
-        candidates
-            .entry(hit.id.clone())
-            .and_modify(|c| {
-                c.vector_rank = Some(rank);
-                c.cosine_similarity = Some(hit.similarity);
-                if c.updated_at.is_none() {
-                    c.updated_at = hit.updated_at.clone();
-                }
-            })
-            .or_insert(RrfCandidate {
-                content: hit.content.clone(),
-                source: hit.source.clone(),
-                bm25_rank: None,
-                vector_rank: Some(rank),
-                cosine_similarity: Some(hit.similarity),
-                updated_at: hit.updated_at.clone(),
-            });
-    }
+    let vector_hits = vector_search(
+        conn,
+        query_embedding,
+        config.candidate_pool_size,
+        config.min_similarity,
+        namespaces,
+        source_types,
+        session_ids,
+    )?;
 
-    // Score, sort, truncate
-    let mut results: Vec<SearchResult> = candidates
-        .into_values()
-        .map(|c| {
-            let score = c.score(config);
-            SearchResult {
-                content: c.content,
-                source: c.source,
-                score,
-                bm25_rank: c.bm25_rank,
-                vector_rank: c.vector_rank,
-                cosine_similarity: c.cosine_similarity,
-            }
-        })
-        .collect();
+    Ok(rrf_fuse_detailed(&bm25_hits, &vector_hits, config, top_k))
+}
 
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    results.truncate(top_k);
-    results
+/// Perform a hybrid search and return the exact score decomposition.
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_search_explained(
+    conn: &Connection,
+    query: &str,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    hybrid_search_detailed(
+        conn,
+        query,
+        query_embedding,
+        config,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+    )
 }
 
 /// Perform a hybrid search (BM25 + vector + RRF).
-///
-/// This is the main search entry point. Embed query first (async outside this fn),
-/// then call this with the connection locked.
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_search(
     conn: &Connection,
@@ -604,87 +838,33 @@ pub fn hybrid_search(
     source_types: Option<&[SearchSourceType]>,
     session_ids: Option<&[&str]>,
 ) -> Result<Vec<SearchResult>, MemoryError> {
-    // BM25 search
-    let bm25_hits = match sanitize_fts_query(query) {
-        Some(sanitized) => bm25_search(
-            conn,
-            &sanitized,
-            config.candidate_pool_size,
-            namespaces,
-            source_types,
-            session_ids,
-        )?,
-        None => Vec::new(),
-    };
-
-    // Vector search
-    let vector_hits = vector_search(
+    Ok(hybrid_search_detailed(
         conn,
+        query,
         query_embedding,
-        config.candidate_pool_size,
-        config.min_similarity,
-        namespaces,
-        source_types,
-        session_ids,
-    )?;
-
-    // RRF fusion + dedup
-    let results = rrf_fuse(&bm25_hits, &vector_hits, config, top_k);
-    Ok(deduplicate_results(results))
-}
-
-/// Perform a hybrid search using pre-computed HNSW hits for the vector component.
-///
-/// Instead of brute-force scanning all rows, this takes the HNSW nearest neighbor
-/// results and looks up their content from SQLite. The rest (BM25 + RRF fusion)
-/// is identical to `hybrid_search`.
-#[cfg(feature = "hnsw")]
-#[allow(clippy::too_many_arguments)]
-pub fn hybrid_search_with_hnsw(
-    conn: &Connection,
-    query: &str,
-    _query_embedding: &[f32],
-    config: &SearchConfig,
-    top_k: usize,
-    namespaces: Option<&[&str]>,
-    source_types: Option<&[SearchSourceType]>,
-    session_ids: Option<&[&str]>,
-    hnsw_hits: &[crate::hnsw::HnswHit],
-) -> Result<Vec<SearchResult>, MemoryError> {
-    // BM25 search (same as hybrid_search)
-    let bm25_hits = match sanitize_fts_query(query) {
-        Some(sanitized) => bm25_search(
-            conn,
-            &sanitized,
-            config.candidate_pool_size,
-            namespaces,
-            source_types,
-            session_ids,
-        )?,
-        None => Vec::new(),
-    };
-
-    // Convert HNSW hits to VectorHits via batched SQLite lookups
-    let vector_hits = resolve_hnsw_hits_batched(
-        conn,
         config,
+        top_k,
         namespaces,
         source_types,
         session_ids,
-        hnsw_hits,
-    )?;
-
-    // RRF fusion + dedup
-    let results = rrf_fuse(&bm25_hits, &vector_hits, config, top_k);
-    Ok(deduplicate_results(results))
+    )?
+    .into_iter()
+    .map(|result| result.result)
+    .collect())
 }
 
-/// Resolve HNSW hits to VectorHits using batched SQL queries (one per domain).
-///
-/// Replaces the N+1 query pattern with at most 3 batch queries.
 #[cfg(feature = "hnsw")]
+#[derive(Clone)]
+struct HnswCandidateSeed {
+    source_rank: usize,
+    source_similarity: f64,
+}
+
+#[cfg(feature = "hnsw")]
+#[allow(clippy::type_complexity)]
 fn resolve_hnsw_hits_batched(
     conn: &Connection,
+    query_embedding: &[f32],
     config: &SearchConfig,
     namespaces: Option<&[&str]>,
     source_types: Option<&[SearchSourceType]>,
@@ -700,193 +880,554 @@ fn resolve_hnsw_hits_batched(
     let search_messages = source_types
         .map(|st| st.contains(&SearchSourceType::Messages))
         .unwrap_or(false);
+    let search_episodes = source_types
+        .map(|st| st.contains(&SearchSourceType::Episodes))
+        .unwrap_or(true);
 
-    // Partition HNSW hits by domain
-    let mut fact_entries: Vec<(String, f64)> = Vec::new();
-    let mut chunk_entries: Vec<(String, f64)> = Vec::new();
-    let mut msg_entries: Vec<(i64, f64)> = Vec::new();
+    let mut fact_entries: HashMap<String, HnswCandidateSeed> = HashMap::new();
+    let mut chunk_entries: HashMap<String, HnswCandidateSeed> = HashMap::new();
+    let mut message_entries: HashMap<i64, HnswCandidateSeed> = HashMap::new();
+    let mut episode_entries: HashMap<String, HnswCandidateSeed> = HashMap::new();
 
-    for hit in hnsw_hits {
+    for (rank_0, hit) in hnsw_hits.iter().enumerate() {
         let similarity = hit.similarity() as f64;
         if similarity < config.min_similarity {
             continue;
         }
-        match hit.key.split_once(':') {
-            Some(("fact", id)) if search_facts => fact_entries.push((id.to_string(), similarity)),
-            Some(("chunk", id)) if search_chunks => {
-                chunk_entries.push((id.to_string(), similarity))
+
+        let (domain, raw_id) = hit.parse_key()?;
+        let seed = HnswCandidateSeed {
+            source_rank: rank_0 + 1,
+            source_similarity: similarity,
+        };
+
+        match domain {
+            "fact" if search_facts => {
+                fact_entries.entry(raw_id.to_string()).or_insert(seed);
             }
-            Some(("msg", id)) if search_messages => {
-                if let Ok(mid) = id.parse::<i64>() {
-                    msg_entries.push((mid, similarity));
+            "chunk" if search_chunks => {
+                chunk_entries.entry(raw_id.to_string()).or_insert(seed);
+            }
+            "msg" if search_messages => {
+                if let Ok(message_id) = raw_id.parse::<i64>() {
+                    message_entries.entry(message_id).or_insert(seed);
                 }
             }
-            _ => continue,
+            "episode" if search_episodes => {
+                episode_entries.entry(raw_id.to_string()).or_insert(seed);
+            }
+            _ => {}
         }
     }
 
-    let mut vector_hits = Vec::new();
+    let mut hits = Vec::new();
+    batch_load_fact_hits(
+        conn,
+        query_embedding,
+        config,
+        namespaces,
+        &fact_entries,
+        &mut hits,
+    )?;
+    batch_load_chunk_hits(
+        conn,
+        query_embedding,
+        config,
+        namespaces,
+        &chunk_entries,
+        &mut hits,
+    )?;
+    batch_load_message_hits(
+        conn,
+        query_embedding,
+        config,
+        session_ids,
+        &message_entries,
+        &mut hits,
+    )?;
+    batch_load_episode_hits(
+        conn,
+        query_embedding,
+        config,
+        namespaces,
+        &episode_entries,
+        &mut hits,
+    )?;
 
-    // Batch load facts
-    if !fact_entries.is_empty() {
-        let sim_map: HashMap<String, f64> = fact_entries.iter().cloned().collect();
-        let placeholders: String = (1..=fact_entries.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT id, content, namespace, updated_at FROM facts WHERE id IN ({})",
-            placeholders
-        );
-        let params: Vec<SqlValue> = fact_entries
-            .iter()
-            .map(|(id, _)| SqlValue::Text(id.clone()))
-            .collect();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
-
-        for row in rows {
-            let (fact_id, content, namespace, updated_at) = row?;
-            if let Some(ns) = namespaces {
-                if !ns.contains(&namespace.as_str()) {
-                    continue;
-                }
-            }
-            if let Some(&similarity) = sim_map.get(&fact_id) {
-                vector_hits.push(VectorHit {
-                    id: fact_id.clone(),
-                    content,
-                    source: SearchSource::Fact { fact_id, namespace },
-                    similarity,
-                    updated_at,
-                });
-            }
-        }
-    }
-
-    // Batch load chunks
-    if !chunk_entries.is_empty() {
-        let sim_map: HashMap<String, f64> = chunk_entries.iter().cloned().collect();
-        let placeholders: String = (1..=chunk_entries.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT c.id, c.content, c.document_id, d.title, c.chunk_index, c.created_at, d.namespace
-             FROM chunks c JOIN documents d ON d.id = c.document_id
-             WHERE c.id IN ({})",
-            placeholders
-        );
-        let params: Vec<SqlValue> = chunk_entries
-            .iter()
-            .map(|(id, _)| SqlValue::Text(id.clone()))
-            .collect();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        })?;
-
-        for row in rows {
-            let (chunk_id, content, document_id, document_title, chunk_index, updated_at, doc_ns) =
-                row?;
-            if let Some(ns) = namespaces {
-                if !ns.contains(&doc_ns.as_str()) {
-                    continue;
-                }
-            }
-            if let Some(&similarity) = sim_map.get(&chunk_id) {
-                vector_hits.push(VectorHit {
-                    id: chunk_id.clone(),
-                    content,
-                    source: SearchSource::Chunk {
-                        chunk_id,
-                        document_id,
-                        document_title,
-                        chunk_index: chunk_index as usize,
-                    },
-                    similarity,
-                    updated_at,
-                });
-            }
-        }
-    }
-
-    // Batch load messages
-    if !msg_entries.is_empty() {
-        let sim_map: HashMap<i64, f64> = msg_entries.iter().cloned().collect();
-        let placeholders: String = (1..=msg_entries.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT id, content, session_id, role, created_at FROM messages WHERE id IN ({})",
-            placeholders
-        );
-        let params: Vec<SqlValue> = msg_entries
-            .iter()
-            .map(|(id, _)| SqlValue::Integer(*id))
-            .collect();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })?;
-
-        for row in rows {
-            let (message_id, content, session_id, role, updated_at) = row?;
-            if let Some(sids) = session_ids {
-                if !sids.contains(&session_id.as_str()) {
-                    continue;
-                }
-            }
-            if let Some(&similarity) = sim_map.get(&message_id) {
-                vector_hits.push(VectorHit {
-                    id: format!("msg:{}", message_id),
-                    content,
-                    source: SearchSource::Message {
-                        message_id,
-                        session_id,
-                        role,
-                    },
-                    similarity,
-                    updated_at,
-                });
-            }
-        }
-    }
-
-    // Sort by similarity descending
-    vector_hits.sort_by(|a, b| {
+    hits.sort_by(|a, b| {
         b.similarity
             .partial_cmp(&a.similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.source_rank
+                    .unwrap_or(usize::MAX)
+                    .cmp(&b.source_rank.unwrap_or(usize::MAX))
+            })
     });
-    vector_hits.truncate(config.candidate_pool_size);
+    hits.truncate(config.candidate_pool_size);
+    Ok(hits)
+}
 
-    Ok(vector_hits)
+#[cfg(feature = "hnsw")]
+fn exact_similarity_from_blob(
+    query_embedding: &[f32],
+    blob: &[u8],
+) -> Result<Option<f64>, MemoryError> {
+    if blob.is_empty() {
+        return Ok(None);
+    }
+    let stored = crate::db::bytes_to_embedding(blob)?;
+    if stored.len() != query_embedding.len() {
+        return Ok(None);
+    }
+    Ok(Some(cosine_similarity(query_embedding, &stored) as f64))
+}
+
+#[cfg(feature = "hnsw")]
+#[allow(clippy::too_many_arguments)]
+fn build_ranked_vector_hit(
+    id: String,
+    content: String,
+    source: SearchSource,
+    updated_at: Option<String>,
+    embedding_blob: Option<Vec<u8>>,
+    seed: &HnswCandidateSeed,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+) -> Result<Option<VectorHit>, MemoryError> {
+    let similarity = if config.rerank_from_f32 {
+        match embedding_blob {
+            Some(blob) => exact_similarity_from_blob(query_embedding, &blob)?,
+            None => None,
+        }
+        .unwrap_or(seed.source_similarity)
+    } else {
+        seed.source_similarity
+    };
+
+    if similarity < config.min_similarity {
+        return Ok(None);
+    }
+
+    Ok(Some(VectorHit {
+        id,
+        content,
+        source,
+        similarity,
+        updated_at,
+        source_rank: Some(seed.source_rank),
+        source_similarity: Some(seed.source_similarity),
+        reranked_from_f32: config.rerank_from_f32,
+    }))
+}
+
+#[cfg(feature = "hnsw")]
+fn batch_load_fact_hits(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    entries: &HashMap<String, HnswCandidateSeed>,
+    output: &mut Vec<VectorHit>,
+) -> Result<(), MemoryError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = (1..=entries.len())
+        .map(|idx| format!("?{idx}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, content, namespace, updated_at, embedding
+         FROM facts
+         WHERE id IN ({placeholders})"
+    );
+    let params: Vec<SqlValue> = entries
+        .keys()
+        .map(|id| SqlValue::Text(id.clone()))
+        .collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<Vec<u8>>>(4)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (fact_id, content, namespace, updated_at, embedding_blob) = row?;
+        if let Some(filter) = namespaces {
+            if !filter.contains(&namespace.as_str()) {
+                continue;
+            }
+        }
+        if let Some(seed) = entries.get(&fact_id) {
+            if let Some(hit) = build_ranked_vector_hit(
+                format!("fact:{fact_id}"),
+                content,
+                SearchSource::Fact { fact_id, namespace },
+                updated_at,
+                embedding_blob,
+                seed,
+                query_embedding,
+                config,
+            )? {
+                output.push(hit);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "hnsw")]
+fn batch_load_chunk_hits(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    entries: &HashMap<String, HnswCandidateSeed>,
+    output: &mut Vec<VectorHit>,
+) -> Result<(), MemoryError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = (1..=entries.len())
+        .map(|idx| format!("?{idx}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT c.id, c.content, c.document_id, d.title, c.chunk_index, c.created_at, d.namespace, c.embedding
+         FROM chunks c
+         JOIN documents d ON d.id = c.document_id
+         WHERE c.id IN ({placeholders})"
+    );
+    let params: Vec<SqlValue> = entries
+        .keys()
+        .map(|id| SqlValue::Text(id.clone()))
+        .collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<Vec<u8>>>(7)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (
+            chunk_id,
+            content,
+            document_id,
+            document_title,
+            chunk_index,
+            updated_at,
+            namespace,
+            embedding_blob,
+        ) = row?;
+        if let Some(filter) = namespaces {
+            if !filter.contains(&namespace.as_str()) {
+                continue;
+            }
+        }
+        if let Some(seed) = entries.get(&chunk_id) {
+            if let Some(hit) = build_ranked_vector_hit(
+                format!("chunk:{chunk_id}"),
+                content,
+                SearchSource::Chunk {
+                    chunk_id,
+                    document_id,
+                    document_title,
+                    chunk_index: chunk_index as usize,
+                },
+                updated_at,
+                embedding_blob,
+                seed,
+                query_embedding,
+                config,
+            )? {
+                output.push(hit);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "hnsw")]
+fn batch_load_message_hits(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    session_ids: Option<&[&str]>,
+    entries: &HashMap<i64, HnswCandidateSeed>,
+    output: &mut Vec<VectorHit>,
+) -> Result<(), MemoryError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = (1..=entries.len())
+        .map(|idx| format!("?{idx}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, content, session_id, role, created_at, embedding
+         FROM messages
+         WHERE id IN ({placeholders})"
+    );
+    let params: Vec<SqlValue> = entries.keys().map(|id| SqlValue::Integer(*id)).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<Vec<u8>>>(5)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (message_id, content, session_id, role, updated_at, embedding_blob) = row?;
+        if let Some(filter) = session_ids {
+            if !filter.contains(&session_id.as_str()) {
+                continue;
+            }
+        }
+        if let Some(seed) = entries.get(&message_id) {
+            if let Some(hit) = build_ranked_vector_hit(
+                format!("msg:{message_id}"),
+                content,
+                SearchSource::Message {
+                    message_id,
+                    session_id,
+                    role,
+                },
+                updated_at,
+                embedding_blob,
+                seed,
+                query_embedding,
+                config,
+            )? {
+                output.push(hit);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "hnsw")]
+fn batch_load_episode_hits(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    entries: &HashMap<String, HnswCandidateSeed>,
+    output: &mut Vec<VectorHit>,
+) -> Result<(), MemoryError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = (1..=entries.len())
+        .map(|idx| format!("?{idx}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT e.episode_id, e.document_id, e.search_text, e.effect_type, e.outcome, e.updated_at, d.namespace, e.embedding
+         FROM episodes e
+         JOIN documents d ON d.id = e.document_id
+         WHERE e.episode_id IN ({placeholders})"
+    );
+    let params: Vec<SqlValue> = entries
+        .keys()
+        .map(|id| SqlValue::Text(id.clone()))
+        .collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<Vec<u8>>>(7)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (
+            episode_id,
+            document_id,
+            content,
+            effect_type,
+            outcome,
+            updated_at,
+            namespace,
+            embedding_blob,
+        ) = row?;
+        if let Some(filter) = namespaces {
+            if !filter.contains(&namespace.as_str()) {
+                continue;
+            }
+        }
+        if let Some(seed) = entries.get(&episode_id) {
+            if let Some(hit) = build_ranked_vector_hit(
+                episodes::episode_item_key(&episode_id),
+                content,
+                SearchSource::Episode {
+                    episode_id,
+                    document_id,
+                    effect_type,
+                    outcome,
+                },
+                updated_at,
+                embedding_blob,
+                seed,
+                query_embedding,
+                config,
+            )? {
+                output.push(hit);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform a hybrid search using pre-computed HNSW hits for the vector component.
+#[cfg(feature = "hnsw")]
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_search_with_hnsw(
+    conn: &Connection,
+    query: &str,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+    hnsw_hits: &[crate::hnsw::HnswHit],
+) -> Result<Vec<SearchResult>, MemoryError> {
+    Ok(hybrid_search_with_hnsw_detailed(
+        conn,
+        query,
+        query_embedding,
+        config,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
+    )?
+    .into_iter()
+    .map(|result| result.result)
+    .collect())
+}
+
+#[cfg(feature = "hnsw")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hybrid_search_with_hnsw_detailed(
+    conn: &Connection,
+    query: &str,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+    hnsw_hits: &[crate::hnsw::HnswHit],
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    let bm25_hits = match sanitize_fts_query(query) {
+        Some(sanitized) => bm25_search(
+            conn,
+            &sanitized,
+            config.candidate_pool_size,
+            namespaces,
+            source_types,
+            session_ids,
+        )?,
+        None => Vec::new(),
+    };
+
+    let vector_hits = resolve_hnsw_hits_batched(
+        conn,
+        query_embedding,
+        config,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
+    )?;
+
+    Ok(rrf_fuse_detailed(&bm25_hits, &vector_hits, config, top_k))
+}
+
+/// Perform a hybrid HNSW-backed search and return the exact score decomposition.
+#[cfg(feature = "hnsw")]
+#[allow(clippy::too_many_arguments)]
+pub fn hybrid_search_explained_with_hnsw(
+    conn: &Connection,
+    query: &str,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+    hnsw_hits: &[crate::hnsw::HnswHit],
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    hybrid_search_with_hnsw_detailed(
+        conn,
+        query,
+        query_embedding,
+        config,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
+    )
+}
+
+pub(crate) fn fts_only_search_detailed(
+    conn: &Connection,
+    query: &str,
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    let sanitized = match sanitize_fts_query(query) {
+        Some(value) => value,
+        None => return Ok(Vec::new()),
+    };
+    let bm25_hits = bm25_search(
+        conn,
+        &sanitized,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+    )?;
+    Ok(rrf_fuse_detailed(&bm25_hits, &[], config, top_k))
 }
 
 /// Full-text search only (no embeddings needed). Synchronous.
@@ -899,34 +1440,39 @@ pub fn fts_only_search(
     source_types: Option<&[SearchSourceType]>,
     session_ids: Option<&[&str]>,
 ) -> Result<Vec<SearchResult>, MemoryError> {
-    let sanitized = match sanitize_fts_query(query) {
-        Some(s) => s,
-        None => return Ok(Vec::new()),
-    };
-
-    let hits = bm25_search(
+    Ok(fts_only_search_detailed(
         conn,
-        &sanitized,
+        query,
+        config,
         top_k,
         namespaces,
         source_types,
         session_ids,
+    )?
+    .into_iter()
+    .map(|result| result.result)
+    .collect())
+}
+
+pub(crate) fn vector_only_search_detailed(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    let vector_hits = vector_search(
+        conn,
+        query_embedding,
+        top_k,
+        config.min_similarity,
+        namespaces,
+        source_types,
+        session_ids,
     )?;
-
-    let results: Vec<SearchResult> = hits
-        .into_iter()
-        .enumerate()
-        .map(|(rank_0, hit)| SearchResult {
-            content: hit.content,
-            source: hit.source,
-            score: config.bm25_weight / (config.rrf_k + (rank_0 + 1) as f64),
-            bm25_rank: Some(rank_0 + 1),
-            vector_rank: None,
-            cosine_similarity: None,
-        })
-        .collect();
-
-    Ok(deduplicate_results(results))
+    Ok(rrf_fuse_detailed(&[], &vector_hits, config, top_k))
 }
 
 /// Vector-only search. Called after embedding the query.
@@ -939,39 +1485,26 @@ pub fn vector_only_search(
     source_types: Option<&[SearchSourceType]>,
     session_ids: Option<&[&str]>,
 ) -> Result<Vec<SearchResult>, MemoryError> {
-    let hits = vector_search(
+    Ok(vector_only_search_detailed(
         conn,
         query_embedding,
+        config,
         top_k,
-        config.min_similarity,
         namespaces,
         source_types,
         session_ids,
-    )?;
-
-    let results: Vec<SearchResult> = hits
-        .into_iter()
-        .enumerate()
-        .map(|(rank_0, hit)| SearchResult {
-            content: hit.content,
-            source: hit.source,
-            score: config.vector_weight / (config.rrf_k + (rank_0 + 1) as f64),
-            bm25_rank: None,
-            vector_rank: Some(rank_0 + 1),
-            cosine_similarity: Some(hit.similarity),
-        })
-        .collect();
-
-    Ok(deduplicate_results(results))
+    )?
+    .into_iter()
+    .map(|result| result.result)
+    .collect())
 }
 
 /// Vector-only search using pre-computed HNSW hits.
-///
-/// Skips BM25 entirely. Uses batched SQL lookups via `resolve_hnsw_hits_batched`.
 #[cfg(feature = "hnsw")]
 #[allow(clippy::too_many_arguments)]
 pub fn vector_only_search_with_hnsw(
     conn: &Connection,
+    query_embedding: &[f32],
     config: &SearchConfig,
     top_k: usize,
     namespaces: Option<&[&str]>,
@@ -979,73 +1512,71 @@ pub fn vector_only_search_with_hnsw(
     session_ids: Option<&[&str]>,
     hnsw_hits: &[crate::hnsw::HnswHit],
 ) -> Result<Vec<SearchResult>, MemoryError> {
-    let mut vector_hits = resolve_hnsw_hits_batched(
+    Ok(vector_only_search_with_hnsw_detailed(
         conn,
+        query_embedding,
+        config,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+        hnsw_hits,
+    )?
+    .into_iter()
+    .map(|result| result.result)
+    .collect())
+}
+
+#[cfg(feature = "hnsw")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vector_only_search_with_hnsw_detailed(
+    conn: &Connection,
+    query_embedding: &[f32],
+    config: &SearchConfig,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+    hnsw_hits: &[crate::hnsw::HnswHit],
+) -> Result<Vec<ExplainedResult>, MemoryError> {
+    let vector_hits = resolve_hnsw_hits_batched(
+        conn,
+        query_embedding,
         config,
         namespaces,
         source_types,
         session_ids,
         hnsw_hits,
     )?;
-    vector_hits.truncate(top_k);
-
-    let results: Vec<SearchResult> = vector_hits
-        .into_iter()
-        .enumerate()
-        .map(|(rank_0, hit)| SearchResult {
-            content: hit.content,
-            source: hit.source,
-            score: config.vector_weight / (config.rrf_k + (rank_0 + 1) as f64),
-            bm25_rank: None,
-            vector_rank: Some(rank_0 + 1),
-            cosine_similarity: Some(hit.similarity),
-        })
-        .collect();
-
-    Ok(deduplicate_results(results))
+    Ok(rrf_fuse_detailed(&[], &vector_hits, config, top_k))
 }
 
-/// Extract a dedupe key from a search source: (source type discriminant, primary ID).
-///
-/// This preserves provenance — the same text in a fact and a chunk are kept,
-/// but the same source appearing via both BM25 and vector paths is deduplicated.
-fn source_dedup_key(source: &SearchSource) -> (u8, String) {
-    match source {
-        SearchSource::Fact { fact_id, .. } => (0, fact_id.clone()),
-        SearchSource::Chunk { chunk_id, .. } => (1, chunk_id.clone()),
-        SearchSource::Message { message_id, .. } => (2, message_id.to_string()),
-        SearchSource::Episode { document_id, .. } => (3, document_id.clone()),
+fn build_filter_clause(
+    column: &str,
+    values: Option<&[&str]>,
+    param_offset: usize,
+) -> (String, Vec<SqlValue>) {
+    match values {
+        Some(values) if !values.is_empty() => {
+            let placeholders = (0..values.len())
+                .map(|idx| format!("?{}", param_offset + idx))
+                .collect::<Vec<_>>();
+            let clause = format!(" AND {} IN ({})", column, placeholders.join(", "));
+            let params = values
+                .iter()
+                .map(|value| SqlValue::Text((*value).to_string()))
+                .collect();
+            (clause, params)
+        }
+        _ => (String::new(), Vec::new()),
     }
 }
 
-/// Deduplicate results by (source_type, source_id), keeping the first (highest-scored) occurrence.
-fn deduplicate_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
+/// Deduplicate results by (source_type, source_id), keeping the first occurrence.
+pub fn deduplicate_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut seen = HashSet::new();
     results
         .into_iter()
-        .filter(|r| seen.insert(source_dedup_key(&r.source)))
+        .filter(|result| seen.insert(source_dedup_key(&result.source)))
         .collect()
-}
-
-/// Build a parameterized namespace filter SQL fragment.
-///
-/// Returns a tuple of (SQL clause, parameter values). The `param_offset` sets
-/// the starting numbered placeholder (e.g., if existing query uses ?1 and ?2,
-/// pass `param_offset = 3`).
-fn build_namespace_clause(
-    column: &str,
-    namespaces: Option<&[&str]>,
-    param_offset: usize,
-) -> (String, Vec<SqlValue>) {
-    match namespaces {
-        Some(ns) if !ns.is_empty() => {
-            let placeholders: Vec<String> = (0..ns.len())
-                .map(|i| format!("?{}", param_offset + i))
-                .collect();
-            let clause = format!("AND {} IN ({})", column, placeholders.join(", "));
-            let values: Vec<SqlValue> = ns.iter().map(|n| SqlValue::Text(n.to_string())).collect();
-            (clause, values)
-        }
-        _ => (String::new(), vec![]),
-    }
 }

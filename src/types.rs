@@ -1,5 +1,56 @@
+#![allow(deprecated)]
+
 use crate::error::MemoryError;
 use serde::{Deserialize, Serialize};
+use stack_ids::{
+    ClaimId, ClaimVersionId, EntityId, EnvelopeId, EpisodeId, RelationVersionId, ScopeKey,
+};
+
+/// Stable trace identifier used for cross-crate correlation and auditability.
+///
+/// ## Phase status: compatibility / migration-only
+///
+/// This is a crate-local `TraceId` retained for backward compatibility.
+/// The canonical replacement is `stack_ids::TraceCtx`. Use
+/// `TraceCtx::from_legacy_trace_id()` to convert.
+///
+/// **Removal condition**: removed when all internal usage migrates to `TraceCtx`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CompatTraceId(pub String);
+
+#[deprecated(since = "0.5.0", note = "Use stack_ids::TraceCtx instead")]
+pub type TraceId = CompatTraceId;
+
+impl CompatTraceId {
+    /// Create a trace ID from any owned string-like input.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the trace ID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CompatTraceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<String> for CompatTraceId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for CompatTraceId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
 
 /// Role of a message in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +114,167 @@ pub enum SearchSourceType {
     Messages,
     /// Result is from the episodes table.
     Episodes,
+}
+
+/// Common filter surface for imported projection queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionQuery {
+    /// Full scope to enforce.
+    pub scope: ScopeKey,
+    /// Optional free-text query applied to the projection's searchable fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_query: Option<String>,
+    /// Valid-time as-of filter for versioned projection rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_at: Option<String>,
+    /// Transaction-time cutoff for imported rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at_or_before: Option<String>,
+    /// Optional subject-entity filter for claim/relation queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_entity_id: Option<EntityId>,
+    /// Optional canonical-entity filter for alias queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_entity_id: Option<EntityId>,
+    /// Optional claim-state filter for claim-version queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_state: Option<String>,
+    /// Optional claim filter for claim/evidence queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_id: Option<ClaimId>,
+    /// Optional claim-version filter for evidence queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_version_id: Option<ClaimVersionId>,
+    /// Final result limit.
+    pub limit: usize,
+}
+
+impl ProjectionQuery {
+    pub fn new(scope: ScopeKey) -> Self {
+        Self {
+            scope,
+            text_query: None,
+            valid_at: None,
+            recorded_at_or_before: None,
+            subject_entity_id: None,
+            canonical_entity_id: None,
+            claim_state: None,
+            claim_id: None,
+            claim_version_id: None,
+            limit: 10,
+        }
+    }
+}
+
+/// Public read shape for imported claim projection rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionClaimVersion {
+    pub claim_version_id: ClaimVersionId,
+    pub claim_id: ClaimId,
+    pub claim_state: String,
+    pub projection_family: String,
+    pub subject_entity_id: EntityId,
+    pub predicate: String,
+    pub object_anchor: serde_json::Value,
+    pub scope_key: ScopeKey,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub recorded_at: String,
+    pub preferred_open: bool,
+    pub source_envelope_id: EnvelopeId,
+    pub source_authority: String,
+    pub trace_id: Option<String>,
+    pub freshness: String,
+    pub contradiction_status: String,
+    pub supersedes_claim_version_id: Option<ClaimVersionId>,
+    pub content: String,
+    pub confidence: f32,
+    pub metadata: Option<serde_json::Value>,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
+}
+
+/// Public read shape for imported relation projection rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionRelationVersion {
+    pub relation_version_id: RelationVersionId,
+    pub subject_entity_id: EntityId,
+    pub predicate: String,
+    pub object_anchor: serde_json::Value,
+    pub scope_key: ScopeKey,
+    pub claim_id: Option<ClaimId>,
+    pub source_episode_id: Option<EpisodeId>,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub recorded_at: String,
+    pub preferred_open: bool,
+    pub supersedes_relation_version_id: Option<RelationVersionId>,
+    pub contradiction_status: String,
+    pub source_confidence: f32,
+    pub projection_family: String,
+    pub source_envelope_id: EnvelopeId,
+    pub source_authority: String,
+    pub trace_id: Option<String>,
+    pub freshness: String,
+    pub metadata: Option<serde_json::Value>,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
+}
+
+/// Public read shape for imported episode projection rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionEpisode {
+    pub episode_id: EpisodeId,
+    pub document_id: String,
+    pub cause_ids: Vec<String>,
+    pub effect_type: String,
+    pub outcome: String,
+    pub confidence: f32,
+    pub experiment_id: Option<String>,
+    pub scope_key: ScopeKey,
+    pub source_envelope_id: EnvelopeId,
+    pub source_authority: String,
+    pub trace_id: Option<String>,
+    pub recorded_at: String,
+    pub metadata: Option<serde_json::Value>,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
+}
+
+/// Public read shape for imported entity-alias rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionEntityAlias {
+    pub canonical_entity_id: EntityId,
+    pub alias_text: String,
+    pub alias_source: String,
+    pub match_evidence: Option<serde_json::Value>,
+    pub confidence: f32,
+    pub merge_decision: String,
+    pub scope_key: ScopeKey,
+    pub review_state: String,
+    pub is_human_confirmed: bool,
+    pub is_human_confirmed_final: bool,
+    pub superseded_by_entity_id: Option<EntityId>,
+    pub split_from_entity_id: Option<EntityId>,
+    pub source_envelope_id: EnvelopeId,
+    pub recorded_at: String,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
+}
+
+/// Public read shape for imported evidence-reference rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionEvidenceRef {
+    pub claim_id: ClaimId,
+    pub claim_version_id: Option<ClaimVersionId>,
+    pub fetch_handle: String,
+    pub source_authority: String,
+    pub source_envelope_id: EnvelopeId,
+    pub scope_key: ScopeKey,
+    pub recorded_at: String,
+    pub metadata: Option<serde_json::Value>,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
 }
 
 /// A conversation session.
@@ -204,12 +416,34 @@ pub enum SearchSource {
     },
     /// Result came from an episode (causal record). SearchSource::Episode variant.
     Episode {
+        /// First-class episode identity (V9+). Falls back to `document_id + "-ep0"`
+        /// for legacy data.
+        episode_id: String,
         /// Document ID the episode is attached to.
         document_id: String,
         /// Type of effect (e.g. "test_failure", "regression").
         effect_type: String,
         /// Current outcome.
         outcome: String,
+    },
+    /// Result came from an imported projection row.
+    Projection {
+        /// Projection row family, such as `claim_version` or `relation_version`.
+        projection_kind: String,
+        /// Stable projection-row identity.
+        projection_id: String,
+        /// Full scope carried by the imported row.
+        scope_key: ScopeKey,
+        /// Validity start for versioned projections, if any.
+        valid_from: Option<String>,
+        /// Validity end for versioned projections, if any.
+        valid_to: Option<String>,
+        /// Authoritative importer-assigned recorded_at.
+        recorded_at: String,
+        /// Source envelope provenance.
+        source_envelope_id: String,
+        /// Source authority provenance.
+        source_authority: String,
     },
 }
 
@@ -304,16 +538,34 @@ pub enum VerificationStatus {
 pub struct ScoreBreakdown {
     /// Final fused RRF score.
     pub rrf_score: f64,
-    /// BM25 component score (if this result appeared in BM25 results).
+    /// Raw BM25 score reported by SQLite FTS5 (lower is better).
     pub bm25_score: Option<f64>,
-    /// Vector similarity component score.
+    /// Raw vector similarity used for the final vector ordering.
     pub vector_score: Option<f64>,
-    /// Recency boost component score.
+    /// Recency contribution added during fusion.
     pub recency_score: Option<f64>,
     /// BM25 rank (1-based).
     pub bm25_rank: Option<usize>,
     /// Vector rank (1-based).
     pub vector_rank: Option<usize>,
+    /// Rank from the underlying vector retrieval source before any exact rerank.
+    pub vector_source_rank: Option<usize>,
+    /// Similarity score from the underlying vector retrieval source before rerank.
+    pub vector_source_score: Option<f64>,
+    /// BM25 RRF contribution to the final score.
+    pub bm25_contribution: Option<f64>,
+    /// Vector RRF contribution to the final score.
+    pub vector_contribution: Option<f64>,
+    /// Whether the vector ordering was reranked with exact f32 cosine similarity.
+    pub vector_reranked_from_f32: bool,
+    /// Configured BM25 fusion weight.
+    pub bm25_weight: f64,
+    /// Configured vector fusion weight.
+    pub vector_weight: f64,
+    /// Configured recency weight when recency is enabled.
+    pub recency_weight: Option<f64>,
+    /// Configured RRF decay constant.
+    pub rrf_k: f64,
 }
 
 /// Search result with full score explanation.

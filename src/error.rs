@@ -101,6 +101,62 @@ pub enum MemoryError {
         limit: usize,
     },
 
+    /// The configured database size ceiling would be exceeded by a new write.
+    #[error("Database size limit exceeded: current footprint is {current} bytes, limit is {limit} bytes")]
+    DatabaseSizeLimitExceeded {
+        /// Current observed database footprint in bytes.
+        current: u64,
+        /// Configured limit in bytes.
+        limit: u64,
+    },
+
+    /// Episode with the given ID does not exist.
+    #[error("Episode not found: {0}")]
+    EpisodeNotFound(String),
+
+    /// Connection pool reader acquisition timed out.
+    #[error("Pool reader acquisition timed out after {elapsed_ms}ms (pool size: {pool_size})")]
+    PoolTimeout {
+        /// How long the caller waited before giving up.
+        elapsed_ms: u64,
+        /// Number of reader slots in the pool.
+        pool_size: usize,
+    },
+
+    /// Configuration could not be normalized into a valid runtime state.
+    #[error("Invalid configuration for '{field}': {reason}")]
+    InvalidConfig {
+        /// The config field or section that failed validation.
+        field: &'static str,
+        /// Human-readable explanation of the invalid value.
+        reason: String,
+    },
+
+    /// Stored data is malformed or internally inconsistent.
+    #[error("Corrupt data in {table} ({row_id}): {detail}")]
+    CorruptData {
+        /// Table or logical collection containing the bad row.
+        table: &'static str,
+        /// Primary key / row identifier for the corrupt record.
+        row_id: String,
+        /// Human-readable description of the corruption.
+        detail: String,
+    },
+
+    /// Import envelope is structurally invalid.
+    #[error("Invalid import envelope: {reason}")]
+    ImportInvalid {
+        /// What is wrong with the envelope.
+        reason: String,
+    },
+
+    /// Import envelope has already been ingested (idempotent duplicate).
+    #[error("Import envelope already ingested: {envelope_id}")]
+    ImportDuplicate {
+        /// The duplicate envelope ID.
+        envelope_id: String,
+    },
+
     /// Catch-all for other errors.
     #[error("{0}")]
     Other(String),
@@ -118,6 +174,8 @@ impl MemoryError {
             Self::SessionNotFound(_) => "session_not_found",
             Self::FactNotFound(_) => "fact_not_found",
             Self::DocumentNotFound(_) => "document_not_found",
+            Self::EpisodeNotFound(_) => "episode_not_found",
+            Self::PoolTimeout { .. } => "pool_timeout",
             Self::EmbedderUnavailable(_) => "embedder_unavailable",
             Self::MigrationFailed { .. } => "migration_failed",
             Self::HnswError(_) => "hnsw_error",
@@ -128,6 +186,11 @@ impl MemoryError {
             Self::SchemaAhead { .. } => "schema_ahead",
             Self::ContentTooLarge { .. } => "content_too_large",
             Self::NamespaceFull { .. } => "namespace_full",
+            Self::DatabaseSizeLimitExceeded { .. } => "database_size_limit_exceeded",
+            Self::InvalidConfig { .. } => "invalid_config",
+            Self::CorruptData { .. } => "corrupt_data",
+            Self::ImportInvalid { .. } => "import_invalid",
+            Self::ImportDuplicate { .. } => "import_duplicate",
             Self::Other(_) => "other",
         }
     }

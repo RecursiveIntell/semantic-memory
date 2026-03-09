@@ -1,3 +1,4 @@
+use crate::error::MemoryError;
 use crate::tokenizer::TokenCounter;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -71,6 +72,26 @@ impl Default for MemoryConfig {
     }
 }
 
+impl MemoryConfig {
+    /// Normalize and validate configuration into a concrete runtime shape.
+    ///
+    /// This is the single canonical config entry point used by store creation.
+    pub fn normalize_and_validate(mut self) -> Result<Self, MemoryError> {
+        self.embedding.normalize_and_validate()?;
+        self.limits = self.limits.normalize_and_validate()?;
+        let timeout_cap_secs = self.limits.embedding_timeout.as_secs().max(1);
+        self.embedding.timeout_secs = self.embedding.timeout_secs.min(timeout_cap_secs);
+        self.search.normalize_and_validate()?;
+        self.chunking.normalize_and_validate()?;
+        self.pool.normalize_and_validate()?;
+        #[cfg(feature = "hnsw")]
+        {
+            self.hnsw.dimensions = self.embedding.dimensions;
+        }
+        Ok(self)
+    }
+}
+
 /// Embedding provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
@@ -99,6 +120,24 @@ impl Default for EmbeddingConfig {
             batch_size: 32,
             timeout_secs: 30,
         }
+    }
+}
+
+impl EmbeddingConfig {
+    fn normalize_and_validate(&mut self) -> Result<(), MemoryError> {
+        if self.dimensions == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "embedding.dimensions",
+                reason: "dimensions must be at least 1".to_string(),
+            });
+        }
+        if self.batch_size == 0 {
+            self.batch_size = 1;
+        }
+        if self.timeout_secs == 0 {
+            self.timeout_secs = 1;
+        }
+        Ok(())
     }
 }
 
@@ -157,6 +196,61 @@ impl Default for SearchConfig {
     }
 }
 
+impl SearchConfig {
+    fn normalize_and_validate(&mut self) -> Result<(), MemoryError> {
+        if self.candidate_pool_size == 0 {
+            self.candidate_pool_size = 1;
+        }
+        if self.default_top_k == 0 {
+            self.default_top_k = 1;
+        }
+        self.candidate_pool_size = self.candidate_pool_size.max(self.default_top_k);
+        if !self.rrf_k.is_finite() || self.rrf_k <= 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.rrf_k",
+                reason: "rrf_k must be finite and > 0".to_string(),
+            });
+        }
+        if !self.bm25_weight.is_finite() || self.bm25_weight < 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.bm25_weight",
+                reason: "bm25_weight must be finite and >= 0".to_string(),
+            });
+        }
+        if !self.vector_weight.is_finite() || self.vector_weight < 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.vector_weight",
+                reason: "vector_weight must be finite and >= 0".to_string(),
+            });
+        }
+        if !self.recency_weight.is_finite() || self.recency_weight < 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.recency_weight",
+                reason: "recency_weight must be finite and >= 0".to_string(),
+            });
+        }
+        if !self.min_similarity.is_finite() || !(-1.0..=1.0).contains(&self.min_similarity) {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.min_similarity",
+                reason: "min_similarity must be finite and within [-1.0, 1.0]".to_string(),
+            });
+        }
+        if matches!(self.recency_half_life_days, Some(v) if !v.is_finite()) {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.recency_half_life_days",
+                reason: "recency_half_life_days must be finite".to_string(),
+            });
+        }
+        if matches!(self.recency_half_life_days, Some(v) if v <= 0.0) {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.recency_half_life_days",
+                reason: "recency_half_life_days must be > 0 when enabled".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Text chunking parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkingConfig {
@@ -184,6 +278,36 @@ impl Default for ChunkingConfig {
     }
 }
 
+impl ChunkingConfig {
+    fn normalize_and_validate(&mut self) -> Result<(), MemoryError> {
+        if self.min_size == 0 {
+            self.min_size = 1;
+        }
+        if self.max_size == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "chunking.max_size",
+                reason: "max_size must be at least 1".to_string(),
+            });
+        }
+        if self.max_size < self.min_size {
+            return Err(MemoryError::InvalidConfig {
+                field: "chunking.max_size",
+                reason: "max_size must be >= min_size".to_string(),
+            });
+        }
+        if self.target_size < self.min_size {
+            self.target_size = self.min_size;
+        }
+        if self.target_size > self.max_size {
+            self.target_size = self.max_size;
+        }
+        if self.overlap >= self.max_size {
+            self.overlap = self.max_size.saturating_sub(1);
+        }
+        Ok(())
+    }
+}
+
 /// Connection pool configuration for SQLite.
 ///
 /// Controls busy timeout and WAL checkpoint behavior. These defaults
@@ -201,6 +325,16 @@ pub struct PoolConfig {
     /// Enable WAL mode. Should almost always be true.
     /// Default: true.
     pub enable_wal: bool,
+
+    /// Number of reader connections kept in the pool.
+    /// Writes still flow through a single writer connection because SQLite
+    /// allows only one concurrent writer, but readers can proceed concurrently
+    /// under WAL semantics.
+    pub max_read_connections: usize,
+
+    /// Timeout in seconds for acquiring a reader connection from the pool.
+    /// Default: 30 seconds.
+    pub reader_timeout_secs: u64,
 }
 
 impl Default for PoolConfig {
@@ -209,7 +343,30 @@ impl Default for PoolConfig {
             busy_timeout_ms: 5000,
             wal_autocheckpoint: 1000,
             enable_wal: true,
+            max_read_connections: 4,
+            reader_timeout_secs: 30,
         }
+    }
+}
+
+impl PoolConfig {
+    fn normalize_and_validate(&mut self) -> Result<(), MemoryError> {
+        if self.busy_timeout_ms == 0 {
+            self.busy_timeout_ms = 1;
+        }
+        if self.wal_autocheckpoint == 0 {
+            self.wal_autocheckpoint = 1;
+        }
+        if self.max_read_connections == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "pool.max_read_connections",
+                reason: "at least one reader connection is required".to_string(),
+            });
+        }
+        if self.reader_timeout_secs == 0 {
+            self.reader_timeout_secs = 1;
+        }
+        Ok(())
     }
 }
 
@@ -260,8 +417,26 @@ impl Default for MemoryLimits {
 }
 
 impl MemoryLimits {
-    /// Validate and clamp limits to hard caps.
-    pub fn validated(mut self) -> Self {
+    /// Normalize and validate limits to hard caps.
+    pub fn normalize_and_validate(mut self) -> Result<Self, MemoryError> {
+        if self.max_facts_per_namespace == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "limits.max_facts_per_namespace",
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if self.max_chunks_per_document == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "limits.max_chunks_per_document",
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if self.max_content_bytes == 0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "limits.max_content_bytes",
+                reason: "must be at least 1".to_string(),
+            });
+        }
         // Hard cap: concurrency at 32
         if self.max_embedding_concurrency > 32 {
             self.max_embedding_concurrency = 32;
@@ -269,7 +444,33 @@ impl MemoryLimits {
         if self.max_embedding_concurrency == 0 {
             self.max_embedding_concurrency = 1;
         }
-        self
+        if self.embedding_timeout.is_zero() {
+            self.embedding_timeout = Duration::from_secs(1);
+        }
+        Ok(self)
+    }
+
+    /// Backward-compatible alias for callers that only need clamped limits.
+    ///
+    /// Falls back to defaults if the caller-provided limits are invalid.
+    /// Default limits are infallible so the fallback path cannot fail.
+    pub fn validated(self) -> Self {
+        self.normalize_and_validate().unwrap_or_else(|_| {
+            // Default limits are always valid — this path is infallible.
+            let defaults = Self::default();
+            Self {
+                max_facts_per_namespace: defaults.max_facts_per_namespace,
+                max_chunks_per_document: defaults.max_chunks_per_document,
+                max_content_bytes: defaults.max_content_bytes,
+                max_embedding_concurrency: defaults.max_embedding_concurrency.clamp(1, 32),
+                max_db_size_bytes: defaults.max_db_size_bytes,
+                embedding_timeout: if defaults.embedding_timeout.is_zero() {
+                    std::time::Duration::from_secs(1)
+                } else {
+                    defaults.embedding_timeout
+                },
+            }
+        })
     }
 }
 

@@ -54,10 +54,10 @@ async fn embedded_message_is_searchable() {
     }
 }
 
-// ─── Test 2: Non-embedded message is invisible ──────────────
+// ─── Test 2: Plain messages are searchable via FTS ──────────
 
 #[tokio::test]
-async fn non_embedded_message_invisible_to_search() {
+async fn non_embedded_message_is_searchable_via_fts() {
     let (store, _tmp) = test_store();
 
     let session_id = store.create_session("test").await.unwrap();
@@ -79,9 +79,10 @@ async fn non_embedded_message_invisible_to_search() {
 
     assert_eq!(
         results.len(),
-        0,
-        "Non-embedded messages should not appear in search"
+        1,
+        "Plain messages should be searchable via FTS"
     );
+    assert!(results[0].content.contains("quantum computing"));
 }
 
 // ─── Test 3: Session ID filtering ───────────────────────────

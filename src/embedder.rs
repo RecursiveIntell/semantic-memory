@@ -48,19 +48,37 @@ pub struct OllamaEmbedder {
 
 impl OllamaEmbedder {
     /// Create a new OllamaEmbedder from config.
-    pub fn new(config: &EmbeddingConfig) -> Self {
+    ///
+    /// Returns an error if the HTTP client cannot be constructed (e.g. TLS backend
+    /// is unavailable).
+    pub fn try_new(config: &EmbeddingConfig) -> Result<Self, MemoryError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
-            .expect("Failed to build reqwest client");
+            .map_err(|e| {
+                MemoryError::EmbedderUnavailable(format!("failed to build HTTP client: {e}"))
+            })?;
 
-        Self {
+        Ok(Self {
             client,
             base_url: config.ollama_url.trim_end_matches('/').to_string(),
             model: config.model.clone(),
             dimensions: config.dimensions,
             batch_size: config.batch_size,
-        }
+        })
+    }
+
+    /// Create a new OllamaEmbedder from config.
+    ///
+    /// # Deprecated
+    /// Use [`try_new`](Self::try_new) instead. This method panics if the HTTP
+    /// client cannot be constructed.
+    #[deprecated(
+        since = "0.5.0",
+        note = "Use OllamaEmbedder::try_new() which returns Result"
+    )]
+    pub fn new(config: &EmbeddingConfig) -> Self {
+        Self::try_new(config).expect("Failed to build reqwest client")
     }
 }
 

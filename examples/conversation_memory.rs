@@ -1,7 +1,7 @@
 //! Conversation memory example.
 //!
-//! Creates a session, adds messages, and retrieves with token budget.
-//! Does NOT require Ollama — conversation features use MockEmbedder.
+//! Creates a session, stores message embeddings locally with MockEmbedder, retrieves messages
+//! within a token budget, and runs conversation search.
 //!
 //! Run: `cargo run --example conversation_memory`
 
@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    // Use MockEmbedder since we don't need real embeddings for conversations
+    // Use MockEmbedder so the default `add_message()` path can embed and index messages locally.
     let store = MemoryStore::open_with_embedder(config, Box::new(MockEmbedder::new(768)))?;
 
     // Create a session
@@ -77,6 +77,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Token count
     let total = store.session_token_count(&session_id).await?;
     println!("\nTotal session tokens: {}", total);
+
+    // Search the conversation using the hybrid message search path.
+    let session_scope = [session_id.as_str()];
+    let hits = store
+        .search_conversations(
+            "memory errors at compile time",
+            Some(3),
+            Some(&session_scope),
+        )
+        .await?;
+    println!("\nConversation search:");
+    for hit in &hits {
+        println!("  [score: {:.4}] {}", hit.score, truncate(&hit.content, 60));
+    }
 
     // List sessions
     let sessions = store.list_sessions(10, 0).await?;

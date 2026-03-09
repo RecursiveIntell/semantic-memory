@@ -175,6 +175,54 @@ async fn test_limit_content_too_large_message() {
 }
 
 #[tokio::test]
+async fn test_limit_content_too_large_message_fts() {
+    let dir = TempDir::new().unwrap();
+    let mut config = test_config(&dir);
+    config.limits.max_content_bytes = 32;
+    let embedder = Box::new(MockEmbedder::new(config.embedding.dimensions));
+    let store = MemoryStore::open_with_embedder(config, embedder).unwrap();
+
+    let session_id = store.create_session("test").await.unwrap();
+    let big_content = "z".repeat(64);
+    let result = store
+        .add_message_fts(&session_id, Role::User, &big_content, None, None)
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), "content_too_large");
+}
+
+#[tokio::test]
+async fn test_limit_content_too_large_fact_with_embedding() {
+    let dir = TempDir::new().unwrap();
+    let mut config = test_config(&dir);
+    config.limits.max_content_bytes = 16;
+    let embedder = Box::new(MockEmbedder::new(config.embedding.dimensions));
+    let store = MemoryStore::open_with_embedder(config, embedder).unwrap();
+
+    let embedding = vec![0.1; 768];
+    let result = store
+        .add_fact_with_embedding("test", "this string is too large", &embedding, None, None)
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), "content_too_large");
+}
+
+#[tokio::test]
+async fn test_limit_content_too_large_document() {
+    let dir = TempDir::new().unwrap();
+    let mut config = test_config(&dir);
+    config.limits.max_content_bytes = 64;
+    let embedder = Box::new(MockEmbedder::new(config.embedding.dimensions));
+    let store = MemoryStore::open_with_embedder(config, embedder).unwrap();
+
+    let result = store
+        .ingest_document("Too Big", &"a".repeat(128), "docs", None, None)
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), "content_too_large");
+}
+
+#[tokio::test]
 async fn test_limit_namespace_full() {
     let dir = TempDir::new().unwrap();
     let mut config = test_config(&dir);

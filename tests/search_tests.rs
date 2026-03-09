@@ -1,4 +1,6 @@
 use semantic_memory::search::{cosine_similarity, sanitize_fts_query};
+#[cfg(feature = "testing")]
+use semantic_memory::SearchSource;
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType};
 use tempfile::TempDir;
 
@@ -121,18 +123,21 @@ fn rrf_fusion_order() {
             id: "A".to_string(),
             content: "content A".to_string(),
             source: make_fact_source("A"),
+            raw_score: 0.1,
             updated_at: None,
         },
         Bm25Hit {
             id: "B".to_string(),
             content: "content B".to_string(),
             source: make_fact_source("B"),
+            raw_score: 0.2,
             updated_at: None,
         },
         Bm25Hit {
             id: "C".to_string(),
             content: "content C".to_string(),
             source: make_fact_source("C"),
+            raw_score: 0.3,
             updated_at: None,
         },
     ];
@@ -144,6 +149,9 @@ fn rrf_fusion_order() {
             source: make_fact_source("B"),
             similarity: 0.9,
             updated_at: None,
+            source_rank: Some(1),
+            source_similarity: Some(0.9),
+            reranked_from_f32: false,
         },
         VectorHit {
             id: "D".to_string(),
@@ -151,6 +159,9 @@ fn rrf_fusion_order() {
             source: make_fact_source("D"),
             similarity: 0.8,
             updated_at: None,
+            source_rank: Some(2),
+            source_similarity: Some(0.8),
+            reranked_from_f32: false,
         },
         VectorHit {
             id: "A".to_string(),
@@ -158,6 +169,9 @@ fn rrf_fusion_order() {
             source: make_fact_source("A"),
             similarity: 0.7,
             updated_at: None,
+            source_rank: Some(3),
+            source_similarity: Some(0.7),
+            reranked_from_f32: false,
         },
     ];
 
@@ -174,6 +188,7 @@ fn rrf_fusion_order() {
             SearchSource::Chunk { chunk_id, .. } => chunk_id.clone(),
             SearchSource::Message { message_id, .. } => message_id.to_string(),
             SearchSource::Episode { document_id, .. } => document_id.clone(),
+            SearchSource::Projection { projection_id, .. } => projection_id.clone(),
         })
         .collect();
 
@@ -554,25 +569,23 @@ async fn recency_boosts_recent_facts() {
 }
 
 #[tokio::test]
-async fn recency_zero_half_life_no_panic() {
-    let (store, _tmp) = test_store_with_recency(Some(0.0), 0.5);
-
-    store
-        .add_fact("general", "Zero half life test fact", None, None)
-        .await
-        .unwrap();
-
-    // Should not panic or produce NaN
-    let results = store
-        .search("half life test", None, None, None)
-        .await
-        .unwrap();
-    assert!(!results.is_empty());
-    assert!(
-        results[0].score.is_finite(),
-        "Score should be finite with zero half-life, got {}",
-        results[0].score
-    );
+async fn recency_zero_half_life_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let config = MemoryConfig {
+        base_dir: tmp.path().to_path_buf(),
+        search: SearchConfig {
+            recency_half_life_days: Some(0.0),
+            recency_weight: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let embedder = Box::new(MockEmbedder::new(768));
+    let err = match MemoryStore::open_with_embedder(config, embedder) {
+        Ok(_) => panic!("zero recency half-life should be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), "invalid_config");
 }
 
 // ─── V2: Buffer Reuse Correctness (Fix 6 regression) ────────

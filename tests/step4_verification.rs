@@ -189,16 +189,22 @@ async fn test_embedding_displacement_from_vecs() {
     // Identical vectors
     let a = vec![1.0f32, 0.0, 0.0];
     let b = vec![1.0f32, 0.0, 0.0];
-    let d: EmbeddingDisplacement = MemoryStore::embedding_displacement_from_vecs(&a, &b);
+    let d: EmbeddingDisplacement = MemoryStore::embedding_displacement_from_vecs(&a, &b).unwrap();
     assert!((d.cosine_similarity - 1.0).abs() < 0.01);
     assert!(d.euclidean_distance < 0.01);
 
     // Orthogonal vectors
     let a = vec![1.0f32, 0.0, 0.0];
     let b = vec![0.0f32, 1.0, 0.0];
-    let d = MemoryStore::embedding_displacement_from_vecs(&a, &b);
+    let d = MemoryStore::embedding_displacement_from_vecs(&a, &b).unwrap();
     assert!(d.cosine_similarity.abs() < 0.01);
     assert!((d.euclidean_distance - std::f32::consts::SQRT_2).abs() < 0.01);
+}
+
+#[tokio::test]
+async fn test_embedding_displacement_dimension_mismatch_is_error() {
+    let err = MemoryStore::embedding_displacement_from_vecs(&[1.0f32, 0.0], &[1.0f32]).unwrap_err();
+    assert_eq!(err.kind(), "dimension_mismatch");
 }
 
 #[tokio::test]

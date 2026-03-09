@@ -5,21 +5,22 @@
 
 Local-first hybrid semantic search for Rust, built for AI agents.
 
-`semantic-memory` combines SQLite (FTS5) and HNSW approximate nearest-neighbor search into one embedded crate. It handles facts, documents, conversation history, and causal episodes — no external vector database required.
+`semantic-memory` combines SQLite (FTS5) and HNSW approximate nearest-neighbor search into one embedded crate. It handles facts, documents, conversation history, and causal episodes without a separate vector database.
 
 ## Features
 
-- **Hybrid search** — BM25 full-text + vector similarity fused with Reciprocal Rank Fusion (RRF)
-- **HNSW ANN** — approximate nearest-neighbor index with brute-force fallback
+- **Hybrid search** — BM25 full-text + vector similarity fused with exact, explainable Reciprocal Rank Fusion (RRF)
+- **HNSW ANN** — approximate nearest-neighbor sidecar with brute-force fallback and SQLite-backed recovery
 - **Fact storage** — namespaced key-value facts with embeddings
 - **Document ingestion** — chunking with overlap, per-chunk embeddings
-- **Conversation memory** — sessions, messages, token budgets
-- **Episode tracking** — causal records with verification status and outcomes
-- **Explainable results** — full score breakdowns (BM25 rank, vector rank, RRF, recency)
-- **Integrity & repair** — verify, reconcile, detect dirty embeddings, re-embed
+- **Conversation memory** — sessions, messages, token budgets, BM25 search, vector search
+- **Episode tracking** — searchable causal records with verification status and outcomes
+- **Explainable results** — score breakdowns from the real search pipeline, including weights, ranks, rerank state, and recency
+- **Integrity & repair** — verify, reconcile, detect malformed rows, repair FTS drift, replay/rebuild HNSW, re-embed
+- **Graph view** — derived graph traversal across namespaces, facts, documents, chunks, sessions, messages, episodes, and semantic links
 - **Embedding quantization** — int8 quantization helpers for compact storage
 - **Resource limits** — caps on namespace size, content length, embedding concurrency
-- **Connection pooling** — SQLite WAL mode, busy timeout, auto-checkpoint tuning
+- **Connection pooling** — one writer + configurable pooled readers under SQLite WAL mode
 
 ## Quick Start
 
@@ -69,7 +70,8 @@ let store = MemoryStore::open_with_embedder(
     Box::new(MockEmbedder::new(768)),
 )?;
 
-// FTS-only search works without any embedding provider
+// BM25 search works without a live embedding service, and MockEmbedder
+// enables vector search, explainable search, and conversation indexing locally.
 let results = store.search_fts_only("Python", Some(5), None, None).await?;
 ```
 
@@ -104,11 +106,22 @@ let msgs = store.get_messages_within_budget(&session, 100).await?;
 │  BM25 (FTS5)  +  Vector (HNSW/BF)      │
 │         → Reciprocal Rank Fusion        │
 ├─────────────────────────────────────────┤
-│  SQLite (WAL) + HNSW sidecar files     │
+│ SQLite (authoritative) + HNSW sidecar  │
 └─────────────────────────────────────────┘
 ```
 
-All data lives under a single `base_dir`. SQLite stores facts, documents, chunks, sessions, messages, and embeddings. The optional HNSW index is kept as sidecar files alongside the database.
+All data lives under a single `base_dir`. SQLite stores every durable record and embedding. HNSW is a recoverable acceleration sidecar: writes are journaled in SQLite, sidecar failures do not roll back committed data, and pending index work is replayed on open, flush, rebuild, or reconcile.
+
+## Operational Semantics
+
+- SQLite is the source of truth for facts, documents, chunks, messages, and episodes.
+- HNSW is derived state. Pending sidecar mutations are recorded durably in SQLite and replayed after commit.
+- The pool uses one writer connection plus `max_read_connections` pooled readers. Under WAL mode, readers can proceed concurrently while writes serialize on the writer connection.
+- `search_explained()` returns the exact decomposition used by the active search pipeline, not a reconstructed approximation.
+- Generic `search()` includes facts, chunks, and episodes by default. Messages are opt-in via `SearchSourceType::Messages` or `search_conversations()`.
+- `verify_integrity()` surfaces malformed JSON/enums/roles, missing embeddings, quantization drift, pending sidecar work, and HNSW/keymap drift instead of laundering bad rows into defaults.
+- `reconcile(RebuildFts)` repairs FTS drift and replays pending sidecar work. `reconcile(ReEmbed)` re-embeds facts, chunks, messages, and episodes from SQLite, repairs missing q8 data, and rebuilds HNSW.
+- `store.graph_view()` exposes deterministic traversal over namespace, fact, document, chunk, session, message, and episode nodes derived from SQLite state.
 
 ## API Overview
 
@@ -119,6 +132,7 @@ All data lives under a single `base_dir`. SQLite stores facts, documents, chunks
 | `MemoryStore::open(config)` | Open with default Ollama embedder |
 | `MemoryStore::open_with_embedder(config, embedder)` | Open with custom/mock embedder |
 | `store.config()` | Access the active configuration |
+| `store.graph_view()` | Create a derived graph traversal view |
 
 ### Facts
 
@@ -162,18 +176,18 @@ All data lives under a single `base_dir`. SQLite stores facts, documents, chunks
 
 | Method | Description |
 |---|---|
-| `search(query, top_k, namespaces, source_types)` | Hybrid BM25 + vector with RRF |
+| `search(query, top_k, namespaces, source_types)` | Hybrid BM25 + vector with exact RRF explanations available via `search_explained` |
 | `search_fts_only(...)` | BM25 full-text search only |
 | `search_vector_only(...)` | Vector similarity only |
 | `search_conversations(query, top_k, session_ids)` | Search across conversation messages |
-| `search_explained(...)` | Hybrid search with full score breakdowns |
+| `search_explained(...)` | Hybrid search with exact score breakdowns from the live pipeline |
 
 ### Episodes
 
 | Method | Description |
 |---|---|
-| `ingest_episode(document_id, meta)` | Attach causal metadata to a document |
-| `update_episode_outcome(document_id, outcome, confidence, experiment_id)` | Update outcome |
+| `ingest_episode(document_id, meta)` | Upsert a searchable episode while preserving original `created_at` |
+| `update_episode_outcome(document_id, outcome, confidence, experiment_id)` | Update outcome, verification state, search text, and embeddings |
 | `search_episodes(effect_type, outcome, limit)` | Query episodes by type/outcome |
 
 ### Embeddings & Analysis
@@ -183,20 +197,69 @@ All data lives under a single `base_dir`. SQLite stores facts, documents, chunks
 | `embed(text)` | Get embedding vector for text |
 | `embed_batch(texts)` | Batch embed multiple texts |
 | `embedding_displacement(text_a, text_b)` | Compare two texts (cosine, euclidean) |
+| `MemoryStore::embedding_displacement_from_vecs(a, b)` | Compare precomputed vectors, returning an error on dimension mismatch |
 
 ### Integrity & Maintenance
 
 | Method | Description |
 |---|---|
-| `verify_integrity(mode)` | Check database health (`Quick` or `Full`) |
+| `verify_integrity(mode)` | Check schema, SQLite integrity, FTS drift, malformed rows, quantized blobs, and HNSW drift |
 | `reconcile(action)` | Repair issues (`ReportOnly`, `RebuildFts`, `ReEmbed`) |
 | `embeddings_are_dirty()` | Check if any embeddings need refresh |
-| `reembed_all()` | Re-embed all content |
+| `reembed_all()` | Re-embed facts, chunks, messages, and episodes, then rebuild HNSW |
 | `stats()` | Database statistics |
 | `vacuum()` | SQLite VACUUM |
 | `rebuild_hnsw_index()` | Rebuild HNSW from scratch |
-| `flush_hnsw()` | Persist HNSW to disk |
+| `flush_hnsw()` | Persist HNSW to disk, replaying pending SQLite-journaled sidecar work first |
 | `compact_hnsw()` | Compact HNSW deleted entries |
+
+### Graph View
+
+`store.graph_view()` returns a `GraphView` over the authoritative SQLite state. The derived graph currently includes:
+
+- `namespace:{name}` → facts and documents in that namespace
+- `document:{uuid}` → chunks and attached episode
+- `session:{uuid}` → messages in that session
+- `episode:{document_id}` → causal links to referenced facts/chunks/messages
+- semantic chunk/message/episode edges when cosine similarity clears the configured threshold
+
+```rust
+use semantic_memory::{GraphDirection, MemoryConfig, MemoryStore, MockEmbedder};
+
+# fn example() -> Result<(), semantic_memory::MemoryError> {
+let store = MemoryStore::open_with_embedder(
+    MemoryConfig::default(),
+    Box::new(MockEmbedder::new(768)),
+)?;
+
+let graph = store.graph_view();
+let edges = graph.neighbors("namespace:general", GraphDirection::Outgoing, 1)?;
+for edge in edges {
+    println!("{} -> {}", edge.source, edge.target);
+}
+# Ok(())
+# }
+```
+
+### Integrity Workflow
+
+```rust
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, ReconcileAction, VerifyMode};
+
+# async fn example() -> Result<(), semantic_memory::MemoryError> {
+let store = MemoryStore::open_with_embedder(
+    MemoryConfig::default(),
+    Box::new(MockEmbedder::new(768)),
+)?;
+
+let report = store.verify_integrity(VerifyMode::Full).await?;
+if !report.ok {
+    let repaired = store.reconcile(ReconcileAction::ReEmbed).await?;
+    assert!(repaired.ok);
+}
+# Ok(())
+# }
+```
 
 ## Configuration
 
@@ -254,6 +317,7 @@ MemoryConfig {
 | `busy_timeout_ms` | `5000` | SQLite busy timeout |
 | `wal_autocheckpoint` | `1000` | WAL checkpoint threshold (pages) |
 | `enable_wal` | `true` | Enable WAL mode |
+| `max_read_connections` | `4` | Number of pooled reader connections |
 
 ### MemoryLimits (defaults)
 
@@ -284,6 +348,12 @@ SearchSource     // Fact | Chunk | Message | Episode source details
 SearchSourceType // Filter: Facts | Chunks | Messages | Episodes
 ScoreBreakdown   // RRF, BM25, vector, recency scores and ranks
 
+// Graph types
+GraphView        // Graph traversal over derived memory relationships
+GraphDirection   // Outgoing | Incoming | Both
+GraphEdge        // Edge returned from graph traversal
+GraphEdgeType    // Semantic | Temporal | Causal | Entity
+
 // Episode types
 EpisodeMeta         // Causal metadata (cause_ids, effect_type, outcome)
 EpisodeOutcome      // Confirmed | Refuted | Inconclusive | Pending
@@ -306,6 +376,9 @@ QuantizedVector  // Quantized data + scale + zero_point
 IntegrityReport   // Health check results
 VerifyMode        // Quick | Full
 ReconcileAction   // ReportOnly | RebuildFts | ReEmbed
+
+// Auditability
+TraceId           // Stable write correlation ID propagated into metadata
 
 // HNSW (feature = "hnsw")
 HnswConfig  // Index parameters (m, ef_construction, ef_search, etc.)
@@ -330,10 +403,14 @@ All fallible operations return `Result<T, MemoryError>`. Error variants include:
 - `Database` — SQLite errors
 - `EmbeddingRequest` — HTTP/network errors from embedding provider
 - `DimensionMismatch` — embedding size doesn't match config
+- `InvalidEmbedding` — malformed embedding or quantized blob payloads
 - `ModelMismatch` — stored model differs from configured model
 - `SessionNotFound`, `FactNotFound`, `DocumentNotFound` — missing entities
 - `ContentTooLarge` — content exceeds `max_content_bytes`
 - `NamespaceFull` — namespace exceeds `max_facts_per_namespace`
+- `DatabaseSizeLimitExceeded` — configured SQLite growth ceiling would be exceeded
+- `InvalidConfig` — config normalization rejected an invalid runtime value
+- `CorruptData` — stored JSON, enum, role, or sidecar state is malformed
 - `SchemaAhead` — database was created by a newer version
 - `HnswError`, `QuantizationError`, `StorageError` — subsystem errors
 - `IntegrityError` — HNSW/SQLite index mismatch

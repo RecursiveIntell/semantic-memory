@@ -141,6 +141,9 @@ async fn vector_only_respects_source_type_filter() {
             SearchSource::Episode { .. } => {
                 panic!("Should not contain Episode results when filtering to Facts only");
             }
+            SearchSource::Projection { .. } => {
+                panic!("Should not contain Projection results when filtering to Facts only");
+            }
             SearchSource::Fact { .. } => { /* expected */ }
         }
     }

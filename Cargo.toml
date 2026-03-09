@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Hybrid semantic search with SQLite, FTS5, and HNSW — built for AI agents"
@@ -23,11 +23,13 @@ rusqlite = { version = "0.32", features = ["bundled", "blob"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
 thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+stack-ids = { path = "../stack-ids" }
+forge-memory-bridge = { path = "../forge-memory-bridge" }
 
 # HNSW approximate nearest neighbor search (optional)
 hnsw_rs = { version = "0.3", optional = true }

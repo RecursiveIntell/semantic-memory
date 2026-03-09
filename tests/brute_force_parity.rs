@@ -51,7 +51,7 @@ async fn both_features_enabled_search_works() {
         .unwrap();
 
     // Vector-only search
-    let vector_results = store
+    let _vector_results = store
         .search_vector_only("parity test", Some(5), None, None)
         .await
         .unwrap();

@@ -5,7 +5,7 @@
 //!
 //! Run: `cargo run --example basic_search`
 
-use semantic_memory::{MemoryConfig, MemoryStore};
+use semantic_memory::{GraphDirection, MemoryConfig, MemoryStore};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -77,6 +77,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Explainable search exposes the exact live pipeline math.
+    println!("\nExplainable search for 'systems programming'...");
+    let explained = store
+        .search_explained("systems programming", Some(3), None, None)
+        .await?;
+    for (i, hit) in explained.iter().enumerate() {
+        println!(
+            "  {}. [rrf: {:.4}] bm25_rank={:?} vector_rank={:?} reranked={} | {}",
+            i + 1,
+            hit.breakdown.rrf_score,
+            hit.breakdown.bm25_rank,
+            hit.breakdown.vector_rank,
+            hit.breakdown.vector_reranked_from_f32,
+            hit.result.content
+        );
+    }
+
     // FTS-only search (no Ollama needed)
     println!("\nFTS search for 'Python'...");
     let results = store.search_fts_only("Python", Some(3), None, None).await?;
@@ -95,6 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Facts: {}", stats.total_facts);
     println!("  Documents: {}", stats.total_documents);
     println!("  Model: {:?}", stats.embedding_model);
+
+    // Graph traversal is derived from SQLite state.
+    let graph = store.graph_view();
+    let namespace_edges = graph.neighbors("namespace:general", GraphDirection::Outgoing, 1)?;
+    println!("\nGraph edges from namespace:general:");
+    for edge in namespace_edges.iter().take(3) {
+        println!("  {} -> {}", edge.source, edge.target);
+    }
 
     // Cleanup
     std::fs::remove_dir_all("/tmp/semantic-memory-example").ok();
