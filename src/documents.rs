@@ -1,11 +1,15 @@
 //! Document ingestion pipeline: chunk, embed, store, and queue sidecar updates.
 
+use crate::chunker;
 use crate::db;
 #[cfg(feature = "hnsw")]
 use crate::db::IndexOpKind;
 use crate::error::MemoryError;
+use crate::quantize::{self, Quantizer};
 use crate::types::Document;
+use crate::{merge_trace_ctx, MemoryStore};
 use rusqlite::{params, Connection};
+use stack_ids::TraceCtx;
 
 /// A single chunk to insert: `(content, embedding_bytes, q8_bytes, token_count_estimate)`.
 pub type ChunkRow = (String, Vec<u8>, Option<Vec<u8>>, usize);
@@ -211,4 +215,121 @@ pub fn list_documents(
             },
         )
         .collect()
+}
+
+impl MemoryStore {
+    /// Ingest a document: chunk, embed all chunks, store everything.
+    pub async fn ingest_document(
+        &self,
+        title: &str,
+        content: &str,
+        namespace: &str,
+        source_path: Option<&str>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String, MemoryError> {
+        self.ingest_document_with_trace(title, content, namespace, source_path, metadata, None)
+            .await
+    }
+
+    /// Ingest a document with optional trace metadata.
+    pub async fn ingest_document_with_trace(
+        &self,
+        title: &str,
+        content: &str,
+        namespace: &str,
+        source_path: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<String, MemoryError> {
+        self.validate_content("document.content", content)?;
+
+        let text_chunks = chunker::chunk_text(
+            content,
+            &self.inner.config.chunking,
+            self.inner.token_counter.as_ref(),
+        );
+
+        let max_chunks = self.inner.config.limits.max_chunks_per_document;
+        if text_chunks.len() > max_chunks {
+            return Err(MemoryError::ContentTooLarge {
+                size: text_chunks.len(),
+                limit: max_chunks,
+            });
+        }
+
+        let chunk_texts: Vec<String> = text_chunks.iter().map(|c| c.content.clone()).collect();
+        let embeddings = self.embed_batch_internal(chunk_texts).await?;
+        for embedding in &embeddings {
+            self.validate_embedding_dimensions(embedding)?;
+        }
+
+        let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
+        let chunks: Vec<ChunkRow> = text_chunks
+            .iter()
+            .zip(embeddings.iter())
+            .map(|(tc, emb)| {
+                let q8 = quantizer
+                    .quantize(emb)
+                    .map(|qv| quantize::pack_quantized(&qv))
+                    .ok();
+                (
+                    tc.content.clone(),
+                    db::embedding_to_bytes(emb),
+                    q8,
+                    tc.token_count_estimate,
+                )
+            })
+            .collect();
+
+        let doc_id = uuid::Uuid::new_v4().to_string();
+
+        let did = doc_id.clone();
+        let t = title.to_string();
+        let ns = namespace.to_string();
+        let sp = source_path.map(|s| s.to_string());
+        let meta = merge_trace_ctx(metadata, trace_ctx);
+
+        self.with_write_conn(move |conn| {
+            insert_document_with_chunks(conn, &did, &t, &ns, sp.as_deref(), meta.as_ref(), &chunks)
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("ingest_document")
+            .await;
+
+        Ok(doc_id)
+    }
+
+    /// Delete a document and all its chunks.
+    pub async fn delete_document(&self, document_id: &str) -> Result<(), MemoryError> {
+        let did = document_id.to_string();
+        self.with_write_conn(move |conn| delete_document_with_chunks(conn, &did))
+            .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("delete_document")
+            .await;
+
+        Ok(())
+    }
+
+    /// List documents in a namespace.
+    pub async fn list_documents(
+        &self,
+        namespace: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Document>, MemoryError> {
+        let ns = namespace.to_string();
+        self.with_read_conn(move |conn| list_documents(conn, &ns, limit, offset))
+            .await
+    }
+
+    /// Count the number of chunks for a document.
+    pub async fn count_chunks_for_document(&self, document_id: &str) -> Result<usize, MemoryError> {
+        let did = document_id.to_string();
+        self.with_read_conn(move |conn| count_chunks_for_document(conn, &did))
+            .await
+    }
 }

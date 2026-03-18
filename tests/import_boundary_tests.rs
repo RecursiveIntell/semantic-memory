@@ -22,15 +22,26 @@
 
 use forge_memory_bridge::{
     ClaimState, ContradictionStatus, ImportClaimVersion, ImportProjectionRecord,
-    ProjectionFreshness as BridgeProjectionFreshness, ProjectionImportBatchV1,
-    PROJECTION_IMPORT_BATCH_V1_SCHEMA,
+    ImportProjectionRecordV3, ProjectionFreshness as BridgeProjectionFreshness,
+    ProjectionImportBatchV1, ProjectionImportBatchV2, ProjectionImportBatchV3,
+    PROJECTION_IMPORT_BATCH_V1_SCHEMA, PROJECTION_IMPORT_BATCH_V2_SCHEMA,
+    PROJECTION_IMPORT_BATCH_V3_SCHEMA,
 };
 use semantic_memory::compat::compat_trace_id::TraceId;
 use semantic_memory::compat::legacy_import_envelope::{
     ImportEnvelope, ImportRecord, ImportStatus, ProjectionFreshness,
 };
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder};
-use stack_ids::{ClaimId, ClaimVersionId, ContentDigest, EntityId, EnvelopeId, ScopeKey, TraceCtx};
+use semantic_memory_forge::{
+    CausalQuestion, CausalRoleHint, ConstraintSeedKind, DispatchOutcomeV1, EpisodeBundleV1,
+    EvidenceBundle, EvidenceBundleId, ExecutionContextV1, ExportAuthority, ExportConfidenceClass,
+    ExportRecordSemanticsV3, ForgeExportMeta, OutcomeSpec, ProjectionVisibilityClass,
+    TreatmentSpec,
+};
+use stack_ids::{
+    AssertionGroupId, ClaimFamilyId, ClaimId, ClaimVersionId, ContentDigest, EntityId, EnvelopeId,
+    EpisodeId, ScopeKey, TraceCtx,
+};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -710,6 +721,31 @@ fn make_canonical_batch(envelope_id: &str, claim_id: &str, content: &str) -> Str
     make_canonical_batch_value(envelope_id, claim_id, content).to_string()
 }
 
+fn make_evidence_bundle(id: &str) -> EvidenceBundle {
+    let mut bundle = EvidenceBundle::new(
+        CausalQuestion {
+            description: "Does semantic-memory preserve canonical evidence receipts?".into(),
+            unit_definition: "projection import batch".into(),
+        },
+        TreatmentSpec {
+            description: "import canonical batch".into(),
+            baseline_description: "pre-import batch".into(),
+            paired_trials: true,
+        },
+        OutcomeSpec {
+            description: "receipt carries canonical evidence bundle".into(),
+            measurement_method: "projection import log".into(),
+            outcome_type: "binary".into(),
+        },
+        "projection_import_test",
+        "1.0.0",
+        1.0,
+    );
+    bundle.id = EvidenceBundleId::new(id);
+    bundle.comparability_snapshot_version = Some(format!("cmp-{id}"));
+    bundle
+}
+
 #[tokio::test]
 async fn canonical_batch_imports_successfully() {
     let (store, _dir) = test_store();
@@ -721,6 +757,294 @@ async fn canonical_batch_imports_successfully() {
     assert_eq!(result.status, "complete");
     assert_eq!(result.record_count, 1);
     assert!(!result.was_duplicate);
+}
+
+#[tokio::test]
+async fn canonical_v2_batch_import_preserves_export_meta_receipts() {
+    let (store, _dir) = test_store();
+    let evidence_bundle = make_evidence_bundle("evidence-canonical-v2");
+    let batch = ProjectionImportBatchV2 {
+        source_envelope_id: EnvelopeId::new("cb-v2-meta"),
+        schema_version: PROJECTION_IMPORT_BATCH_V2_SCHEMA.into(),
+        export_schema_version: Some("export_envelope_v2".into()),
+        content_digest: ContentDigest::compute_str("digest-cb-v2-meta"),
+        source_authority: "forge".into(),
+        scope_key: ScopeKey::namespace_only("canonical-ns"),
+        trace_ctx: Some(TraceCtx::from_trace_id("trace-canonical-v2")),
+        source_exported_at: "2026-03-07T00:00:00Z".into(),
+        transformed_at: "2026-03-07T00:00:01Z".into(),
+        export_meta: Some(ForgeExportMeta {
+            authority: ExportAuthority::Forge,
+            run_id: Some("run-canonical-v2".into()),
+            direct_write: false,
+            comparability_snapshot_version: Some("cmp-canonical-v2".into()),
+            exported_at: "2026-03-07T00:00:00Z".into(),
+        }),
+        evidence_bundle: Some(evidence_bundle.clone()),
+        episode_bundle: None,
+        execution_context: None,
+        records: vec![ImportProjectionRecord::ClaimVersion(ImportClaimVersion {
+            claim_id: ClaimId::new("claim-canon-v2"),
+            claim_version_id: ClaimVersionId::new("claim-canon-v2-v1"),
+            claim_state: ClaimState::Active,
+            projection_family: "forge_verification".into(),
+            subject_entity_id: EntityId::new("ent-v2"),
+            predicate: "has_type".into(),
+            object_anchor: serde_json::json!("function"),
+            scope_key: ScopeKey::namespace_only("canonical-ns"),
+            valid_from: None,
+            valid_to: None,
+            preferred_open: true,
+            source_envelope_id: EnvelopeId::new("cb-v2-meta"),
+            source_authority: "forge".into(),
+            trace_ctx: Some(TraceCtx::from_trace_id("trace-canonical-v2")),
+            freshness: BridgeProjectionFreshness::Current,
+            contradiction_status: ContradictionStatus::None,
+            supersedes_claim_version_id: None,
+            content: "Canonical V2 content".into(),
+            confidence: 0.99,
+            metadata: None,
+        })],
+    };
+
+    let result = store.import_projection_batch(&batch).await.unwrap();
+    assert_eq!(result.status, "complete");
+
+    let imports = store
+        .query_projection_imports(Some("canonical-ns"), 10)
+        .await
+        .unwrap();
+    let entry = imports
+        .into_iter()
+        .find(|entry| entry.source_envelope_id == "cb-v2-meta")
+        .expect("v2 import log entry");
+
+    assert_eq!(entry.schema_version, PROJECTION_IMPORT_BATCH_V2_SCHEMA);
+    assert_eq!(
+        entry.export_schema_version.as_deref(),
+        Some("export_envelope_v2")
+    );
+    assert_eq!(entry.source_run_id.as_deref(), Some("run-canonical-v2"));
+    assert_eq!(
+        entry.comparability_snapshot_version.as_deref(),
+        Some("cmp-canonical-v2")
+    );
+    assert!(!entry.direct_write);
+    assert!(entry.failure_reason.is_none());
+    assert_eq!(
+        entry.evidence_bundle_id.as_deref(),
+        Some("evidence-canonical-v2")
+    );
+    assert_eq!(
+        entry.evidence_bundle_json.as_ref(),
+        Some(&serde_json::to_value(&evidence_bundle).unwrap())
+    );
+    assert!(entry.episode_bundle_id.is_none());
+    assert!(entry.execution_context_json.is_none());
+}
+
+#[tokio::test]
+async fn canonical_v3_batch_import_preserves_kernel_payload_receipts() {
+    let (store, _dir) = test_store();
+    let evidence_bundle = make_evidence_bundle("evidence-kernel-v3");
+    let batch = ProjectionImportBatchV3 {
+        source_envelope_id: EnvelopeId::new("env-kernel-v3"),
+        schema_version: PROJECTION_IMPORT_BATCH_V3_SCHEMA.into(),
+        export_schema_version: Some("export_envelope_v3".into()),
+        content_digest: ContentDigest::compute(b"kernel-v3"),
+        source_authority: "forge".into(),
+        scope_key: ScopeKey::namespace_only("kernel-ns"),
+        trace_ctx: Some(TraceCtx::generate()),
+        source_exported_at: "2026-03-10T00:00:00Z".into(),
+        transformed_at: "2026-03-10T00:01:00Z".into(),
+        export_meta: Some(ForgeExportMeta {
+            authority: ExportAuthority::Forge,
+            run_id: Some("run-kernel-v3".into()),
+            direct_write: false,
+            comparability_snapshot_version: Some("cmp-kernel-v3".into()),
+            exported_at: "2026-03-10T00:00:00Z".into(),
+        }),
+        evidence_bundle: Some(evidence_bundle.clone()),
+        episode_bundle: Some(EpisodeBundleV1 {
+            schema_version: "episode_bundle_v1".into(),
+            bundle_id: "evidence-kernel-v3".into(),
+            episode_id: EpisodeId::new("ep-kernel-v3"),
+            primary_document_id: "doc-kernel-v3".into(),
+            namespace: "kernel-ns".into(),
+            scope_key: ScopeKey::namespace_only("kernel-ns"),
+            valid_from: Some("2026-03-10T00:00:00Z".into()),
+            valid_to: None,
+            exported_at: "2026-03-10T00:00:00Z".into(),
+            recorded_at: None,
+            source_envelope_id: EnvelopeId::new("env-kernel-v3"),
+            content_digest: ContentDigest::compute(b"kernel-v3"),
+            source_evidence_pointers: vec!["forge://kernel-v3".into()],
+            source_receipt_digests: vec!["receipt-kernel-v3".into()],
+            claim_version_ids: vec!["claim-version-kernel-v3".into()],
+            relation_version_ids: Vec::new(),
+            verification_summary: evidence_bundle.verification_summary.clone(),
+            refutation_artifact_ids: Vec::new(),
+            control_plane_refs: vec!["forge_run:run-kernel-v3".into()],
+            execution_context: ExecutionContextV1 {
+                schema_version: "execution_context_v1".into(),
+                trace_ctx: TraceCtx::generate(),
+                attempt_id: None,
+                trial_id: None,
+                replay_link: None,
+                workload_class: Some("forge_export".into()),
+                queue_hops: Vec::new(),
+                deadline: None,
+                cost_budget_units: None,
+                degradation_markers: Vec::new(),
+                dispatch_outcome: DispatchOutcomeV1::Succeeded,
+                environment_fingerprint: None,
+                provider_route: Some("forge".into()),
+                cancellation_reason: None,
+            },
+            thin_export: false,
+            supersedes_bundle_id: None,
+            evidence_bundle_id: Some("evidence-kernel-v3".into()),
+        }),
+        execution_context: Some(ExecutionContextV1 {
+            schema_version: "execution_context_v1".into(),
+            trace_ctx: TraceCtx::generate(),
+            attempt_id: None,
+            trial_id: None,
+            replay_link: None,
+            workload_class: Some("forge_export".into()),
+            queue_hops: Vec::new(),
+            deadline: None,
+            cost_budget_units: None,
+            degradation_markers: Vec::new(),
+            dispatch_outcome: DispatchOutcomeV1::Succeeded,
+            environment_fingerprint: None,
+            provider_route: Some("forge".into()),
+            cancellation_reason: None,
+        }),
+        support_sets: vec![],
+        contradiction_witnesses: vec![],
+        retraction_records: vec![],
+        claim_states_v13: vec![],
+        intervention_bundles_v14: vec![],
+        outcome_schemas_v14: vec![],
+        cohort_contracts_v14: vec![],
+        counterfactual_slices_v14: vec![],
+        experiment_cases_v14: vec![],
+        comparability_matrices_v14: vec![],
+        decision_traces_v14: vec![],
+        refuter_suites_v14: vec![],
+        refuter_results_v14: vec![],
+        experiment_budgets_v14: vec![],
+        rollout_decisions_v14: vec![],
+        rollback_decisions_v14: vec![],
+        attestation_envelopes_v15: vec![],
+        trust_root_sets_v15: vec![],
+        artifact_admission_policies_v15: vec![],
+        transparency_receipts_v15: vec![],
+        attestation_revocations_v15: vec![],
+        attestation_supersessions_v15: vec![],
+        remote_oracle_leases_v15: vec![],
+        remote_slice_requests_v15: vec![],
+        remote_slice_results_v15: vec![],
+        cross_runtime_replay_tickets_v15: vec![],
+        dispute_bundles_v15: vec![],
+        disclosure_policies_v15: vec![],
+        disclosure_budgets_v15: vec![],
+        records: vec![ImportProjectionRecordV3 {
+            record: ImportProjectionRecord::ClaimVersion(ImportClaimVersion {
+                claim_id: ClaimId::new("claim-kernel-v3"),
+                claim_version_id: ClaimVersionId::new("claim-version-kernel-v3"),
+                claim_state: ClaimState::Active,
+                projection_family: "forge_verification".into(),
+                subject_entity_id: EntityId::new("entity-kernel-v3"),
+                predicate: "supports".into(),
+                object_anchor: serde_json::json!("compiler"),
+                scope_key: ScopeKey::namespace_only("kernel-ns"),
+                valid_from: Some("2026-03-10T00:00:00Z".into()),
+                valid_to: None,
+                preferred_open: true,
+                source_envelope_id: EnvelopeId::new("env-kernel-v3"),
+                source_authority: "forge".into(),
+                trace_ctx: None,
+                freshness: BridgeProjectionFreshness::Current,
+                contradiction_status: ContradictionStatus::None,
+                supersedes_claim_version_id: None,
+                content: "kernel claim".into(),
+                confidence: 0.99,
+                metadata: None,
+            }),
+            semantics: Some(ExportRecordSemanticsV3 {
+                claim_family_id: Some(ClaimFamilyId::new("family-kernel-v3")),
+                assertion_group_id: Some(AssertionGroupId::new("group-kernel-v3")),
+                relation_group_id: None,
+                joint_evidence_group_id: None,
+                constraint_seed_kind: Some(ConstraintSeedKind::Hyperedge),
+                treatment_hint: Some(CausalRoleHint::Treatment),
+                outcome_hint: None,
+                confounder_hint: None,
+                instrument_hint: None,
+                effect_modifier_hint: None,
+                contradiction_candidate_group_id: None,
+                mutual_exclusion_group_id: None,
+                comparability_snapshot_version: Some("cmp-kernel-v3".into()),
+                nuisance_snapshot: None,
+                projection_visibility_class: ProjectionVisibilityClass::Standard,
+                export_confidence_class: ExportConfidenceClass::Verified,
+                derivation_seed_ids: vec!["seed-kernel-v3".into()],
+                review_priority_hint: Some("high".into()),
+            }),
+        }],
+    };
+
+    let result = store.import_projection_batch(&batch).await.unwrap();
+    assert_eq!(result.status, "complete");
+
+    let imports = store
+        .query_projection_imports(Some("kernel-ns"), 10)
+        .await
+        .unwrap();
+    let import = imports.first().expect("expected import receipt");
+    assert_eq!(
+        import.export_schema_version.as_deref(),
+        Some("export_envelope_v3")
+    );
+    assert_eq!(import.scope_domain, None);
+    assert_eq!(import.scope_workspace_id, None);
+    assert_eq!(import.scope_repo_id, None);
+    assert!(import.kernel_payload_json.is_some());
+    assert_eq!(
+        import.evidence_bundle_json.as_ref(),
+        Some(&serde_json::to_value(&evidence_bundle).unwrap())
+    );
+    assert_eq!(
+        import.episode_bundle_id.as_deref(),
+        Some("evidence-kernel-v3")
+    );
+    assert!(import.episode_bundle_json.is_some());
+    assert!(import.execution_context_json.is_some());
+    let rebuilt = import
+        .rebuildable_kernel_batch_v3()
+        .expect("kernel receipt should deserialize")
+        .expect("kernel receipt should be present");
+    assert_eq!(rebuilt.source_envelope_id.as_str(), "env-kernel-v3");
+
+    let claims = store
+        .query_claim_versions({
+            let mut query =
+                semantic_memory::ProjectionQuery::new(ScopeKey::namespace_only("kernel-ns"));
+            query.limit = 10;
+            query
+        })
+        .await
+        .unwrap();
+    let metadata = claims
+        .first()
+        .and_then(|claim| claim.metadata.as_ref())
+        .expect("expected stored metadata");
+    assert!(
+        metadata.get("kernel_semantics_v3").is_some(),
+        "v3 semantics should remain explicit in stored projection metadata"
+    );
 }
 
 #[tokio::test]
@@ -772,6 +1096,48 @@ async fn canonical_batch_is_idempotent() {
 }
 
 #[tokio::test]
+async fn canonical_batch_reports_historical_digest_migration_conflict_explicitly() {
+    let (store, _dir) = test_store();
+    let first = make_canonical_batch("cb-migrate", "claim-migrate", "Migration content");
+
+    let imported = store
+        .import_projection_batch_json_compat(&first)
+        .await
+        .unwrap();
+    assert_eq!(imported.status, "complete");
+
+    let mut replay = make_canonical_batch_value("cb-migrate", "claim-migrate", "Migration content");
+    replay["content_digest"] = serde_json::json!("digest-cb-migrate-historical");
+
+    let err = store
+        .import_projection_batch_json_compat(&replay.to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "import_migration_required");
+    assert!(format!("{err}").contains("projection_import_log drift"));
+
+    let logs = store
+        .query_projection_imports(Some("canonical-ns"), 100)
+        .await
+        .unwrap();
+    let failed = logs
+        .iter()
+        .find(|entry| {
+            entry.source_envelope_id == "cb-migrate"
+                && entry.content_digest == "digest-cb-migrate-historical"
+        })
+        .expect("historical replay should leave an explicit failed receipt");
+    assert_eq!(failed.status, "failed");
+    assert!(
+        failed
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("historical digest migration replay")),
+        "failure receipt should explain the digest migration seam explicitly"
+    );
+}
+
+#[tokio::test]
 async fn canonical_batch_rollback_on_second_bad_record() {
     let (store, _dir) = test_store();
     // First record is valid, second is missing required fields
@@ -809,15 +1175,118 @@ async fn canonical_batch_rollback_on_second_bad_record() {
         .unwrap_err();
     assert_eq!(err.kind(), "import_invalid");
 
-    // The good record should NOT have been committed (atomic rollback)
+    // The good record should NOT have been committed (atomic rollback),
+    // but the failed attempt should leave a durable failure receipt.
     let logs = store
         .query_projection_imports(Some("canonical-ns"), 100)
         .await
         .unwrap();
-    assert!(
-        logs.iter().all(|l| l.source_envelope_id != "cb-rollback"),
-        "failed batch should not appear in import log"
+    let entry = logs
+        .iter()
+        .find(|l| l.source_envelope_id == "cb-rollback")
+        .expect("failed batch should leave an import receipt");
+    assert_eq!(entry.status, "failed");
+    assert!(entry.failure_reason.is_some());
+
+    let failures = store
+        .query_projection_import_failures(Some("canonical-ns"), 100)
+        .await
+        .unwrap();
+    let failure = failures
+        .iter()
+        .find(|f| f.source_envelope_id == "cb-rollback")
+        .expect("failed batch should leave a durable failure receipt");
+    assert_eq!(failure.schema_version, PROJECTION_IMPORT_BATCH_V2_SCHEMA);
+    assert_eq!(failure.error_kind, "import_invalid");
+}
+
+#[tokio::test]
+async fn canonical_v2_batch_failure_receipt_preserves_evidence_bundle_receipts() {
+    let (store, _dir) = test_store();
+    let evidence_bundle = make_evidence_bundle("evidence-canonical-v2-failure");
+
+    let duplicate_claim = ImportClaimVersion {
+        claim_id: ClaimId::new("claim-canon-v2-failure"),
+        claim_version_id: ClaimVersionId::new("claim-canon-v2-failure-v1"),
+        claim_state: ClaimState::Active,
+        projection_family: "forge_verification".into(),
+        subject_entity_id: EntityId::new("ent-v2-failure"),
+        predicate: "has_type".into(),
+        object_anchor: serde_json::json!("function"),
+        scope_key: ScopeKey::namespace_only("canonical-ns"),
+        valid_from: None,
+        valid_to: None,
+        preferred_open: true,
+        source_envelope_id: EnvelopeId::new("cb-v2-failure"),
+        source_authority: "forge".into(),
+        trace_ctx: Some(TraceCtx::from_trace_id("trace-canonical-v2-failure")),
+        freshness: BridgeProjectionFreshness::Current,
+        contradiction_status: ContradictionStatus::None,
+        supersedes_claim_version_id: None,
+        content: "Canonical V2 failure content".into(),
+        confidence: 0.25,
+        metadata: None,
+    };
+    let batch = ProjectionImportBatchV2 {
+        source_envelope_id: EnvelopeId::new("cb-v2-failure"),
+        schema_version: PROJECTION_IMPORT_BATCH_V2_SCHEMA.into(),
+        export_schema_version: Some("export_envelope_v2".into()),
+        content_digest: ContentDigest::compute_str("digest-cb-v2-failure"),
+        source_authority: "forge".into(),
+        scope_key: ScopeKey::namespace_only("canonical-ns"),
+        trace_ctx: Some(TraceCtx::from_trace_id("trace-canonical-v2-failure")),
+        source_exported_at: "2026-03-07T00:00:00Z".into(),
+        transformed_at: "2026-03-07T00:00:01Z".into(),
+        export_meta: Some(ForgeExportMeta {
+            authority: ExportAuthority::Forge,
+            run_id: Some("run-canonical-v2-failure".into()),
+            direct_write: false,
+            comparability_snapshot_version: Some("cmp-canonical-v2-failure".into()),
+            exported_at: "2026-03-07T00:00:00Z".into(),
+        }),
+        evidence_bundle: Some(evidence_bundle.clone()),
+        episode_bundle: None,
+        execution_context: None,
+        records: vec![
+            ImportProjectionRecord::ClaimVersion(duplicate_claim.clone()),
+            ImportProjectionRecord::ClaimVersion(duplicate_claim),
+        ],
+    };
+
+    store.import_projection_batch(&batch).await.unwrap_err();
+
+    let failures = store
+        .query_projection_import_failures(Some("canonical-ns"), 100)
+        .await
+        .unwrap();
+    let failure = failures
+        .iter()
+        .find(|f| f.source_envelope_id == "cb-v2-failure")
+        .expect("typed v2 failure receipt");
+    assert_eq!(failure.schema_version, PROJECTION_IMPORT_BATCH_V2_SCHEMA);
+    assert_eq!(
+        failure.export_schema_version.as_deref(),
+        Some("export_envelope_v2")
     );
+    assert_eq!(
+        failure.source_run_id.as_deref(),
+        Some("run-canonical-v2-failure")
+    );
+    assert_eq!(
+        failure.comparability_snapshot_version.as_deref(),
+        Some("cmp-canonical-v2-failure")
+    );
+    assert!(!failure.direct_write);
+    assert_eq!(
+        failure.evidence_bundle_id.as_deref(),
+        Some("evidence-canonical-v2-failure")
+    );
+    assert_eq!(
+        failure.evidence_bundle_json.as_ref(),
+        Some(&serde_json::to_value(&evidence_bundle).unwrap())
+    );
+    assert!(failure.episode_bundle_json.is_none());
+    assert!(failure.execution_context_json.is_none());
 }
 
 #[tokio::test]
@@ -839,7 +1308,7 @@ async fn canonical_batch_trace_id_preserved_in_log() {
         .unwrap();
     assert_eq!(entry.claim_count, 1);
     assert_eq!(entry.source_authority, "forge");
-    assert_eq!(entry.schema_version, "projection_import_batch_v1");
+    assert_eq!(entry.schema_version, "projection_import_batch_v2");
     assert_eq!(
         entry.export_schema_version.as_deref(),
         Some("export_envelope_v1")
@@ -907,7 +1376,7 @@ async fn canonical_batch_records_distinct_import_and_export_schema_versions() {
         .find(|l| l.source_envelope_id == "cb-version-law")
         .unwrap();
 
-    assert_eq!(entry.schema_version, "projection_import_batch_v1");
+    assert_eq!(entry.schema_version, "projection_import_batch_v2");
     assert_eq!(
         entry.export_schema_version.as_deref(),
         Some("export_envelope_v1")
@@ -941,4 +1410,225 @@ async fn canonical_batch_preferred_open_uniqueness_enforced() {
         err.is_err(),
         "second preferred_open=true for same claim_id must fail"
     );
+}
+
+#[tokio::test]
+async fn canonical_batch_rejects_invalid_preferred_temporal_order() {
+    // I102: malformed temporal bounds must be rejected explicitly.
+    let (store, _dir) = test_store();
+    let mut batch =
+        make_canonical_batch_value("cb-bad-temporal", "claim-bad-temporal", "bad bounds");
+    batch["records"][0]["valid_from"] = serde_json::json!("2026-02-01T00:00:00Z");
+    batch["records"][0]["valid_to"] = serde_json::json!("2026-01-01T00:00:00Z");
+
+    let err = store
+        .import_projection_batch_json_compat(&batch.to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "import_invalid");
+    assert!(format!("{err}").contains("valid_from"));
+}
+
+#[tokio::test]
+async fn canonical_batch_rejects_overlapping_preferred_claims_in_batch() {
+    let (store, _dir) = test_store();
+    let batch = serde_json::json!({
+        "source_envelope_id": "cb-pref-overlap-batch",
+        "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
+        "export_schema_version": "export_envelope_v1",
+        "content_digest": "digest-pref-overlap-batch",
+        "source_authority": "forge",
+        "scope_key": { "namespace": "canonical-ns" },
+        "source_exported_at": "2026-03-07T00:00:00Z",
+        "transformed_at": "2026-03-07T00:00:01Z",
+        "records": [
+            {
+                "kind": "claim_version",
+                "claim_id": "claim-overlap",
+                "claim_version_id": "claim-overlap-v1",
+                "claim_state": "active",
+                "projection_family": "forge_verification",
+                "subject_entity_id": "ent-overlap",
+                "predicate": "has_type",
+                "object_anchor": "function",
+                "scope_key": { "namespace": "canonical-ns" },
+                "valid_from": "2026-01-01T00:00:00Z",
+                "valid_to": "2026-02-01T00:00:00Z",
+                "preferred_open": true,
+                "source_envelope_id": "cb-pref-overlap-batch",
+                "source_authority": "forge",
+                "freshness": "current",
+                "contradiction_status": "none",
+                "content": "first overlap",
+                "confidence": 0.95
+            },
+            {
+                "kind": "claim_version",
+                "claim_id": "claim-overlap",
+                "claim_version_id": "claim-overlap-v2",
+                "claim_state": "active",
+                "projection_family": "forge_verification",
+                "subject_entity_id": "ent-overlap",
+                "predicate": "has_type",
+                "object_anchor": "function",
+                "scope_key": { "namespace": "canonical-ns" },
+                "valid_from": "2026-01-15T00:00:00Z",
+                "valid_to": "2026-02-15T00:00:00Z",
+                "preferred_open": true,
+                "source_envelope_id": "cb-pref-overlap-batch",
+                "source_authority": "forge",
+                "freshness": "current",
+                "contradiction_status": "none",
+                "content": "second overlap",
+                "confidence": 0.94
+            }
+        ]
+    })
+    .to_string();
+
+    let err = store
+        .import_projection_batch_json_compat(&batch)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "import_invalid");
+    assert!(format!("{err}").contains("overlap"));
+}
+
+#[tokio::test]
+async fn canonical_batch_rejects_overlapping_preferred_claim_with_existing_preferred() {
+    let (store, _dir) = test_store();
+
+    let existing = serde_json::json!({
+        "source_envelope_id": "cb-pref-existing-base",
+        "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
+        "export_schema_version": "export_envelope_v1",
+        "content_digest": "digest-pref-existing-base",
+        "source_authority": "forge",
+        "scope_key": { "namespace": "canonical-ns" },
+        "source_exported_at": "2026-03-07T00:00:00Z",
+        "transformed_at": "2026-03-07T00:00:01Z",
+        "records": [{
+            "kind": "claim_version",
+            "claim_id": "claim-existing-overlap",
+            "claim_version_id": "claim-existing-overlap-v1",
+            "claim_state": "active",
+            "projection_family": "forge_verification",
+            "subject_entity_id": "ent-overlap-existing",
+            "predicate": "has_type",
+            "object_anchor": "function",
+            "scope_key": { "namespace": "canonical-ns" },
+            "valid_from": "2026-01-01T00:00:00Z",
+            "valid_to": "2026-02-01T00:00:00Z",
+            "preferred_open": true,
+            "source_envelope_id": "cb-pref-existing-base",
+            "source_authority": "forge",
+            "freshness": "current",
+            "contradiction_status": "none",
+            "content": "existing overlap",
+            "confidence": 0.95
+        }]
+    })
+    .to_string();
+    store
+        .import_projection_batch_json_compat(&existing)
+        .await
+        .unwrap();
+
+    let overlapping = serde_json::json!({
+        "source_envelope_id": "cb-pref-existing-overlap",
+        "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
+        "export_schema_version": "export_envelope_v1",
+        "content_digest": "digest-pref-existing-overlap",
+        "source_authority": "forge",
+        "scope_key": { "namespace": "canonical-ns" },
+        "source_exported_at": "2026-03-08T00:00:00Z",
+        "transformed_at": "2026-03-08T00:00:01Z",
+        "records": [{
+            "kind": "claim_version",
+            "claim_id": "claim-existing-overlap",
+            "claim_version_id": "claim-existing-overlap-v2",
+            "claim_state": "active",
+            "projection_family": "forge_verification",
+            "subject_entity_id": "ent-overlap-existing",
+            "predicate": "has_type",
+            "object_anchor": "function",
+            "scope_key": { "namespace": "canonical-ns" },
+            "valid_from": "2026-01-15T00:00:00Z",
+            "valid_to": "2026-03-01T00:00:00Z",
+            "preferred_open": true,
+            "source_envelope_id": "cb-pref-existing-overlap",
+            "source_authority": "forge",
+            "freshness": "current",
+            "contradiction_status": "none",
+            "content": "overlaps existing",
+            "confidence": 0.95
+        }]
+    })
+    .to_string();
+
+    let err = store
+        .import_projection_batch_json_compat(&overlapping)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "import_invalid");
+    assert!(format!("{err}").contains("overlap"));
+}
+
+#[tokio::test]
+async fn canonical_batch_rejects_overlapping_preferred_relations_in_batch() {
+    let (store, _dir) = test_store();
+    let batch = serde_json::json!({
+        "source_envelope_id": "cb-pref-rel-overlap-batch",
+        "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
+        "export_schema_version": "export_envelope_v1",
+        "content_digest": "digest-pref-rel-overlap-batch",
+        "source_authority": "forge",
+        "scope_key": { "namespace": "canonical-ns" },
+        "source_exported_at": "2026-03-07T00:00:00Z",
+        "transformed_at": "2026-03-07T00:00:01Z",
+        "records": [
+            {
+                "kind": "relation_version",
+                "relation_version_id": "rel-overlap-v1",
+                "subject_entity_id": "rel-overlap-entity",
+                "predicate": "affects",
+                "object_anchor": "target-1",
+                "scope_key": { "namespace": "canonical-ns" },
+                "projection_family": "forge_verification",
+                "valid_from": "2026-01-01T00:00:00Z",
+                "valid_to": "2026-02-01T00:00:00Z",
+                "preferred_open": true,
+                "source_confidence": 0.9,
+                "source_envelope_id": "cb-pref-rel-overlap-batch",
+                "source_authority": "forge",
+                "freshness": "current",
+                "contradiction_status": "none"
+            },
+            {
+                "kind": "relation_version",
+                "relation_version_id": "rel-overlap-v2",
+                "subject_entity_id": "rel-overlap-entity",
+                "predicate": "affects",
+                "object_anchor": "target-1",
+                "scope_key": { "namespace": "canonical-ns" },
+                "projection_family": "forge_verification",
+                "valid_from": "2026-01-15T00:00:00Z",
+                "valid_to": "2026-02-15T00:00:00Z",
+                "preferred_open": true,
+                "source_confidence": 0.88,
+                "source_envelope_id": "cb-pref-rel-overlap-batch",
+                "source_authority": "forge",
+                "freshness": "current",
+                "contradiction_status": "none"
+            }
+        ]
+    })
+    .to_string();
+
+    let err = store
+        .import_projection_batch_json_compat(&batch)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "import_invalid");
+    assert!(format!("{err}").contains("overlap"));
 }

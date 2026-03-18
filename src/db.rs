@@ -229,6 +229,7 @@ ALTER TABLE episodes ADD COLUMN trace_id TEXT;
 const MIGRATION_V9: &str = "";
 
 /// Ordered list of migrations.
+#[allow(deprecated)]
 const MIGRATIONS: &[(u32, &str)] = &[
     (1, MIGRATION_V1),
     (2, MIGRATION_V2),
@@ -243,10 +244,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (11, crate::projection_storage::MIGRATION_V11),
     (12, crate::projection_storage::MIGRATION_V12),
     (13, crate::projection_storage::MIGRATION_V13),
+    (14, crate::projection_storage::MIGRATION_V14),
+    (15, crate::projection_storage::MIGRATION_V15),
+    (16, crate::projection_storage::MIGRATION_V16),
+    (17, crate::projection_storage::MIGRATION_V17),
 ];
 
 /// Maximum schema version this build supports.
-pub const MAX_SCHEMA_VERSION: u32 = 13;
+pub const MAX_SCHEMA_VERSION: u32 = 17;
 
 /// Procedural migration for V9: rebuild episodes table with episode_id PK.
 fn run_migration_v9(conn: &Connection) -> Result<(), MemoryError> {
@@ -522,6 +527,7 @@ fn configure_connection(
          PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = {};
          PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store = MEMORY;
          PRAGMA wal_autocheckpoint = {};",
         journal_mode, pool.busy_timeout_ms, pool.wal_autocheckpoint,
     ))?;
@@ -596,10 +602,44 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
             continue;
         }
 
-        // V9 requires a procedural migration (table rebuild)
+        // V9, V16, and V17 require procedural migrations.
         if version == 9 {
             run_migration_v9(conn).map_err(|e| MemoryError::MigrationFailed {
-                version: 9,
+                version,
+                reason: e.to_string(),
+            })?;
+            conn.execute(
+                "INSERT INTO _schema_version (version) VALUES (?1)",
+                params![version],
+            )
+            .map_err(|e| MemoryError::MigrationFailed {
+                version,
+                reason: e.to_string(),
+            })?;
+            tracing::info!("Applied migration V{}", version);
+            continue;
+        }
+
+        if version == 16 {
+            run_migration_v16(conn).map_err(|e| MemoryError::MigrationFailed {
+                version,
+                reason: e.to_string(),
+            })?;
+            conn.execute(
+                "INSERT INTO _schema_version (version) VALUES (?1)",
+                params![version],
+            )
+            .map_err(|e| MemoryError::MigrationFailed {
+                version,
+                reason: e.to_string(),
+            })?;
+            tracing::info!("Applied migration V{}", version);
+            continue;
+        }
+
+        if version == 17 {
+            run_migration_v17(conn).map_err(|e| MemoryError::MigrationFailed {
+                version,
                 reason: e.to_string(),
             })?;
             conn.execute(
@@ -642,6 +682,71 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
         )
         .unwrap_or(0);
     conn.execute_batch(&format!("PRAGMA user_version = {};", final_version))?;
+
+    Ok(())
+}
+
+fn run_migration_v16(conn: &Connection) -> Result<(), rusqlite::Error> {
+    add_column_if_missing(conn, "projection_import_log", "kernel_payload_json", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "projection_import_failures",
+        "kernel_payload_json",
+        "TEXT",
+    )?;
+    Ok(())
+}
+
+fn run_migration_v17(conn: &Connection) -> Result<(), rusqlite::Error> {
+    add_column_if_missing(conn, "projection_import_log", "episode_bundle_id", "TEXT")?;
+    add_column_if_missing(conn, "projection_import_log", "episode_bundle_json", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "projection_import_log",
+        "execution_context_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "projection_import_failures",
+        "episode_bundle_id",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "projection_import_failures",
+        "episode_bundle_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "projection_import_failures",
+        "execution_context_json",
+        "TEXT",
+    )?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    column_sql: &str,
+) -> Result<(), rusqlite::Error> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&pragma)?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|name| name == column);
+
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_sql}"),
+            [],
+        )?;
+    }
 
     Ok(())
 }

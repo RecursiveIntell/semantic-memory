@@ -284,6 +284,68 @@ pub(crate) const MIGRATION_V13: &str = r#"
 ALTER TABLE projection_import_log ADD COLUMN export_schema_version TEXT;
 "#;
 
+/// V14 migration: preserve V2 export metadata and durable failure receipts.
+pub(crate) const MIGRATION_V14: &str = r#"
+ALTER TABLE projection_import_log ADD COLUMN source_run_id TEXT;
+ALTER TABLE projection_import_log ADD COLUMN comparability_snapshot_version TEXT;
+ALTER TABLE projection_import_log ADD COLUMN direct_write INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE projection_import_log ADD COLUMN failure_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS projection_import_failures (
+    failure_id               TEXT PRIMARY KEY,
+    source_envelope_id       TEXT NOT NULL,
+    schema_version           TEXT NOT NULL,
+    export_schema_version    TEXT,
+    content_digest           TEXT NOT NULL,
+    source_authority         TEXT NOT NULL,
+    scope_namespace          TEXT NOT NULL,
+    scope_domain             TEXT,
+    scope_workspace_id       TEXT,
+    scope_repo_id            TEXT,
+    trace_id                 TEXT,
+    record_count             INTEGER NOT NULL,
+    error_kind               TEXT NOT NULL,
+    error_message            TEXT NOT NULL,
+    source_exported_at       TEXT,
+    transformed_at           TEXT,
+    failed_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pif_envelope ON projection_import_failures(source_envelope_id);
+CREATE INDEX IF NOT EXISTS idx_pif_scope ON projection_import_failures(scope_namespace);
+CREATE INDEX IF NOT EXISTS idx_pif_failed_at ON projection_import_failures(failed_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pif_dedupe
+    ON projection_import_failures(source_envelope_id, schema_version, content_digest);
+"#;
+
+/// V15 migration: preserve canonical evidence-bundle receipts on import log rows.
+pub(crate) const MIGRATION_V15: &str = r#"
+ALTER TABLE projection_import_log ADD COLUMN evidence_bundle_id TEXT;
+ALTER TABLE projection_import_log ADD COLUMN evidence_bundle_json TEXT;
+
+ALTER TABLE projection_import_failures ADD COLUMN source_run_id TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN comparability_snapshot_version TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN direct_write INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE projection_import_failures ADD COLUMN evidence_bundle_id TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN evidence_bundle_json TEXT;
+"#;
+
+/// V16 migration: preserve rebuildable kernel payloads on import receipts.
+pub(crate) const MIGRATION_V16: &str = r#"
+ALTER TABLE projection_import_log ADD COLUMN kernel_payload_json TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN kernel_payload_json TEXT;
+"#;
+
+/// V17 migration: preserve v9 episode-bundle and execution-context proof surfaces.
+pub(crate) const MIGRATION_V17: &str = r#"
+ALTER TABLE projection_import_log ADD COLUMN episode_bundle_id TEXT;
+ALTER TABLE projection_import_log ADD COLUMN episode_bundle_json TEXT;
+ALTER TABLE projection_import_log ADD COLUMN execution_context_json TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN episode_bundle_id TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN episode_bundle_json TEXT;
+ALTER TABLE projection_import_failures ADD COLUMN execution_context_json TEXT;
+"#;
+
 /// Check if a projection import batch has already been ingested.
 pub(crate) fn check_projection_import_exists(
     conn: &rusqlite::Connection,
@@ -294,12 +356,43 @@ pub(crate) fn check_projection_import_exists(
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM projection_import_log
-             WHERE source_envelope_id = ?1 AND schema_version = ?2 AND content_digest = ?3",
+             WHERE source_envelope_id = ?1 AND schema_version = ?2 AND content_digest = ?3
+               AND status = 'complete'",
             rusqlite::params![source_envelope_id, schema_version, content_digest],
             |row| row.get(0),
         )
         .unwrap_or(0);
     Ok(count > 0)
+}
+
+pub(crate) fn claim_version_source_envelope(
+    conn: &rusqlite::Connection,
+    claim_version_id: &str,
+) -> Result<Option<String>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT source_envelope_id FROM claim_versions WHERE claim_version_id = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![claim_version_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn relation_version_source_envelope(
+    conn: &rusqlite::Connection,
+    relation_version_id: &str,
+) -> Result<Option<String>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT source_envelope_id FROM relation_versions WHERE relation_version_id = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![relation_version_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get(0)?))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Insert a claim version record.
@@ -466,16 +559,49 @@ pub(crate) fn insert_projection_import_log(
     log: &ProjectionImportLogRow,
 ) -> Result<(), MemoryError> {
     tx.execute(
-        "INSERT OR IGNORE INTO projection_import_log (
+        "INSERT INTO projection_import_log (
             batch_id, source_envelope_id, schema_version, export_schema_version,
             content_digest, source_authority, scope_namespace, scope_domain,
             scope_workspace_id, scope_repo_id, trace_id, record_count,
             claim_count, relation_count, episode_count, alias_count,
-            evidence_count, status, source_exported_at, transformed_at, imported_at
+            evidence_count, status, source_exported_at, transformed_at, imported_at,
+            source_run_id, comparability_snapshot_version, direct_write, failure_reason,
+            evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+            execution_context_json, kernel_payload_json
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
-        )",
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+            ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+        )
+        ON CONFLICT(source_envelope_id, schema_version, content_digest) DO UPDATE SET
+            batch_id = excluded.batch_id,
+            export_schema_version = excluded.export_schema_version,
+            source_authority = excluded.source_authority,
+            scope_namespace = excluded.scope_namespace,
+            scope_domain = excluded.scope_domain,
+            scope_workspace_id = excluded.scope_workspace_id,
+            scope_repo_id = excluded.scope_repo_id,
+            trace_id = excluded.trace_id,
+            record_count = excluded.record_count,
+            claim_count = excluded.claim_count,
+            relation_count = excluded.relation_count,
+            episode_count = excluded.episode_count,
+            alias_count = excluded.alias_count,
+            evidence_count = excluded.evidence_count,
+            status = excluded.status,
+            source_exported_at = excluded.source_exported_at,
+            transformed_at = excluded.transformed_at,
+            imported_at = excluded.imported_at,
+            source_run_id = excluded.source_run_id,
+            comparability_snapshot_version = excluded.comparability_snapshot_version,
+            direct_write = excluded.direct_write,
+            failure_reason = excluded.failure_reason,
+            evidence_bundle_id = excluded.evidence_bundle_id,
+            evidence_bundle_json = excluded.evidence_bundle_json,
+            episode_bundle_id = excluded.episode_bundle_id,
+            episode_bundle_json = excluded.episode_bundle_json,
+            execution_context_json = excluded.execution_context_json,
+            kernel_payload_json = excluded.kernel_payload_json",
         rusqlite::params![
             log.batch_id,
             log.source_envelope_id,
@@ -498,6 +624,152 @@ pub(crate) fn insert_projection_import_log(
             log.source_exported_at,
             log.transformed_at,
             log.imported_at,
+            log.source_run_id,
+            log.comparability_snapshot_version,
+            log.direct_write as i32,
+            log.failure_reason,
+            log.evidence_bundle_id,
+            log.evidence_bundle_json,
+            log.episode_bundle_id,
+            log.episode_bundle_json,
+            log.execution_context_json,
+            log.kernel_payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upsert a projection import log entry outside the main import transaction.
+pub(crate) fn upsert_projection_import_log_conn(
+    conn: &rusqlite::Connection,
+    log: &ProjectionImportLogRow,
+) -> Result<(), MemoryError> {
+    conn.execute(
+        "INSERT INTO projection_import_log (
+            batch_id, source_envelope_id, schema_version, export_schema_version,
+            content_digest, source_authority, scope_namespace, scope_domain,
+            scope_workspace_id, scope_repo_id, trace_id, record_count,
+            claim_count, relation_count, episode_count, alias_count,
+            evidence_count, status, source_exported_at, transformed_at, imported_at,
+            source_run_id, comparability_snapshot_version, direct_write, failure_reason,
+            evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+            execution_context_json, kernel_payload_json
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+            ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+        )
+        ON CONFLICT(source_envelope_id, schema_version, content_digest) DO UPDATE SET
+            batch_id = excluded.batch_id,
+            export_schema_version = excluded.export_schema_version,
+            source_authority = excluded.source_authority,
+            scope_namespace = excluded.scope_namespace,
+            scope_domain = excluded.scope_domain,
+            scope_workspace_id = excluded.scope_workspace_id,
+            scope_repo_id = excluded.scope_repo_id,
+            trace_id = excluded.trace_id,
+            record_count = excluded.record_count,
+            claim_count = excluded.claim_count,
+            relation_count = excluded.relation_count,
+            episode_count = excluded.episode_count,
+            alias_count = excluded.alias_count,
+            evidence_count = excluded.evidence_count,
+            status = excluded.status,
+            source_exported_at = excluded.source_exported_at,
+            transformed_at = excluded.transformed_at,
+            imported_at = excluded.imported_at,
+            source_run_id = excluded.source_run_id,
+            comparability_snapshot_version = excluded.comparability_snapshot_version,
+            direct_write = excluded.direct_write,
+            failure_reason = excluded.failure_reason,
+            evidence_bundle_id = excluded.evidence_bundle_id,
+            evidence_bundle_json = excluded.evidence_bundle_json,
+            episode_bundle_id = excluded.episode_bundle_id,
+            episode_bundle_json = excluded.episode_bundle_json,
+            execution_context_json = excluded.execution_context_json,
+            kernel_payload_json = excluded.kernel_payload_json",
+        rusqlite::params![
+            log.batch_id,
+            log.source_envelope_id,
+            log.schema_version,
+            log.export_schema_version,
+            log.content_digest,
+            log.source_authority,
+            log.scope_namespace,
+            log.scope_domain,
+            log.scope_workspace_id,
+            log.scope_repo_id,
+            log.trace_id,
+            log.record_count as i64,
+            log.claim_count as i64,
+            log.relation_count as i64,
+            log.episode_count as i64,
+            log.alias_count as i64,
+            log.evidence_count as i64,
+            log.status,
+            log.source_exported_at,
+            log.transformed_at,
+            log.imported_at,
+            log.source_run_id,
+            log.comparability_snapshot_version,
+            log.direct_write as i32,
+            log.failure_reason,
+            log.evidence_bundle_id,
+            log.evidence_bundle_json,
+            log.episode_bundle_id,
+            log.episode_bundle_json,
+            log.execution_context_json,
+            log.kernel_payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert or update a durable failed import receipt.
+pub(crate) fn insert_projection_import_failure(
+    conn: &rusqlite::Connection,
+    row: &ProjectionImportFailureRow,
+) -> Result<(), MemoryError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO projection_import_failures (
+            failure_id, source_envelope_id, schema_version, export_schema_version,
+            content_digest, source_authority, scope_namespace, scope_domain,
+            scope_workspace_id, scope_repo_id, trace_id, record_count,
+            error_kind, error_message, source_exported_at, transformed_at, failed_at,
+            source_run_id, comparability_snapshot_version, direct_write,
+            evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+            execution_context_json, kernel_payload_json
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+            ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+        )",
+        rusqlite::params![
+            row.failure_id,
+            row.source_envelope_id,
+            row.schema_version,
+            row.export_schema_version,
+            row.content_digest,
+            row.source_authority,
+            row.scope_namespace,
+            row.scope_domain,
+            row.scope_workspace_id,
+            row.scope_repo_id,
+            row.trace_id,
+            row.record_count as i64,
+            row.error_kind,
+            row.error_message,
+            row.source_exported_at,
+            row.transformed_at,
+            row.failed_at,
+            row.source_run_id,
+            row.comparability_snapshot_version,
+            row.direct_write as i32,
+            row.evidence_bundle_id,
+            row.evidence_bundle_json,
+            row.episode_bundle_id,
+            row.episode_bundle_json,
+            row.execution_context_json,
+            row.kernel_payload_json,
         ],
     )?;
     Ok(())
@@ -701,6 +973,85 @@ pub(crate) fn clear_invalidation(
     Ok(())
 }
 
+/// List preferred claim versions for the same logical key with interval metadata.
+///
+/// This is used to enforce temporal integrity invariants for preferred versions
+/// in the canonical projection import path.
+#[allow(clippy::type_complexity)]
+pub(crate) fn query_preferred_claim_intervals(
+    conn: &rusqlite::Connection,
+    claim_id: &str,
+) -> Result<Vec<(String, Option<String>, Option<String>)>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT claim_version_id, valid_from, valid_to
+           FROM claim_versions
+          WHERE claim_id = ?1
+            AND preferred_open = 1",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![claim_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// List preferred relation versions for the same logical key with interval metadata.
+///
+/// Logical key is `(subject_entity_id, predicate, object_anchor, scope_key, projection_family)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn query_preferred_relation_intervals(
+    conn: &rusqlite::Connection,
+    subject_entity_id: &str,
+    predicate: &str,
+    object_anchor: &str,
+    scope_namespace: &str,
+    scope_domain: Option<&str>,
+    scope_workspace_id: Option<&str>,
+    scope_repo_id: Option<&str>,
+    projection_family: &str,
+) -> Result<Vec<(String, Option<String>, Option<String>)>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT relation_version_id, valid_from, valid_to
+           FROM relation_versions
+          WHERE subject_entity_id = ?1
+            AND predicate = ?2
+            AND object_anchor = ?3
+            AND scope_namespace = ?4
+            AND (?5 IS NULL AND scope_domain IS NULL OR scope_domain = ?5)
+            AND (?6 IS NULL AND scope_workspace_id IS NULL OR scope_workspace_id = ?6)
+            AND (?7 IS NULL AND scope_repo_id IS NULL OR scope_repo_id = ?7)
+            AND projection_family = ?8
+            AND preferred_open = 1",
+    )?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![
+                subject_entity_id,
+                predicate,
+                object_anchor,
+                scope_namespace,
+                scope_domain,
+                scope_workspace_id,
+                scope_repo_id,
+                projection_family,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 fn projection_scan_limit(query: &ProjectionQuery) -> usize {
     let base = query.limit.max(1);
     base.saturating_mul(8).min(256).max(base)
@@ -799,6 +1150,7 @@ pub(crate) fn query_claim_versions(
          FROM claim_versions cv
          LEFT JOIN projection_import_log pil
            ON pil.source_envelope_id = cv.source_envelope_id
+          AND pil.imported_at = cv.recorded_at
          WHERE cv.scope_namespace = ?1
            AND ((?2 IS NULL AND cv.scope_domain IS NULL) OR cv.scope_domain = ?2)
            AND ((?3 IS NULL AND cv.scope_workspace_id IS NULL) OR cv.scope_workspace_id = ?3)
@@ -806,11 +1158,12 @@ pub(crate) fn query_claim_versions(
            AND (?5 IS NULL OR cv.subject_entity_id = ?5)
            AND (?6 IS NULL OR cv.claim_state = ?6)
            AND (?7 IS NULL OR cv.claim_id = ?7)
-           AND (?8 IS NULL OR cv.recorded_at <= ?8)
-           AND (?9 IS NULL OR ((cv.valid_from IS NULL OR cv.valid_from <= ?9)
-                           AND (cv.valid_to IS NULL OR cv.valid_to > ?9)))
+           AND (?8 IS NULL OR cv.claim_version_id = ?8)
+           AND (?9 IS NULL OR cv.recorded_at <= ?9)
+           AND (?10 IS NULL OR ((cv.valid_from IS NULL OR cv.valid_from <= ?10)
+                            AND (cv.valid_to IS NULL OR cv.valid_to > ?10)))
          ORDER BY cv.preferred_open DESC, cv.recorded_at DESC
-         LIMIT ?10",
+         LIMIT ?11",
     )?;
     let mut rows = stmt.query(rusqlite::params![
         query.scope.namespace.as_str(),
@@ -820,6 +1173,7 @@ pub(crate) fn query_claim_versions(
         query.subject_entity_id.as_ref().map(|id| id.as_str()),
         query.claim_state.as_deref(),
         query.claim_id.as_ref().map(|id| id.as_str()),
+        query.claim_version_id.as_ref().map(|id| id.as_str()),
         query.recorded_at_or_before.as_deref(),
         query.valid_at.as_deref(),
         scan_limit as i64,
@@ -924,6 +1278,7 @@ pub(crate) fn query_relation_versions(
          FROM relation_versions rv
          LEFT JOIN projection_import_log pil
            ON pil.source_envelope_id = rv.source_envelope_id
+          AND pil.imported_at = rv.recorded_at
          WHERE rv.scope_namespace = ?1
            AND ((?2 IS NULL AND rv.scope_domain IS NULL) OR rv.scope_domain = ?2)
            AND ((?3 IS NULL AND rv.scope_workspace_id IS NULL) OR rv.scope_workspace_id = ?3)
@@ -1042,6 +1397,7 @@ pub(crate) fn query_episode_rows(
          FROM episode_links el
          JOIN projection_import_log pil
            ON pil.source_envelope_id = el.source_envelope_id
+          AND pil.imported_at = el.recorded_at
          WHERE pil.scope_namespace = ?1
            AND ((?2 IS NULL AND pil.scope_domain IS NULL) OR pil.scope_domain = ?2)
            AND ((?3 IS NULL AND pil.scope_workspace_id IS NULL) OR pil.scope_workspace_id = ?3)
@@ -1143,6 +1499,7 @@ pub(crate) fn query_entity_aliases(
          FROM entity_aliases ea
          LEFT JOIN projection_import_log pil
            ON pil.source_envelope_id = ea.source_envelope_id
+          AND pil.imported_at = ea.recorded_at
          WHERE ea.scope_namespace = ?1
            AND ((?2 IS NULL AND ea.scope_domain IS NULL) OR ea.scope_domain = ?2)
            AND ((?3 IS NULL AND ea.scope_workspace_id IS NULL) OR ea.scope_workspace_id = ?3)
@@ -1241,6 +1598,7 @@ pub(crate) fn query_evidence_refs(
          FROM evidence_refs er
          JOIN projection_import_log pil
            ON pil.source_envelope_id = er.source_envelope_id
+          AND pil.imported_at = er.recorded_at
          WHERE pil.scope_namespace = ?1
            AND ((?2 IS NULL AND pil.scope_domain IS NULL) OR pil.scope_domain = ?2)
            AND ((?3 IS NULL AND pil.scope_workspace_id IS NULL) OR pil.scope_workspace_id = ?3)
@@ -1326,7 +1684,10 @@ pub(crate) fn query_projection_import_log(
                     content_digest, source_authority, scope_namespace, scope_domain,
                     scope_workspace_id, scope_repo_id, trace_id, record_count,
                     claim_count, relation_count, episode_count, alias_count, evidence_count,
-                    status, source_exported_at, transformed_at, imported_at
+                    status, source_exported_at, transformed_at, imported_at,
+                    source_run_id, comparability_snapshot_version, direct_write, failure_reason,
+                    evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+                    execution_context_json, kernel_payload_json
              FROM projection_import_log
              WHERE scope_namespace = ?1
              ORDER BY imported_at DESC LIMIT ?2",
@@ -1340,13 +1701,91 @@ pub(crate) fn query_projection_import_log(
                 content_digest, source_authority, scope_namespace, scope_domain,
                 scope_workspace_id, scope_repo_id, trace_id, record_count,
                 claim_count, relation_count, episode_count, alias_count, evidence_count,
-                status, source_exported_at, transformed_at, imported_at
+                status, source_exported_at, transformed_at, imported_at,
+                source_run_id, comparability_snapshot_version, direct_write, failure_reason,
+                evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+                execution_context_json, kernel_payload_json
          FROM projection_import_log
          ORDER BY imported_at DESC LIMIT ?1"
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(rusqlite::params![limit as i64], map_import_log_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn latest_rebuildable_kernel_projection_import(
+    conn: &rusqlite::Connection,
+    scope: &ScopeKey,
+) -> Result<Option<ProjectionImportLogRow>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT batch_id, source_envelope_id, schema_version, export_schema_version,
+                content_digest, source_authority, scope_namespace, scope_domain,
+                scope_workspace_id, scope_repo_id, trace_id, record_count,
+                claim_count, relation_count, episode_count, alias_count, evidence_count,
+                status, source_exported_at, transformed_at, imported_at,
+                source_run_id, comparability_snapshot_version, direct_write, failure_reason,
+                evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+                execution_context_json, kernel_payload_json
+         FROM projection_import_log
+         WHERE scope_namespace = ?1
+           AND ((?2 IS NULL AND scope_domain IS NULL) OR scope_domain = ?2)
+           AND ((?3 IS NULL AND scope_workspace_id IS NULL) OR scope_workspace_id = ?3)
+           AND ((?4 IS NULL AND scope_repo_id IS NULL) OR scope_repo_id = ?4)
+           AND status = 'complete'
+           AND kernel_payload_json IS NOT NULL
+         ORDER BY imported_at DESC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![
+        scope.namespace.as_str(),
+        scope.domain.as_deref(),
+        scope.workspace_id.as_deref(),
+        scope.repo_id.as_deref(),
+    ])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(map_import_log_row(row)?)),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn query_projection_import_failures(
+    conn: &rusqlite::Connection,
+    scope_namespace: Option<&str>,
+    limit: usize,
+) -> Result<Vec<ProjectionImportFailureRow>, MemoryError> {
+    let sql = if let Some(ns) = scope_namespace {
+        let mut stmt = conn.prepare(
+            "SELECT failure_id, source_envelope_id, schema_version, export_schema_version,
+                    content_digest, source_authority, scope_namespace, scope_domain,
+                    scope_workspace_id, scope_repo_id, trace_id, record_count,
+                    error_kind, error_message, source_exported_at, transformed_at, failed_at,
+                    source_run_id, comparability_snapshot_version, direct_write,
+                    evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+                    execution_context_json, kernel_payload_json
+             FROM projection_import_failures
+             WHERE scope_namespace = ?1
+             ORDER BY failed_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![ns, limit as i64], map_import_failure_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(rows);
+    } else {
+        "SELECT failure_id, source_envelope_id, schema_version, export_schema_version,
+                content_digest, source_authority, scope_namespace, scope_domain,
+                scope_workspace_id, scope_repo_id, trace_id, record_count,
+                error_kind, error_message, source_exported_at, transformed_at, failed_at,
+                source_run_id, comparability_snapshot_version, direct_write,
+                evidence_bundle_id, evidence_bundle_json, episode_bundle_id, episode_bundle_json,
+                execution_context_json, kernel_payload_json
+         FROM projection_import_failures
+         ORDER BY failed_at DESC LIMIT ?1"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params![limit as i64], map_import_failure_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -1374,6 +1813,47 @@ fn map_import_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectionImp
         source_exported_at: row.get(18)?,
         transformed_at: row.get(19)?,
         imported_at: row.get(20)?,
+        source_run_id: row.get(21)?,
+        comparability_snapshot_version: row.get(22)?,
+        direct_write: row.get::<_, i64>(23)? != 0,
+        failure_reason: row.get(24)?,
+        evidence_bundle_id: row.get(25)?,
+        evidence_bundle_json: row.get(26)?,
+        episode_bundle_id: row.get(27)?,
+        episode_bundle_json: row.get(28)?,
+        execution_context_json: row.get(29)?,
+        kernel_payload_json: row.get(30)?,
+    })
+}
+
+fn map_import_failure_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectionImportFailureRow> {
+    Ok(ProjectionImportFailureRow {
+        failure_id: row.get(0)?,
+        source_envelope_id: row.get(1)?,
+        schema_version: row.get(2)?,
+        export_schema_version: row.get(3)?,
+        content_digest: row.get(4)?,
+        source_authority: row.get(5)?,
+        scope_namespace: row.get(6)?,
+        scope_domain: row.get(7)?,
+        scope_workspace_id: row.get(8)?,
+        scope_repo_id: row.get(9)?,
+        trace_id: row.get(10)?,
+        record_count: row.get::<_, i64>(11)? as usize,
+        error_kind: row.get(12)?,
+        error_message: row.get(13)?,
+        source_exported_at: row.get(14)?,
+        transformed_at: row.get(15)?,
+        failed_at: row.get(16)?,
+        source_run_id: row.get(17)?,
+        comparability_snapshot_version: row.get(18)?,
+        direct_write: row.get::<_, i64>(19)? != 0,
+        evidence_bundle_id: row.get(20)?,
+        evidence_bundle_json: row.get(21)?,
+        episode_bundle_id: row.get(22)?,
+        episode_bundle_json: row.get(23)?,
+        execution_context_json: row.get(24)?,
+        kernel_payload_json: row.get(25)?,
     })
 }
 
@@ -1514,6 +1994,7 @@ pub(crate) struct DerivationEdgeRow {
 }
 
 /// Flat row struct for projection import log.
+#[derive(Clone)]
 pub(crate) struct ProjectionImportLogRow {
     pub batch_id: String,
     pub source_envelope_id: String,
@@ -1536,4 +2017,44 @@ pub(crate) struct ProjectionImportLogRow {
     pub source_exported_at: Option<String>,
     pub transformed_at: Option<String>,
     pub imported_at: String,
+    pub source_run_id: Option<String>,
+    pub comparability_snapshot_version: Option<String>,
+    pub direct_write: bool,
+    pub failure_reason: Option<String>,
+    pub evidence_bundle_id: Option<String>,
+    pub evidence_bundle_json: Option<String>,
+    pub episode_bundle_id: Option<String>,
+    pub episode_bundle_json: Option<String>,
+    pub execution_context_json: Option<String>,
+    pub kernel_payload_json: Option<String>,
+}
+
+/// Durable failed projection import receipt.
+pub(crate) struct ProjectionImportFailureRow {
+    pub failure_id: String,
+    pub source_envelope_id: String,
+    pub schema_version: String,
+    pub export_schema_version: Option<String>,
+    pub content_digest: String,
+    pub source_authority: String,
+    pub scope_namespace: String,
+    pub scope_domain: Option<String>,
+    pub scope_workspace_id: Option<String>,
+    pub scope_repo_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub record_count: usize,
+    pub error_kind: String,
+    pub error_message: String,
+    pub source_exported_at: Option<String>,
+    pub transformed_at: Option<String>,
+    pub failed_at: String,
+    pub source_run_id: Option<String>,
+    pub comparability_snapshot_version: Option<String>,
+    pub direct_write: bool,
+    pub evidence_bundle_id: Option<String>,
+    pub evidence_bundle_json: Option<String>,
+    pub episode_bundle_id: Option<String>,
+    pub episode_bundle_json: Option<String>,
+    pub execution_context_json: Option<String>,
+    pub kernel_payload_json: Option<String>,
 }

@@ -2,8 +2,11 @@ use crate::db;
 #[cfg(feature = "hnsw")]
 use crate::db::IndexOpKind;
 use crate::error::MemoryError;
+use crate::quantize::{self, Quantizer};
 use crate::types::{EpisodeMeta, EpisodeOutcome, VerificationStatus};
+use crate::{build_episode_search_text, verification_status_for_outcome, MemoryStore};
 use rusqlite::{params, Connection};
+use stack_ids::TraceCtx;
 
 // ─── Centralized episode identity helpers ──────────────────────────────
 
@@ -605,4 +608,281 @@ pub(crate) fn load_episode_context(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok((title, chunks.join("\n")))
+}
+
+impl MemoryStore {
+    /// Ingest or update a causal episode attached to a document.
+    ///
+    /// The document must already exist. Existing episodes keep their original `created_at`
+    /// timestamp while their searchable text, outcome state, verification metadata, embeddings,
+    /// and `updated_at` are refreshed.
+    pub async fn ingest_episode(
+        &self,
+        document_id: &str,
+        meta: &EpisodeMeta,
+    ) -> Result<String, MemoryError> {
+        self.ingest_episode_with_trace(document_id, meta, None)
+            .await
+    }
+
+    /// Ingest a causal episode with optional trace metadata. Returns the episode_id.
+    pub async fn ingest_episode_with_trace(
+        &self,
+        document_id: &str,
+        meta: &EpisodeMeta,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<String, MemoryError> {
+        self.validate_content("episodes.effect_type", &meta.effect_type)?;
+        Self::validate_confidence(meta.confidence)?;
+        let doc_id = document_id.to_string();
+        let meta = meta.clone();
+        let (document_title, document_context) = self
+            .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
+            .await?;
+        let search_text = build_episode_search_text(&document_title, &document_context, &meta);
+        let embedding = self.embed_text_internal(&search_text).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|vector| quantize::pack_quantized(&vector))
+            .ok();
+        let trace_id_owned = trace_ctx.map(|value| value.trace_id.clone());
+
+        let doc_id = document_id.to_string();
+        let episode_id = self
+            .with_write_conn(move |conn| {
+                upsert_episode(
+                    conn,
+                    &doc_id,
+                    &meta,
+                    &search_text,
+                    &embedding_bytes,
+                    q8_bytes.as_deref(),
+                    trace_id_owned.as_deref(),
+                )
+            })
+            .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("ingest_episode")
+            .await;
+
+        Ok(episode_id)
+    }
+
+    /// Create a new episode with an explicit episode_id. Returns the episode_id.
+    pub async fn create_episode(
+        &self,
+        episode_id: &str,
+        document_id: &str,
+        meta: &EpisodeMeta,
+    ) -> Result<String, MemoryError> {
+        self.create_episode_with_trace(episode_id, document_id, meta, None)
+            .await
+    }
+
+    /// Create a new episode with an explicit episode_id and optional trace metadata.
+    pub async fn create_episode_with_trace(
+        &self,
+        episode_id: &str,
+        document_id: &str,
+        meta: &EpisodeMeta,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<String, MemoryError> {
+        self.validate_content("episodes.effect_type", &meta.effect_type)?;
+        Self::validate_confidence(meta.confidence)?;
+        let doc_id = document_id.to_string();
+        let meta = meta.clone();
+        let (document_title, document_context) = self
+            .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
+            .await?;
+        let search_text = build_episode_search_text(&document_title, &document_context, &meta);
+        let embedding = self.embed_text_internal(&search_text).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|vector| quantize::pack_quantized(&vector))
+            .ok();
+        let trace_id_owned = trace_ctx.map(|value| value.trace_id.clone());
+
+        let ep_id = episode_id.to_string();
+        let doc_id = document_id.to_string();
+        let created_ep_id = self
+            .with_write_conn(move |conn| {
+                crate::episodes::create_episode(
+                    conn,
+                    &ep_id,
+                    &doc_id,
+                    &meta,
+                    &search_text,
+                    &embedding_bytes,
+                    q8_bytes.as_deref(),
+                    trace_id_owned.as_deref(),
+                )
+            })
+            .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("create_episode")
+            .await;
+
+        Ok(created_ep_id)
+    }
+
+    /// Retrieve an episode by its episode_id.
+    pub async fn get_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<Option<(String, EpisodeMeta)>, MemoryError> {
+        let ep_id = episode_id.to_string();
+        self.with_read_conn(move |conn| get_episode(conn, &ep_id))
+            .await
+    }
+
+    /// Update the outcome of an episode by its episode_id.
+    pub async fn update_episode_outcome_by_id(
+        &self,
+        episode_id: &str,
+        outcome: EpisodeOutcome,
+        confidence: f32,
+        experiment_id: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        Self::validate_confidence(confidence)?;
+        let ep_id = episode_id.to_string();
+        let ep_id_clone = ep_id.clone();
+        let (doc_id, current_meta) = self
+            .with_read_conn(move |conn| {
+                get_episode(conn, &ep_id_clone)?
+                    .ok_or_else(|| MemoryError::EpisodeNotFound(ep_id_clone.clone()))
+            })
+            .await?;
+
+        let experiment_id_owned = experiment_id.map(|value| value.to_string());
+        let verification_status =
+            verification_status_for_outcome(&outcome, experiment_id_owned.as_deref());
+        let updated_meta = EpisodeMeta {
+            cause_ids: current_meta.cause_ids,
+            effect_type: current_meta.effect_type,
+            outcome: outcome.clone(),
+            confidence,
+            verification_status: verification_status.clone(),
+            experiment_id: experiment_id_owned.clone().or(current_meta.experiment_id),
+        };
+
+        let (document_title, document_context) = self
+            .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
+            .await?;
+        let search_text =
+            build_episode_search_text(&document_title, &document_context, &updated_meta);
+        let embedding = self.embed_text_internal(&search_text).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|vector| quantize::pack_quantized(&vector))
+            .ok();
+
+        self.with_write_conn(move |conn| {
+            crate::episodes::update_episode_outcome_by_id(
+                conn,
+                &ep_id,
+                outcome,
+                confidence,
+                experiment_id_owned.as_deref(),
+                &verification_status,
+                &search_text,
+                &embedding_bytes,
+                q8_bytes.as_deref(),
+            )
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("update_episode_outcome_by_id")
+            .await;
+
+        Ok(())
+    }
+
+    /// Update the outcome of an existing episode.
+    pub async fn update_episode_outcome(
+        &self,
+        document_id: &str,
+        outcome: EpisodeOutcome,
+        confidence: f32,
+        experiment_id: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        Self::validate_confidence(confidence)?;
+        let doc_id = document_id.to_string();
+        let current_meta = self
+            .with_read_conn(move |conn| load_episode_meta(conn, &doc_id))
+            .await?
+            .ok_or_else(|| MemoryError::DocumentNotFound(document_id.to_string()))?;
+
+        let experiment_id_owned = experiment_id.map(|value| value.to_string());
+        let verification_status =
+            verification_status_for_outcome(&outcome, experiment_id_owned.as_deref());
+        let updated_meta = EpisodeMeta {
+            cause_ids: current_meta.cause_ids,
+            effect_type: current_meta.effect_type,
+            outcome: outcome.clone(),
+            confidence,
+            verification_status: verification_status.clone(),
+            experiment_id: experiment_id_owned.clone().or(current_meta.experiment_id),
+        };
+
+        let doc_id = document_id.to_string();
+        let (document_title, document_context) = self
+            .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
+            .await?;
+        let search_text =
+            build_episode_search_text(&document_title, &document_context, &updated_meta);
+        let embedding = self.embed_text_internal(&search_text).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|vector| quantize::pack_quantized(&vector))
+            .ok();
+
+        let doc_id = document_id.to_string();
+        self.with_write_conn(move |conn| {
+            crate::episodes::update_episode_outcome(
+                conn,
+                &doc_id,
+                outcome,
+                confidence,
+                experiment_id_owned.as_deref(),
+                &verification_status,
+                &search_text,
+                &embedding_bytes,
+                q8_bytes.as_deref(),
+            )
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("update_episode_outcome")
+            .await;
+
+        Ok(())
+    }
+
+    /// Search for episodes by effect_type and/or outcome.
+    pub async fn search_episodes(
+        &self,
+        effect_type: Option<&str>,
+        outcome: Option<&EpisodeOutcome>,
+        limit: usize,
+    ) -> Result<Vec<(String, EpisodeMeta)>, MemoryError> {
+        let et = effect_type.map(|s| s.to_string());
+        let outcome_owned = outcome.cloned();
+
+        self.with_read_conn(move |conn| {
+            search_episodes(conn, et.as_deref(), outcome_owned.as_ref(), limit)
+        })
+        .await
+    }
 }

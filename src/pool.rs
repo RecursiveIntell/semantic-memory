@@ -57,6 +57,63 @@ impl Drop for ReaderGuard<'_> {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::config::{MemoryLimits, PoolConfig};
+    use std::panic::{self, AssertUnwindSafe};
+    use tempfile::TempDir;
+
+    #[test]
+    fn writer_mutex_poison_recovery_rolls_back_open_txn() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("poison-mutex.db");
+        let pool =
+            SqlitePool::open(&db_path, &PoolConfig::default(), &MemoryLimits::default()).unwrap();
+
+        let panic_result: Result<Result<(), MemoryError>, Box<dyn std::any::Any + Send>> =
+            panic::catch_unwind(AssertUnwindSafe(|| {
+                pool.with_write_conn(|conn| {
+                    conn.execute_batch(
+                        "BEGIN IMMEDIATE;
+                     CREATE TABLE IF NOT EXISTS poison_sync (value INTEGER);
+                     INSERT INTO poison_sync (value) VALUES (7);",
+                    )?;
+                    panic!("simulated panic during write");
+                })
+            }));
+        assert!(
+            panic_result.is_err(),
+            "simulated panic should propagate as panic"
+        );
+
+        let table_exists_after_recovery = pool
+            .with_write_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='poison_sync'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(count)
+            })
+            .unwrap();
+        assert_eq!(
+            table_exists_after_recovery, 0,
+            "poisoned mutex recovery should rollback speculative session writes"
+        );
+
+        let healthy = pool.with_write_conn(|conn| {
+            conn.execute_batch("CREATE TABLE safe_sync(value INTEGER)")?;
+            Ok(())
+        });
+        assert!(
+            healthy.is_ok(),
+            "writer connection should be usable after recovery"
+        );
+    }
+}
+
 impl SqlitePool {
     /// Open a writer connection, run migrations once, and populate the reader pool.
     pub(crate) fn open(
@@ -93,7 +150,28 @@ impl SqlitePool {
     where
         F: FnOnce(&Connection) -> Result<T, MemoryError>,
     {
-        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = match self.writer.lock() {
+            Ok(conn) => conn,
+            Err(err) => {
+                let conn = err.into_inner();
+                tracing::warn!("Writer lock was poisoned; entering recovery path");
+                if !conn.is_autocommit() {
+                    if let Err(rollback_err) = conn.execute("ROLLBACK", []) {
+                        tracing::error!(
+                            rollback_error = rollback_err.to_string(),
+                            "Writer connection was poisoned and rollback during recovery failed"
+                        );
+                    } else {
+                        tracing::warn!("Rolled back writer connection transaction after poisoned mutex recovery");
+                    }
+                } else {
+                    tracing::warn!(
+                        "Writer connection recovered from poison while already in autocommit mode"
+                    );
+                }
+                conn
+            }
+        };
         f(&conn)
     }
 

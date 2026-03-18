@@ -3,8 +3,8 @@ name = "semantic-memory"
 version = "0.5.0"
 edition = "2021"
 rust-version = "1.75"
-description = "Hybrid semantic search with SQLite, FTS5, and HNSW — built for AI agents"
-license = "MIT"
+description = "Local-first semantic memory with SQLite, FTS5, HNSW, and projection import lanes"
+license-file = "LICENSE"
 repository = "https://github.com/RecursiveIntell/semantic-memory"
 homepage = "https://github.com/RecursiveIntell/semantic-memory"
 keywords = ["search", "semantic", "sqlite", "hnsw", "embeddings"]
@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 stack-ids = { path = "../stack-ids" }
 forge-memory-bridge = { path = "../forge-memory-bridge" }
+schemars = "0.8"
 
 # HNSW approximate nearest neighbor search (optional)
 hnsw_rs = { version = "0.3", optional = true }
@@ -37,3 +38,6 @@ hnsw_rs = { version = "0.3", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
+semantic-memory-forge = { path = "../semantic-memory-forge" }
+
+[workspace]

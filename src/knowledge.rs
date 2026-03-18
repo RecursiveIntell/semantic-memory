@@ -2,12 +2,17 @@
 //!
 //! Every fact operation that touches `facts_fts` is transactional.
 
+use crate::db;
 use crate::db::{bytes_to_embedding, parse_optional_json, with_transaction};
 #[cfg(feature = "hnsw")]
 use crate::db::{enqueue_pending_index_op, PendingIndexOpKind};
+use crate::episodes;
 use crate::error::MemoryError;
+use crate::quantize::{self, Quantizer};
 use crate::types::Fact;
+use crate::{merge_trace_ctx, MemoryStore};
 use rusqlite::{params, Connection};
+use stack_ids::TraceCtx;
 
 /// Insert a fact and its FTS entry in a transaction.
 #[allow(dead_code)]
@@ -230,17 +235,117 @@ pub fn update_fact_with_fts(
 /// Delete all facts in a namespace atomically. Returns the deleted count.
 pub fn delete_namespace(conn: &Connection, namespace: &str) -> Result<usize, MemoryError> {
     with_transaction(conn, |tx| {
-        let mut stmt = tx.prepare(
-            "SELECT f.id, fm.rowid, f.content
-             FROM facts f
-             JOIN facts_rowid_map fm ON fm.fact_id = f.id
-             WHERE f.namespace = ?1",
-        )?;
-        let facts: Vec<(String, i64, String)> = stmt
-            .query_map(params![namespace], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let delete_session = |session_id: &str| -> Result<(), MemoryError> {
+            let message_data: Vec<(i64, String, i64, bool)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT m.id, m.content, mm.rowid, m.embedding IS NOT NULL
+                     FROM messages m
+                     JOIN messages_rowid_map mm ON mm.message_id = m.id
+                     WHERE m.session_id = ?1",
+                )?;
+                let rows = stmt.query_map(params![session_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+
+            for (message_id, content, fts_rowid, has_embedding) in &message_data {
+                tx.execute(
+                    "INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                    params![fts_rowid, content],
+                )?;
+                #[cfg(feature = "hnsw")]
+                if *has_embedding {
+                    enqueue_pending_index_op(
+                        tx,
+                        &format!("msg:{}", message_id),
+                        "message",
+                        PendingIndexOpKind::Delete,
+                    )?;
+                }
+            }
+
+            let affected = tx.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+            if affected == 0 {
+                return Err(MemoryError::SessionNotFound(session_id.to_string()));
+            }
+            Ok(())
+        };
+
+        let document_ids: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM documents WHERE namespace = ?1")?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        let session_ids: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id, metadata FROM sessions")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let (session_id, metadata_raw) = row?;
+                let metadata = parse_optional_json(
+                    "sessions",
+                    &session_id,
+                    "metadata",
+                    metadata_raw.as_deref(),
+                )?;
+                let namespace_matches = metadata
+                    .as_ref()
+                    .and_then(|value| {
+                        value
+                            .get("namespace")
+                            .or_else(|| value.get("scope_namespace"))
+                    })
+                    .and_then(|value| value.as_str())
+                    == Some(namespace);
+                if namespace_matches {
+                    ids.push(session_id);
+                }
+            }
+            ids
+        };
+
+        for session_id in &session_ids {
+            delete_session(session_id)?;
+        }
+
+        let delete_derivation_edges_for_id = |kind: &str, id: &str| -> Result<(), MemoryError> {
+            tx.execute(
+                "DELETE FROM derivation_edges
+                 WHERE (source_kind = ?1 AND source_id = ?2)
+                    OR (target_kind = ?1 AND target_id = ?2)",
+                params![kind, id],
+            )?;
+            Ok(())
+        };
+
+        let delete_derivation_edges_for_ids =
+            |kind: &str, ids: &[String]| -> Result<(), MemoryError> {
+                for id in ids {
+                    delete_derivation_edges_for_id(kind, id)?;
+                }
+                Ok(())
+            };
+
+        let facts: Vec<(String, i64, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT f.id, fm.rowid, f.content
+                 FROM facts f
+                 JOIN facts_rowid_map fm ON fm.fact_id = f.id
+                 WHERE f.namespace = ?1",
+            )?;
+            let facts = stmt
+                .query_map(params![namespace], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            facts
+        };
 
         for (fact_id, fts_rowid, content) in &facts {
             tx.execute(
@@ -260,8 +365,184 @@ pub fn delete_namespace(conn: &Connection, namespace: &str) -> Result<usize, Mem
                 PendingIndexOpKind::Delete,
             )?;
         }
-
         tx.execute("DELETE FROM facts WHERE namespace = ?1", params![namespace])?;
+
+        for doc_id in &document_ids {
+            let mut stmt = tx.prepare(
+                "SELECT c.id, c.content, cm.rowid
+                 FROM chunks c
+                 JOIN chunks_rowid_map cm ON cm.chunk_id = c.id
+                 WHERE c.document_id = ?1",
+            )?;
+            let chunk_rows: Vec<(String, String, i64)> = stmt
+                .query_map(params![doc_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (chunk_id, content, fts_rowid) in &chunk_rows {
+                tx.execute(
+                    "INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES ('delete', ?1, ?2)",
+                    params![fts_rowid, content],
+                )?;
+                tx.execute(
+                    "DELETE FROM chunks_rowid_map WHERE chunk_id = ?1",
+                    params![chunk_id],
+                )?;
+                #[cfg(feature = "hnsw")]
+                enqueue_pending_index_op(
+                    tx,
+                    &format!("chunk:{}", chunk_id),
+                    "chunk",
+                    PendingIndexOpKind::Delete,
+                )?;
+            }
+
+            tx.execute("DELETE FROM chunks WHERE document_id = ?1", params![doc_id])?;
+        }
+
+        for doc_id in &document_ids {
+            let mut stmt = tx.prepare(
+                "SELECT e.episode_id, e.search_text, erm.rowid
+                 FROM episodes e
+                 JOIN episodes_rowid_map erm ON erm.episode_id = e.episode_id
+                 WHERE e.document_id = ?1",
+            )?;
+            let episode_rows: Vec<(String, String, i64)> = stmt
+                .query_map(params![doc_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (episode_id, search_text, fts_rowid) in &episode_rows {
+                tx.execute(
+                    "INSERT INTO episodes_fts(episodes_fts, rowid, content) VALUES ('delete', ?1, ?2)",
+                    params![fts_rowid, search_text],
+                )?;
+                tx.execute(
+                    "DELETE FROM episodes_rowid_map WHERE episode_id = ?1",
+                    params![episode_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM episode_causes WHERE episode_id = ?1",
+                    params![episode_id],
+                )?;
+                #[cfg(feature = "hnsw")]
+                enqueue_pending_index_op(
+                    tx,
+                    &episodes::episode_item_key(episode_id),
+                    "episode",
+                    PendingIndexOpKind::Delete,
+                )?;
+            }
+
+            tx.execute(
+                "DELETE FROM episodes WHERE document_id = ?1",
+                params![doc_id],
+            )?;
+            tx.execute("DELETE FROM documents WHERE id = ?1", params![doc_id])?;
+        }
+
+        let claim_ids: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT claim_id FROM claim_versions WHERE scope_namespace = ?1")?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        let claim_version_ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT claim_version_id FROM claim_versions WHERE scope_namespace = ?1",
+            )?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        let relation_version_ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT relation_version_id FROM relation_versions WHERE scope_namespace = ?1",
+            )?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        let alias_entity_ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT canonical_entity_id FROM entity_aliases WHERE scope_namespace = ?1",
+            )?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        let evidence_handles: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT er.fetch_handle FROM evidence_refs er
+                 JOIN projection_import_log pil ON er.source_envelope_id = pil.source_envelope_id
+                 WHERE pil.scope_namespace = ?1",
+            )?;
+            let handles = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            handles
+        };
+
+        let episode_ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT episode_id FROM episode_links
+                 WHERE source_envelope_id IN (SELECT source_envelope_id FROM projection_import_log WHERE scope_namespace = ?1)",
+            )?;
+            let ids = stmt
+                .query_map(params![namespace], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+
+        delete_derivation_edges_for_ids("claim", &claim_ids)?;
+        delete_derivation_edges_for_ids("claim_version", &claim_version_ids)?;
+        delete_derivation_edges_for_ids("relation_version", &relation_version_ids)?;
+        delete_derivation_edges_for_ids("entity", &alias_entity_ids)?;
+        delete_derivation_edges_for_ids("evidence_ref", &evidence_handles)?;
+        delete_derivation_edges_for_ids("episode", &episode_ids)?;
+
+        tx.execute(
+            "DELETE FROM claim_versions WHERE scope_namespace = ?1",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM relation_versions WHERE scope_namespace = ?1",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM entity_aliases WHERE scope_namespace = ?1",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM evidence_refs
+             WHERE source_envelope_id IN (SELECT source_envelope_id FROM projection_import_log WHERE scope_namespace = ?1)",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM episode_links
+             WHERE source_envelope_id IN (SELECT source_envelope_id FROM projection_import_log WHERE scope_namespace = ?1)",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM projection_import_failures WHERE scope_namespace = ?1",
+            params![namespace],
+        )?;
+        tx.execute(
+            "DELETE FROM projection_import_log WHERE scope_namespace = ?1",
+            params![namespace],
+        )?;
+
         Ok(facts.len())
     })
 }
@@ -371,4 +652,228 @@ pub fn list_facts(
         .collect::<Result<Vec<_>, MemoryError>>()?;
 
     Ok(facts)
+}
+
+impl MemoryStore {
+    /// Store a fact with automatic embedding. Returns the fact ID (UUID v4).
+    pub async fn add_fact(
+        &self,
+        namespace: &str,
+        content: &str,
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String, MemoryError> {
+        self.add_fact_with_trace(namespace, content, source, metadata, None)
+            .await
+    }
+
+    /// Store a fact with automatic embedding and optional trace metadata.
+    pub async fn add_fact_with_trace(
+        &self,
+        namespace: &str,
+        content: &str,
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<String, MemoryError> {
+        self.validate_content("fact.content", content)?;
+
+        let embedding = self.embed_text_internal(content).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let fact_id = uuid::Uuid::new_v4().to_string();
+        let max_facts_per_namespace = self.inner.config.limits.max_facts_per_namespace;
+
+        let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
+        let q8_bytes = quantizer
+            .quantize(&embedding)
+            .map(|qv| quantize::pack_quantized(&qv))
+            .ok();
+
+        let ns = namespace.to_string();
+        let ct = content.to_string();
+        let fid = fact_id.clone();
+        let src = source.map(|s| s.to_string());
+        let meta = merge_trace_ctx(metadata, trace_ctx);
+        self.with_write_conn(move |conn| {
+            let current_count: usize = conn.query_row(
+                "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
+                rusqlite::params![&ns],
+                |row| row.get(0),
+            )?;
+            if current_count >= max_facts_per_namespace {
+                return Err(MemoryError::NamespaceFull {
+                    namespace: ns.clone(),
+                    count: current_count,
+                    limit: max_facts_per_namespace,
+                });
+            }
+            insert_fact_with_fts_q8(
+                conn,
+                &fid,
+                &ns,
+                &ct,
+                &embedding_bytes,
+                q8_bytes.as_deref(),
+                src.as_deref(),
+                meta.as_ref(),
+            )
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("add_fact").await;
+
+        Ok(fact_id)
+    }
+
+    /// Store a fact with a pre-computed embedding.
+    pub async fn add_fact_with_embedding(
+        &self,
+        namespace: &str,
+        content: &str,
+        embedding: &[f32],
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String, MemoryError> {
+        self.add_fact_with_embedding_and_trace(
+            namespace, content, embedding, source, metadata, None,
+        )
+        .await
+    }
+
+    /// Store a fact with a pre-computed embedding and optional trace metadata.
+    pub async fn add_fact_with_embedding_and_trace(
+        &self,
+        namespace: &str,
+        content: &str,
+        embedding: &[f32],
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<String, MemoryError> {
+        self.validate_content("fact.content", content)?;
+        self.validate_embedding_dimensions(embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(embedding);
+        let fact_id = uuid::Uuid::new_v4().to_string();
+        let max_facts_per_namespace = self.inner.config.limits.max_facts_per_namespace;
+
+        let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
+        let q8_bytes = quantizer
+            .quantize(embedding)
+            .map(|qv| quantize::pack_quantized(&qv))
+            .ok();
+
+        let ns = namespace.to_string();
+        let ct = content.to_string();
+        let fid = fact_id.clone();
+        let src = source.map(|s| s.to_string());
+        let meta = merge_trace_ctx(metadata, trace_ctx);
+        self.with_write_conn(move |conn| {
+            let current_count: usize = conn.query_row(
+                "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
+                rusqlite::params![&ns],
+                |row| row.get(0),
+            )?;
+            if current_count >= max_facts_per_namespace {
+                return Err(MemoryError::NamespaceFull {
+                    namespace: ns.clone(),
+                    count: current_count,
+                    limit: max_facts_per_namespace,
+                });
+            }
+            insert_fact_with_fts_q8(
+                conn,
+                &fid,
+                &ns,
+                &ct,
+                &embedding_bytes,
+                q8_bytes.as_deref(),
+                src.as_deref(),
+                meta.as_ref(),
+            )
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("add_fact_with_embedding")
+            .await;
+
+        Ok(fact_id)
+    }
+
+    /// Update a fact's content. Re-embeds automatically.
+    pub async fn update_fact(&self, fact_id: &str, content: &str) -> Result<(), MemoryError> {
+        self.validate_content("fact.content", content)?;
+        let embedding = self.embed_text_internal(content).await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|qv| quantize::pack_quantized(&qv))
+            .ok();
+
+        let fid = fact_id.to_string();
+        let ct = content.to_string();
+        self.with_write_conn(move |conn| {
+            update_fact_with_fts(conn, &fid, &ct, &embedding_bytes, q8_bytes.as_deref())
+        })
+        .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("update_fact").await;
+
+        Ok(())
+    }
+
+    /// Delete a fact by ID.
+    pub async fn delete_fact(&self, fact_id: &str) -> Result<(), MemoryError> {
+        let fid = fact_id.to_string();
+        self.with_write_conn(move |conn| delete_fact_with_fts(conn, &fid))
+            .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("delete_fact").await;
+
+        Ok(())
+    }
+
+    /// Delete all facts in a namespace. Returns the count of deleted facts.
+    pub async fn delete_namespace(&self, namespace: &str) -> Result<usize, MemoryError> {
+        let ns = namespace.to_string();
+        let count = self
+            .with_write_conn(move |conn| delete_namespace(conn, &ns))
+            .await?;
+
+        #[cfg(feature = "hnsw")]
+        self.sync_pending_hnsw_ops_best_effort("delete_namespace")
+            .await;
+
+        Ok(count)
+    }
+
+    /// Get a fact by ID.
+    pub async fn get_fact(&self, fact_id: &str) -> Result<Option<Fact>, MemoryError> {
+        let fid = fact_id.to_string();
+        self.with_read_conn(move |conn| get_fact(conn, &fid)).await
+    }
+
+    /// Get a fact's embedding vector.
+    pub async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, MemoryError> {
+        let fid = fact_id.to_string();
+        self.with_read_conn(move |conn| get_fact_embedding(conn, &fid))
+            .await
+    }
+
+    /// List all facts in a namespace.
+    pub async fn list_facts(
+        &self,
+        namespace: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Fact>, MemoryError> {
+        let ns = namespace.to_string();
+        self.with_read_conn(move |conn| list_facts(conn, &ns, limit, offset))
+            .await
+    }
 }
