@@ -1,0 +1,8 @@
+    Checking turbo-quant v0.1.0 (/home/sikmindz/Coding/Libraries/turbo-quant)
+    Checking semantic-memory v0.5.0 (/home/sikmindz/Coding/Libraries/semantic-memory)
+    Checking knowledge-runtime v0.1.0 (/home/sikmindz/Coding/Libraries/knowledge-runtime)
+    Checking forge-engine v0.2.0 (/home/sikmindz/Coding/Libraries/living-memory/living-memory)
+    Checking kernel-conformance v0.1.0 (/home/sikmindz/Coding/Libraries/kernel-conformance)
+    Checking forge-pilot v0.1.0 (/home/sikmindz/Coding/Libraries/forge-pilot)
+    Checking contract-schema-gen v0.1.0 (/home/sikmindz/Coding/Libraries/contract-schema-gen)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.33s

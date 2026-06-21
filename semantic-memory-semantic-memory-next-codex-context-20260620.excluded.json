@@ -1,0 +1,408 @@
+{
+  "created_utc": "2026-06-20T08:38:03Z",
+  "excluded": [
+    {
+      "path": "fib-quant/CITATION.cff",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/diagrams/codec_artifact_flow.mmd",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/diagrams/final_hardening_dependency_dag.mmd",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/diagrams/release_state_machine.mmd",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/root-sidecars/fib-quant-generic-rust-next-codex-context-20260516.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/root-sidecars/fib-quant-generic-rust-next-codex-context-20260516.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/root-sidecars/fib-quant-generic-rust-next-codex-context-20260516.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/root-sidecars/fib-quant-generic-rust-next-codex-context-20260516.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/root-sidecars/fib-quant-generic-rust-next-codex-context-20260516.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "fib-quant/fib-quant-generic-rust-next-codex-context-20260516.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/fib-quant-generic-rust-next-codex-context-20260516.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/fib-quant-generic-rust-next-codex-context-20260516.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/fib-quant-generic-rust-next-codex-context-20260516.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "fib-quant/fib-quant-generic-rust-next-codex-context-20260516.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "forge-memory-bridge/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "gpu-backend/kernels/bitpack.cu",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "gpu-backend/kernels/codebook_lookup.cu",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "gpu-backend/kernels/hadamard.cu",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "gpu-backend/kernels/lloyd_max.cu",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "poly-kv/.codex-runs/20260520T174516Z-alpha1/commands_run.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "poly-kv/.codex-runs/20260522T045320Z-poly-kv-next/commands_run.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "poly-kv/.codex-runs/20260522T045320Z-poly-kv-next/touched_diff.patch",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "poly-kv/.codex-runs/20260522T064021Z-zpy-package-hygiene/commands_run.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "poly-kv/poly-kv-generic-rust-next-codex-context-20260522T080201Z.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "poly-kv/poly-kv-generic-rust-next-codex-context-20260522T080201Z.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "poly-kv/poly-kv-generic-rust-next-codex-context-20260522T080201Z.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "poly-kv/poly-kv-generic-rust-next-codex-context-20260522T080201Z.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "poly-kv/poly-kv-generic-rust-next-codex-context-20260522T080201Z.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "poly-kv/python/poly_kv/_native.pyi",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "poly-kv/python/poly_kv/py.typed",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "semantic-memory-forge/semantic-memory-forge-generic-rust-next-codex-context-20260612T222544Z.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory-forge/semantic-memory-forge-generic-rust-next-codex-context-20260612T222544Z.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory-forge/semantic-memory-forge-generic-rust-next-codex-context-20260612T222544Z.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory-forge/semantic-memory-forge-generic-rust-next-codex-context-20260612T222544Z.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory-forge/semantic-memory-forge-generic-rust-next-codex-context-20260612T222544Z.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_check_workspace.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_check_workspace_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_semantic_memory_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_turbo_quant.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_turbo_quant_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_fmt_check.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_semantic_memory_turbo.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_semantic_memory_turbo_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_turbo_quant.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_turbo_quant_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-generic-rust-next-codex-context-20260507.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-generic-rust-next-codex-context-20260511.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260511.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260512.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260612.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260612.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260612.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260612.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260612.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260620.codex-archive.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260620.excluded.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260620.findings.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260620.manifest.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260620.report.md",
+      "reason": "generated-output"
+    },
+    {
+      "path": "stack-ids/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "turbo-quant/docs/codex-runs/P27/corpus.tqcb",
+      "reason": "unsupported-extension-or-basename"
+    },
+    {
+      "path": "turbo-quant/docs/codex-runs/P27/corpus_build.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/codex-runs/P27/rust_bench.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-check.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-clippy.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-doc.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-fmt.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-package.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-publish-dry-run.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-semver-checks.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-test-doc.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/cargo-test.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/package-scope-gate.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/readme-gate.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/0.2.0/logs/semantic-memory-harness.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/v0.2.0/cargo-package.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/v0.2.0/cargo-publish-dry-run.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/release-evidence/v0.2.0/commands_run.log",
+      "reason": "log-disabled"
+    }
+  ],
+  "pruned_dirs": [
+    {
+      "path": "fib-quant/docs/codex-runs/archive",
+      "reason": "codex-archive-disabled"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/hidden-root/.codex",
+      "reason": "codex-artifacts-disabled"
+    },
+    {
+      "path": "fib-quant/docs/codex-runs/fibquant-final-hardening/archive-inputs/overlays/.codex",
+      "reason": "codex-artifacts-disabled"
+    },
+    {
+      "path": "forge-memory-bridge/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "poly-kv/codex",
+      "reason": "codex-artifacts-disabled"
+    },
+    {
+      "path": "poly-kv/docs/codex-runs/archive",
+      "reason": "codex-archive-disabled"
+    },
+    {
+      "path": "poly-kv/docs/source-packages/archive",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "semantic-memory-forge/docs/source-packages/archive",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "semantic-memory/__pycache__",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "semantic-memory/docs/codex-runs/archive",
+      "reason": "codex-archive-disabled"
+    },
+    {
+      "path": "stack-ids/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "turbo-quant/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "turbo-quant/codex",
+      "reason": "codex-artifacts-disabled"
+    },
+    {
+      "path": "turbo-quant/docs/codex-runs/archive",
+      "reason": "codex-archive-disabled"
+    }
+  ],
+  "root": "/home/sikmindz/Coding/Libraries/semantic-memory",
+  "summary": {
+    "archive-file": 10,
+    "generated-output": 5,
+    "generated-sidecar": 24,
+    "log-disabled": 30,
+    "member-lockfile-pruned-for-packaged-workspace": 3,
+    "unsupported-extension-or-basename": 12
+  }
+}

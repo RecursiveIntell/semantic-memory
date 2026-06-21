@@ -1,0 +1,35 @@
+# Fallback root Cargo.toml template for a standalone semantic-memory handoff.
+# Prefer copying the exact parent workspace dependency/lint policy if available.
+
+[workspace]
+resolver = "2"
+members = [
+  "semantic-memory",
+  "stack-ids",
+  "semantic-memory-forge",
+  "forge-memory-bridge",
+  "turbo-quant",
+]
+default-members = ["semantic-memory"]
+
+[workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled", "blob"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+schemars = "0.8"
+tempfile = "3"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"

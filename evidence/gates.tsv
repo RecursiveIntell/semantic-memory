@@ -1,0 +1,9 @@
+cargo_fmt_check	0
+cargo_check_workspace	101
+cargo_test_turbo_quant	101
+cargo_test_semantic_memory_turbo	101
+cargo_check_workspace_offline	101
+cargo_test_turbo_quant_offline	101
+cargo_test_semantic_memory_turbo_offline	101
+cargo_clippy_turbo_quant_offline	101
+cargo_clippy_semantic_memory_offline	101

@@ -1,0 +1,572 @@
+$ git status --short
+ D ../00_START_HERE.md
+ D ../01_MASTER_ISSUE_TENSOR.json
+ D ../02_MASTER_ISSUE_MATRIX.md
+ D ../03_IMPLEMENTATION_PLAYBOOK.md
+ D ../04_EXACT_FILE_TOUCH_MAP.md
+ D ../05_TEST_AND_CONFORMANCE_PLAN.md
+ D ../10_HOSTILE_AUDIT_CLAUDE.md
+ D ../11_HOSTILE_AUDIT_GPT.md
+ D ../11_HOSTILE_AUDIT_GPT_TENSOR.json
+ M ../AiDENs/z.py
+ D ../CANONICAL_STACK_SPEC_V25_EFFECTIVE_CONSTITUTION_PROFILE_COMPOSITION_AND_OBLIGATION_FOLDING_RUNTIME.md
+ D ../CANONICAL_STACK_SPEC_V26_ADVISORY_CONSTITUTIONAL_SEARCH_MINIMAL_EXCEPTION_SYNTHESIS_AND_POLICY_COUNTERFACTUAL_RUNTIME.md
+ M ../CLAUDE.md
+ M ../Cargo.lock
+ M ../Cargo.toml
+ M ../Makefile
+ M ../PROMPT.md
+ M ../Primitives/README.md
+ M ../README.md
+ M ../SOURCE_BASIS.md
+ M ../STATUS_EVIDENCE_MANIFEST.json
+ M ../assurance-runtime/Cargo.toml
+ M ../attestation-exchange/Cargo.toml
+ M ../authority-delegation/Cargo.toml
+ M ../constitutional-memory/Cargo.toml
+ M ../constraint-compiler/Cargo.toml
+ M ../continuity-runtime/Cargo.toml
+ M ../contract-schema-gen/Cargo.toml
+ M ../contract-schema-gen/src/lib.rs
+ M ../discovery-portfolio/Cargo.toml
+ M ../effect-runtime/Cargo.toml
+ M ../federated-settlement/Cargo.toml
+ m ../forge-memory-bridge
+ D ../forge-pilot/CODEX_IMPLEMENTATION_PROMPT.md
+ M ../forge-pilot/Cargo.toml
+ M ../forge-pilot/src/act.rs
+ M ../forge-pilot/src/governance_gate.rs
+ M ../forge-pilot/src/history.rs
+ M ../forge-pilot/src/lib.rs
+ M ../forge-pilot/src/main_support/mod.rs
+ M ../forge-pilot/src/main_support/tests.rs
+ M ../forge-pilot/src/orient.rs
+ M ../kernel-conformance/Cargo.toml
+ M ../kernel-conformance/src/lib.rs
+ M ../kernel-execution/Cargo.toml
+ M ../kernel-oracles/Cargo.toml
+ M ../knowledge-runtime/Cargo.toml
+ M ../knowledge-runtime/src/adapters/semantic_memory.rs
+ M ../knowledge-runtime/src/obs/trace.rs
+ M ../knowledge-runtime/src/query/classify.rs
+ M ../knowledge-runtime/src/query/merge.rs
+ M ../knowledge-runtime/src/runtime/core.rs
+ M ../knowledge-runtime/tests/cross_crate_proof.rs
+ M ../knowledge-runtime/tests/ugly_case_tests.rs
+ M ../living-memory/living-memory/Cargo.toml
+ M ../llm-tool-runtime/Cargo.toml
+ M ../llm-tool-runtime/src/contracts.rs
+ M ../llm-tool-runtime/src/provider.rs
+ M ../llm-tool-runtime/tests/dispatch_tests.rs
+ M ../mechanism-runtime/Cargo.toml
+ M ../profile-runtime/Cargo.toml
+ M ../recursive-kernel-core/Cargo.toml
+ M ../release/closeout_receipt_v1.json
+ M ../remote-oracle-admission/Cargo.toml
+ M ../schemas/export-envelope-v3.schema.json
+ M ../scripts/check_hotspot_budgets.sh
+ M ../semantic-memory-forge/Cargo.toml
+ M ../semantic-memory-forge/README.md
+ M ../semantic-memory-forge/src/envelope.rs
+ M Cargo.toml
+ M LICENSE
+ M README.md
+ M src/chunker.rs
+ M src/config.rs
+ M src/conversation.rs
+ M src/db.rs
+ M src/documents.rs
+ M src/embedder.rs
+ M src/episodes.rs
+ M src/error.rs
+ M src/graph.rs
+ M src/hnsw.rs
+ M src/hnsw_ops.rs
+ M src/knowledge.rs
+ M src/lib.rs
+ M src/pool.rs
+ M src/projection_legacy_compat.rs
+ M src/projection_storage_query.rs
+ M src/quantize.rs
+ M src/search.rs
+ M src/storage.rs
+ M src/types.rs
+ M tests/chunker_tests.rs
+ M tests/db_tests.rs
+ M tests/hnsw_integration.rs
+ M tests/hnsw_persistence.rs
+ M tests/knowledge_tests.rs
+ M tests/projection_v11_tests.rs
+ M tests/quantization.rs
+ M tests/search_tests.rs
+ M ../spec-execution/Cargo.toml
+ m ../stack-ids
+ M ../verification-adjudication/Cargo.toml
+ M ../verification-calibration/Cargo.toml
+ M ../verification-control/Cargo.toml
+ M ../verification-control/src/lib.rs
+ M ../verification-policy/Cargo.toml
+?? ../4/
+?? ../AUDIT_2026-04-01.md
+?? ../AiDENs/.cargo/
+?? ../AiDENs/.github/
+?? ../AiDENs/.gitignore
+?? ../AiDENs/00_P31_CODEX_SUPER_PASS_PROMPT.md
+?? ../AiDENs/01_CODEX_SUPER_PASS_MASTER_PROMPT.md
+?? ../AiDENs/01_P31_GOAL_MODE_PROMPT.md
+?? ../AiDENs/02_P31_IMPLEMENTATION_BLUEPRINT.md
+?? ../AiDENs/02_SOURCE_BASIS_AND_AUDIT_NORMALIZATION.md
+?? ../AiDENs/03_P31_FIXTURE_AND_TEST_MATRIX.md
+?? ../AiDENs/03_PRIORITIZED_BUILD_ORDER.md
+?? ../AiDENs/04_P31_ACCEPTANCE_AND_REVIEW_CHECKLIST.md
+?? ../AiDENs/04_PHASE_PLAN.md
+?? ../AiDENs/05_ACCEPTANCE_GATES_AND_COMMAND_BAR.md
+?? ../AiDENs/05_P31_REPORT_TEMPLATE.md
+?? ../AiDENs/06_CLAUDE_AUDIT_INTEGRATION.md
+?? ../AiDENs/06_P32_FOLLOWUP_PASS.md
+?? ../AiDENs/07_FORBIDDEN_FINAL_STATES_AND_LABEL_POLICY.md
+?? ../AiDENs/07_OPTIONAL_CODEX_CONFIG_AND_COMMANDS.md
+?? ../AiDENs/08_CRATE_AND_SURFACE_TARGET_MAP.md
+?? ../AiDENs/09_FINAL_AUDITOR_HANDOFF_REQUIREMENTS.md
+?? ../AiDENs/ACCEPTANCE_GATES.md
+?? ../AiDENs/ACCEPTANCE_GATES_AND_CI.md
+?? ../AiDENs/AGENTS.md
+?? ../AiDENs/AIDENS_STACK_INTEGRATION_GAP.md
+?? ../AiDENs/ANTI_DUPLICATION_REPORT.md
+?? ../AiDENs/ARTIFACT_SCHEMA_REGISTRY.md
+?? ../AiDENs/AiDENs-aidens-codex-context-20260502.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260502.excluded.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260502.findings.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260502.manifest.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260502.report.md
+?? ../AiDENs/AiDENs-aidens-codex-context-20260503.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260503.excluded.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260503.findings.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260503.manifest.json
+?? ../AiDENs/AiDENs-aidens-codex-context-20260503.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260502.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260502.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260502.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260502.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260502.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260503.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260503.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260503.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260503.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260503.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260504.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260504.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260504.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260504.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260504.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260505.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260505.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260505.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260505.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260505.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260506.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260506.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260506.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260506.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260506.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260507.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260507.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260507.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260507.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260507.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260508.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260508.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260508.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260508.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260508.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260511.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260511.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260511.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260511.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260511.report.md
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260512.codex-archive.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260512.excluded.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260512.findings.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260512.manifest.json
+?? ../AiDENs/AiDENs-aidens-next-codex-context-20260512.report.md
+?? ../AiDENs/BUILD_ORDER_DAG.md
+?? ../AiDENs/BUNDLE_MANIFEST.json
+?? ../AiDENs/BUNDLE_MANIFEST.txt
+?? ../AiDENs/CANONICAL_OWNER_MAP.csv
+?? ../AiDENs/CANONICAL_OWNER_MAP.md
+?? ../AiDENs/CANONICAL_SOURCE_OF_TRUTH.md
+?? ../AiDENs/COMPATIBILITY_LEDGER.md
+?? ../AiDENs/COMPLETION_PASS_MAP.md
+?? ../AiDENs/CRATE_INVENTORY.csv
+?? ../AiDENs/CRATE_OWNERSHIP_AND_BOUNDARIES.md
+?? ../AiDENs/CRATE_REWRITE_MAP.md
+?? ../AiDENs/CURRENT_AIDENS_HARD_AUDIT_20260426.md
+?? ../AiDENs/CURRENT_AIDENS_SURFACE_MAP.md
+?? ../AiDENs/Cargo.lock
+?? ../AiDENs/Cargo.toml
+?? ../AiDENs/DOCSET_MANIFEST.json
+?? ../AiDENs/DUPLICATE_PACKAGE_NAMES.csv
+?? ../AiDENs/EXACT_SOURCE_DUPLICATES.csv
+?? ../AiDENs/GOLDEN_VERTICAL_SLICE_SPEC.md
+?? ../AiDENs/HANDOFF_TEMPLATE.md
+?? ../AiDENs/IMPLEMENTATION_SEQUENCE.md
+?? ../AiDENs/INSTALL_P30_BUNDLE_TO_REPO.sh
+?? ../AiDENs/INSTALL_TO_REPO.sh
+?? ../AiDENs/MANIFEST.json
+?? ../AiDENs/MANIFEST.txt
+?? ../AiDENs/MASTER_INVENTORY.json
+?? ../AiDENs/MASTER_ISSUE_MATRIX.csv
+?? ../AiDENs/MASTER_ISSUE_MATRIX.json
+?? ../AiDENs/MASTER_ISSUE_MATRIX.md
+?? ../AiDENs/P24_ACCEPTANCE_GATES.md
+?? ../AiDENs/P24_CANONICAL_SEAM_MAP.md
+?? ../AiDENs/P24_COMMANDS.md
+?? ../AiDENs/P24_EVIDENCE_AND_REPORTING.md
+?? ../AiDENs/P24_HARD_AUDIT.md
+?? ../AiDENs/P24_ISSUE_MATRIX.md
+?? ../AiDENs/P24_RUN_ORDER.md
+?? ../AiDENs/P24_SOURCE_BASIS.md
+?? ../AiDENs/P24_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P24_SUPPORT_PROFILE_TARGET.md
+?? ../AiDENs/P24_VERIFIER_SPEC.md
+?? ../AiDENs/P25_ACCEPTANCE_GATES.md
+?? ../AiDENs/P25_AGENTS_MD_APPENDIX.md
+?? ../AiDENs/P25_COMMANDS.md
+?? ../AiDENs/P25_CURRENT_RUN_CLASSIFICATION_SPEC.md
+?? ../AiDENs/P25_EVIDENCE_AND_REPORTING.md
+?? ../AiDENs/P25_FLAGSHIP_AGENT_DEMO_SPEC.md
+?? ../AiDENs/P25_FLAGSHIP_DEMO_ACCEPTANCE_FIXTURES.md
+?? ../AiDENs/P25_HARD_AUDIT.md
+?? ../AiDENs/P25_OPERATOR_QUICKSTART.md
+?? ../AiDENs/P25_PHASE_GATE_PROTOCOL.md
+?? ../AiDENs/P25_RUN_ORDER.md
+?? ../AiDENs/P25_SOURCE_BASIS.md
+?? ../AiDENs/P25_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P25_SUPPORT_PROFILE_TARGET.md
+?? ../AiDENs/P25_VERIFIER_SPEC.md
+?? ../AiDENs/P25_ZPY_ROOT_MARKDOWN_ARCHIVER_SPEC.md
+?? ../AiDENs/P26_ACCEPTANCE_GATES.md
+?? ../AiDENs/P26_ADVANCED_LOCAL_AGENT_RUNTIME_SPEC.md
+?? ../AiDENs/P26_AGENT_SPEC_V1.md
+?? ../AiDENs/P26_CODING_AGENT_V1_SPEC.md
+?? ../AiDENs/P26_COMMANDS.md
+?? ../AiDENs/P26_EVIDENCE_AND_REPORTING.md
+?? ../AiDENs/P26_EXPECTED_FINAL_STATE.md
+?? ../AiDENs/P26_HARD_AUDIT.md
+?? ../AiDENs/P26_MEMORY_GROUNDED_AGENT_SPEC.md
+?? ../AiDENs/P26_NON_GOALS_AND_DEFERRED_WORK.md
+?? ../AiDENs/P26_PHASE_GATE_PROTOCOL.md
+?? ../AiDENs/P26_REPAIR_ABSTENTION_SPEC.md
+?? ../AiDENs/P26_RUN_ORDER.md
+?? ../AiDENs/P26_SOURCE_BASIS.md
+?? ../AiDENs/P26_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P26_SUPPORT_PROFILE_TARGET.md
+?? ../AiDENs/P26_V10_READY_BOUNDARY_SPEC.md
+?? ../AiDENs/P26_VERIFIER_SPEC.md
+?? ../AiDENs/P27_11A_ALIGNMENT.md
+?? ../AiDENs/P27_ACCEPTANCE_GATES.md
+?? ../AiDENs/P27_CODEX_SUPER_PASS_PROMPT.md
+?? ../AiDENs/P27_COMMANDS.md
+?? ../AiDENs/P27_EVIDENCE_AND_REPORTING.md
+?? ../AiDENs/P27_FINAL_AUDITOR_HANDOFF_TEMPLATE.md
+?? ../AiDENs/P27_KNOWN_LIMITATIONS_TEMPLATE.md
+?? ../AiDENs/P27_MASTER_ISSUE_MATRIX.md
+?? ../AiDENs/P27_MASTER_PACKET.md
+?? ../AiDENs/P27_OPERATOR_PASTE_FIRST.md
+?? ../AiDENs/P27_PHASE_PLAN.md
+?? ../AiDENs/P27_PHASE_REPORT_TEMPLATE.md
+?? ../AiDENs/P27_REPO_OVERLAY_MANIFEST.json
+?? ../AiDENs/P27_ROLLBACK_AND_QUARANTINE_PLAN.md
+?? ../AiDENs/P27_SOURCE_BASIS_TARGET.md
+?? ../AiDENs/P27_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P27_SUPPORT_PROFILE_TARGET.md
+?? ../AiDENs/P27_VERIFIER_SPEC.md
+?? ../AiDENs/P28_ACCEPTANCE_GATES.md
+?? ../AiDENs/P28_BUG_ABSORPTION_MATRIX.csv
+?? ../AiDENs/P28_BUG_ABSORPTION_MATRIX.json
+?? ../AiDENs/P28_CLAUDE_AUDIT_ABSORPTION.md
+?? ../AiDENs/P28_CODEX_SUPER_PASS_PROMPT.md
+?? ../AiDENs/P28_CODE_CHANGE_TARGETS.md
+?? ../AiDENs/P28_COMMANDS.md
+?? ../AiDENs/P28_CONFORMANCE_FIXTURE_PLAN.md
+?? ../AiDENs/P28_DOCSET_MANIFEST.json
+?? ../AiDENs/P28_FINAL_AUDITOR_HANDOFF_TEMPLATE.md
+?? ../AiDENs/P28_KNOWN_LIMITATIONS_TEMPLATE.md
+?? ../AiDENs/P28_MASTER_ISSUE_MATRIX.md
+?? ../AiDENs/P28_MASTER_PACKET.md
+?? ../AiDENs/P28_OPERATOR_PASTE_FIRST.md
+?? ../AiDENs/P28_PHASE_PLAN.md
+?? ../AiDENs/P28_PHASE_REPORT_TEMPLATE.md
+?? ../AiDENs/P28_ROLLBACK_AND_QUARANTINE_PLAN.md
+?? ../AiDENs/P28_SOURCE_BASIS.md
+?? ../AiDENs/P28_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P28_STATUS_EVIDENCE_MANIFEST.template.json
+?? ../AiDENs/P28_SUPPORT_PROFILE_TARGET.md
+?? ../AiDENs/P28_V11A_CONTRACT_TARGETS.md
+?? ../AiDENs/P28_VERIFIER_SPEC.md
+?? ../AiDENs/P29_ACCEPTANCE_GATES.md
+?? ../AiDENs/P29_AGENTS_MD_APPENDIX.md
+?? ../AiDENs/P29_BUNDLE_INSTALL_PLAN.md
+?? ../AiDENs/P29_CLAUDE_AUDIT_ABSORPTION.md
+?? ../AiDENs/P29_CODEX_SUPER_PASS_PROMPT.md
+?? ../AiDENs/P29_CODE_CHANGE_TARGETS.md
+?? ../AiDENs/P29_CURRENT_STATE_DIAGNOSIS.md
+?? ../AiDENs/P29_EVIDENCE_PACKAGE_REPAIR_SPEC.md
+?? ../AiDENs/P29_EXPECTED_FINAL_STATE.md
+?? ../AiDENs/P29_FINAL_AUDITOR_HANDOFF_TEMPLATE.md
+?? ../AiDENs/P29_FORBIDDEN_FINAL_STATE.md
+?? ../AiDENs/P29_KNOWN_LIMITATIONS_TEMPLATE.md
+?? ../AiDENs/P29_MANUAL_PHASE_INJECTIONS.md
+?? ../AiDENs/P29_MASTER_PACKET.md
+?? ../AiDENs/P29_OPERATOR_PASTE_FIRST.md
+?? ../AiDENs/P29_P28_FAILURE_POSTMORTEM.md
+?? ../AiDENs/P29_PHASE_PLAN.md
+?? ../AiDENs/P29_PHASE_REPORT_TEMPLATE.md
+?? ../AiDENs/P29_RE_RUN_AND_AUDIT_INSTRUCTIONS.md
+?? ../AiDENs/P29_ROLLBACK_AND_QUARANTINE_PLAN.md
+?? ../AiDENs/P29_SCOPE_AND_NON_GOALS.md
+?? ../AiDENs/P29_SOURCE_BASIS.md
+?? ../AiDENs/P29_STATUS_EVIDENCE_MANIFEST.json
+?? ../AiDENs/P29_STATUS_EVIDENCE_MANIFEST.template.json
+?? ../AiDENs/P29_SUPPORT_LABEL_POLICY.md
+?? ../AiDENs/P29_V11A_LOCAL_RELEASE_SPEC.md
+?? ../AiDENs/P29_V11B_EXECUTABLE_SEED_SPEC.md
+?? ../AiDENs/P29_VERIFIER_SPEC.md
+?? ../AiDENs/P30_ACCEPTANCE_GATES.md
+?? ../AiDENs/P30_BUNDLE_MANIFEST.json
+?? ../AiDENs/P30_CODEX_SUPER_PASS_PROMPT.md
+?? ../AiDENs/P30_COMMANDS.md
+?? ../AiDENs/P30_EVIDENCE_AND_REPORTING.md
+?? ../AiDENs/P30_EXPECTED_FINAL_STATE.md
+?? ../AiDENs/P30_FORBIDDEN_FINAL_STATE.md
+?? ../AiDENs/P30_MANUAL_PHASE_INJECTIONS.md
+?? ../AiDENs/P30_OPERATOR_PASTE_FIRST.md
+?? ../AiDENs/P30_OWNER_SOURCE_OF_TRUTH_MAP.md
+?? ../AiDENs/P30_PHASE_PLAN.md
+?? ../AiDENs/P30_RELEASE_CLAIM_POLICY.md
+?? ../AiDENs/P30_ROLLBACK_AND_QUARANTINE_PLAN.md
+?? ../AiDENs/P30_SOURCE_BASIS.md
+?? ../AiDENs/P30_V11B_EXECUTION_SPINE.md
+?? ../AiDENs/P31_CODEX_SUPER_PASS_CLIPBOARD.txt
+?? ../AiDENs/P31_CONTEXT_SUMMARY_FOR_CODEX.md
+?? ../AiDENs/README.md
+?? ../AiDENs/RESEARCH_SOURCE_INDEX.md
+?? ../AiDENs/RESEARCH_SYNTHESIS_AND_DESIGN_LAWS.md
+?? ../AiDENs/RESEARCH_TO_PASS_TRACEABILITY.md
+?? ../AiDENs/RUN_ORDER.md
+?? ../AiDENs/SHADOW_SEMANTICS_AUDIT.md
+?? ../AiDENs/SOURCE_BASIS.md
+?? ../AiDENs/SOURCE_TOUCH_MAP.md
+?? ../AiDENs/STATUS.md
+?? ../AiDENs/STATUS_TEMPLATE.md
+?? ../AiDENs/SUPER_PASS_EXECUTIVE_SUMMARY.md
+?? ../AiDENs/SUPER_PASS_PACK_MANIFEST.json
+?? ../AiDENs/SUPPORT_PROFILE.md
+?? ../AiDENs/TESTKIT_TARGETS.md
+?? ../AiDENs/TEST_CONFORMANCE_FUZZING_PLAN.md
+?? ../AiDENs/V10_PLUS_DESIGN_TRACK_BRIEF.md
+?? ../AiDENs/audit/
+?? ../AiDENs/crates/
+?? ../AiDENs/docs/
+?? ../AiDENs/evals/
+?? ../AiDENs/evidence/
+?? ../AiDENs/examples/
+?? ../AiDENs/fixtures/
+?? ../AiDENs/handoff/
+?? ../AiDENs/handoffs/
+?? ../AiDENs/input_evidence/
+?? ../AiDENs/manual_injections/
+?? ../AiDENs/matrices/
+?? ../AiDENs/pass_manifest.json
+?? ../AiDENs/passes/
+?? ../AiDENs/phase_injections/
+?? ../AiDENs/prompts/
+?? ../AiDENs/repo_overlay/
+?? ../AiDENs/rust-toolchain.toml
+?? ../AiDENs/scaffold/
+?? ../AiDENs/schemas/
+?? ../AiDENs/scripts/
+?? ../AiDENs/scripts_spec/
+?? ../AiDENs/source_audits/
+?? ../AiDENs/supporting/
+?? ../AiDENs/templates/
+?? ../AiDENs/tests/
+?? ../AiDENs/zip.py
+?? ../COMBINED_AUDIT_2026-04-01.md
+?? ../CONTRACT_AND_TEMPORAL_TRUTH_HARDENING.md
+?? ../CRATE_HARDENING_MATRIX.md
+?? ../EXECUTION_EVIDENCE_AND_REFERENCE_INTERPRETER_PLAN.md
+?? ../HOSTILE_AUDIT_SYNTHESIS_V5.md
+?? ../KERNEL_AND_REGION_RUNTIME_PLAN.md
+?? ../LIBRARIES_MASTER_MATRIX_V8.md
+?? ../LIBRARIES_MASTER_TENSOR_V8.json
+?? ../LIBRARIES_PROMPT.md
+?? ../LIB_MASTER_ISSUE_MATRIX.md
+?? ../LIB_MASTER_ISSUE_TENSOR.json
+?? ../LIB_PROMPT.md
+?? ../Libraries-libraries-next-codex-context-20260502.codex-archive.json
+?? ../Libraries-libraries-next-codex-context-20260502.excluded.json
+?? ../Libraries-libraries-next-codex-context-20260502.findings.json
+?? ../Libraries-libraries-next-codex-context-20260502.manifest.json
+?? ../Libraries-libraries-next-codex-context-20260502.report.md
+?? ../Libraries-libraries-next-codex-context-20260512.codex-archive.json
+?? ../Libraries-libraries-next-codex-context-20260512.excluded.json
+?? ../Libraries-libraries-next-codex-context-20260512.findings.json
+?? ../Libraries-libraries-next-codex-context-20260512.manifest.json
+?? ../Libraries-libraries-next-codex-context-20260512.report.md
+?? ../MASTER_AUDIT_MATRIX.xlsx
+?? ../MASTER_ISSUE_MATRIX.md
+?? ../MASTER_ISSUE_MATRIX.xlsx
+?? ../MASTER_ISSUE_TENSOR.json
+?? ../MASTER_TENSOR.md
+?? ../RISK_REGISTER.md
+?? ../SNAPSHOT_2026-04-11.md
+?? ../TEST_AND_CONFORMANCE_PLAN.md
+?? ../V9_IMPLEMENTATION_PLAYBOOK.md
+?? ../claude_hard_audit_2026-03-30.md
+?? ../docs/CANONICAL_STACK_SPEC_V25_EFFECTIVE_CONSTITUTION_PROFILE_COMPOSITION_AND_OBLIGATION_FOLDING_RUNTIME.md
+?? ../docs/CANONICAL_STACK_SPEC_V26_ADVISORY_CONSTITUTIONAL_SEARCH_MINIMAL_EXCEPTION_SYNTHESIS_AND_POLICY_COUNTERFACTUAL_RUNTIME.md
+?? ../docs/archive/superseded_packs/00_START_HERE.md
+?? ../docs/archive/superseded_packs/01_MASTER_ISSUE_TENSOR.json
+?? ../docs/archive/superseded_packs/02_MASTER_ISSUE_MATRIX.md
+?? ../docs/archive/superseded_packs/03_IMPLEMENTATION_PLAYBOOK.md
+?? ../docs/archive/superseded_packs/04_EXACT_FILE_TOUCH_MAP.md
+?? ../docs/archive/superseded_packs/05_TEST_AND_CONFORMANCE_PLAN.md
+?? ../docs/archive/superseded_packs/10_HOSTILE_AUDIT_CLAUDE.md
+?? ../docs/archive/superseded_packs/11_HOSTILE_AUDIT_GPT.md
+?? ../docs/archive/superseded_packs/11_HOSTILE_AUDIT_GPT_TENSOR.json
+?? ../docs/codex-runs/
+?? ../evidence/external_audit_report.json
+?? ../evidence/perf_release_20260401.json
+?? ../forge-pilot/src/main_support/cli.rs
+?? ../forge-pilot/src/main_support/explain.rs
+?? ../forge-pilot/src/main_support/provider.rs
+?? ../forge-pilot/src/main_support/storage.rs
+?? ../forge-pilot/src/main_support/tui.rs
+?? ../gpt54_hard_audit_2026-03-30.md
+?? ../gpt54_tensor_2026-03-30.json
+?? ../knowledge-runtime/tests/rrf_fusion_tests.rs
+?? ../profile-runtime/tests/composition_proptest.rs
+?? ../prompts/
+?? ../schemas/bridge-import-failure-artifact-v1.schema.json
+?? ../scripts/capture_release_profile_benchmarks.sh
+?? ../scripts/external_audit_harness.sh
+?? ../semantic-memory-forge/LICENSE
+?? 00_CODEX_GIGA_PASS_MASTER_PROMPT.md
+?? 00_CODEX_PASS_MASTER_PROMPT.md
+?? 01_ACCEPTANCE_GATES.sh
+?? 01_PASS_PLAN_AND_DEPENDENCY_GRAPH.md
+?? 02_FINDINGS_INDEX.csv
+?? 02_TASK_PACKETS.md
+?? 03_FINDINGS_INDEX.json
+?? 03_ISSUE_MATRIX.md
+?? 04_ACCEPTANCE_GATES.sh
+?? 04_DEEP_AUDIT_REPORT.md
+?? 05_DROP_IN_AGENTS.md
+?? 05_WORKSPACE_ROOT_CARGO_TEMPLATE.toml
+?? 06_FINAL_REPORT_TEMPLATE.md
+?? 06_PATCH_ORDER.md
+?? 07_PUBLIC_STORY_AND_RELEASE.md
+?? 07_REGRESSION_TEST_MATRIX.md
+?? ISSUE_MATRIX.md
+?? PHASE_0_BASELINE.md
+?? PHASE_1_HNSW_INTEGRITY.md
+?? PHASE_2_SEARCH_RECEIPTS.md
+?? PHASE_3_VECTOR_CODEC.md
+?? PHASE_4_TURBOQUANT.md
+?? PHASE_5_CONFORMANCE.md
+?? PHASE_6_PRODUCT_DOCS.md
+?? docs/
+?? semantic-memory-generic-rust-next-codex-context-20260507.codex-archive.json
+?? semantic-memory-generic-rust-next-codex-context-20260507.excluded.json
+?? semantic-memory-generic-rust-next-codex-context-20260507.findings.json
+?? semantic-memory-generic-rust-next-codex-context-20260507.manifest.json
+?? semantic-memory-generic-rust-next-codex-context-20260507.report.md
+?? semantic-memory-generic-rust-next-codex-context-20260511.excluded.json
+?? semantic-memory-generic-rust-next-codex-context-20260511.findings.json
+?? semantic-memory-generic-rust-next-codex-context-20260511.manifest.json
+?? semantic-memory-generic-rust-next-codex-context-20260511.report.md
+?? semantic-memory-semantic-memory-next-codex-context-20260511.codex-archive.json
+?? semantic-memory-semantic-memory-next-codex-context-20260511.excluded.json
+?? semantic-memory-semantic-memory-next-codex-context-20260511.findings.json
+?? semantic-memory-semantic-memory-next-codex-context-20260511.manifest.json
+?? semantic-memory-semantic-memory-next-codex-context-20260511.report.md
+?? semantic-memory-semantic-memory-next-codex-context-20260512.codex-archive.json
+?? semantic-memory-semantic-memory-next-codex-context-20260512.excluded.json
+?? semantic-memory-semantic-memory-next-codex-context-20260512.findings.json
+?? semantic-memory-semantic-memory-next-codex-context-20260512.manifest.json
+?? semantic-memory-semantic-memory-next-codex-context-20260512.report.md
+?? src/vector_codec.rs
+?? tests/vector_codec.rs
+?? tests/vector_invariants.rs
+?? z.py
+?? ../turbo-quant/
+?? ../turbo-semantic/
+?? ../z.py
+
+$ rustc --version
+rustc 1.93.0 (254b59607 2026-01-19) (Fedora 1.93.0-1.fc43)
+
+$ cargo --version
+cargo 1.93.0 (083ac5135 2025-12-15) (Fedora 1.93.0-1.fc43)
+
+$ cargo metadata --format-version=1 > docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata.json
+
+$ cargo fmt --all --check
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_fmt_--all_--check.log
+
+$ cargo check --workspace --all-features
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_check_--workspace_--all-features.log
+
+$ cargo test -p turbo-quant
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_turbo-quant.log
+
+$ cargo test -p semantic-memory --features turbo-quant-codec
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log
+
+$ cargo test --workspace --all-features
+exit=101 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_--workspace_--all-features.log
+
+$ cargo clippy --workspace --all-targets --all-features -- -D warnings
+exit=101 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_clippy_--workspace_--all-targets_--all-features_--_-D_warnings.log
+
+$ cargo fmt --all --check
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_fmt_--all_--check.log
+
+$ cargo check --workspace --all-features
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_check_--workspace_--all-features.log
+
+$ cargo test -p turbo-quant
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_turbo-quant.log
+
+$ cargo test -p semantic-memory --features turbo-quant-codec
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log
+
+$ cargo clippy -p turbo-quant --all-targets --all-features -- -D warnings
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_turbo-quant_--all-targets_--all-features_--_-D_warnings.log
+
+$ cargo clippy -p semantic-memory --all-targets --all-features -- -D warnings
+exit=101 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings.log
+
+$ scripts/p31_turboquant_gates.sh
+exit=101 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates.log
+
+$ scripts/p31_turboquant_gates.sh # rerun after schema/clippy cleanup
+exit=101 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates_rerun.log
+
+$ scripts/p31_turboquant_gates.sh # rerun after workspace clippy cleanup
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates_clean_rerun.log
+
+$ cargo clippy -p semantic-memory --all-targets --all-features -- -D warnings # rerun after test lint cleanup
+exit=0 log=docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings_rerun.log
+
+# P31 continuation finalization
+cargo clippy -p semantic-memory --all-targets --all-features -- -D warnings
+scripts/p31_turboquant_gates.sh > docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates_post_benchmark_rerun.log 2>&1
+scripts/p31_turboquant_benchmark_gate.sh > docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_benchmark_gate.log 2>&1
+git status --short > docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/dirty-tree-at-end.txt
+cargo metadata --format-version=1 > docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-final.json
+
+# P31 tree cleanup
+removed obsolete generated semantic-memory codex-context sidecars from repo root
+removed superseded duplicate/failed P31 final gate logs; kept final passing logs and baseline logs

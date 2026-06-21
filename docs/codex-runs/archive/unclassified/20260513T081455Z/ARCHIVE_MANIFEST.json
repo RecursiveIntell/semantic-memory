@@ -1,0 +1,87 @@
+{
+  "archive_manifest_version": "CodexRunArchiveManifestV1",
+  "collisions": [],
+  "created_utc": "2026-05-13T08:14:55Z",
+  "files": [
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_INDEX.md",
+      "bytes": 1435,
+      "mtime_utc": "2026-05-13T07:29:01Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_INDEX.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "a1f26353d29bbd16c8759fdd93d1cfd5a849fbba9546edef5c5d822870a99d17"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_SUMMARY.json",
+      "bytes": 2204,
+      "mtime_utc": "2026-05-13T07:29:01Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_SUMMARY.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "a15e3e88bc7f56e5839c27495505ccaee4bcaaf086f7147fa62d8b312138459c"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/V11_DRAFT_RETRIEVAL_SURFACES.md",
+      "bytes": 1805,
+      "mtime_utc": "2026-05-13T07:22:18Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/V11_DRAFT_RETRIEVAL_SURFACES.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "4b0dba7f29b9fbb4d4b02a0eaa39c56be43c3ee5e921781e9b57ede26b5911e7"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/turboquant-smoke-benchmark-summary.json",
+      "bytes": 926,
+      "mtime_utc": "2026-05-13T07:25:31Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/turboquant-smoke-benchmark-summary.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "ed2a0579a901c295b9e770b8b8beb7ab51cda0c72023c6ad6f089a5c9a7e6b2a"
+    }
+  ],
+  "repo_root": "/home/sikmindz/Coding/Libraries/semantic-memory",
+  "run_id": "unclassified",
+  "skipped_existing": [],
+  "superseded_by": "P30",
+  "tool": "z.py",
+  "tool_version": "2026.05.07-p29",
+  "unclassified": [
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_INDEX.md",
+      "bytes": 1435,
+      "mtime_utc": "2026-05-13T07:29:01Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_INDEX.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "a1f26353d29bbd16c8759fdd93d1cfd5a849fbba9546edef5c5d822870a99d17"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_SUMMARY.json",
+      "bytes": 2204,
+      "mtime_utc": "2026-05-13T07:29:01Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/RUN_EVIDENCE_SUMMARY.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "a15e3e88bc7f56e5839c27495505ccaee4bcaaf086f7147fa62d8b312138459c"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/V11_DRAFT_RETRIEVAL_SURFACES.md",
+      "bytes": 1805,
+      "mtime_utc": "2026-05-13T07:22:18Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/V11_DRAFT_RETRIEVAL_SURFACES.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "4b0dba7f29b9fbb4d4b02a0eaa39c56be43c3ee5e921781e9b57ede26b5911e7"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T081455Z/files/docs/audits/p32-research-max-retrieval-runtime-20260513/turboquant-smoke-benchmark-summary.json",
+      "bytes": 926,
+      "mtime_utc": "2026-05-13T07:25:31Z",
+      "original_path": "docs/audits/p32-research-max-retrieval-runtime-20260513/turboquant-smoke-benchmark-summary.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "ed2a0579a901c295b9e770b8b8beb7ab51cda0c72023c6ad6f089a5c9a7e6b2a"
+    }
+  ]
+}

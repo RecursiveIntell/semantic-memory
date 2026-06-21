@@ -1,0 +1,50 @@
+{
+  "archive_manifest_version": "CodexRunArchiveManifestV1",
+  "collisions": [],
+  "created_utc": "2026-05-13T02:36:02Z",
+  "files": [
+    {
+      "archived_path": "docs/codex-runs/archive/P31/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_benchmark_gate.log",
+      "bytes": 452,
+      "mtime_utc": "2026-05-13T02:26:30Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_benchmark_gate.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "P31",
+      "sha256": "82021e091fb3995a51ef741fed42eb586695bb70a7fa2f6a2e25730dab7cda85"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/P31/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates_post_benchmark_rerun.log",
+      "bytes": 165381,
+      "mtime_utc": "2026-05-13T02:26:05Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_p31_turboquant_gates_post_benchmark_rerun.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "P31",
+      "sha256": "cc8b6c47bd9be6c586bed518391655b600f7c476581477bf05485dcc0b5d994e"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/P31/files/scripts/p31_turboquant_benchmark_gate.sh",
+      "bytes": 345,
+      "mtime_utc": "2026-05-13T01:34:58Z",
+      "original_path": "scripts/p31_turboquant_benchmark_gate.sh",
+      "reason": "stale-run-script",
+      "run_id": "P31",
+      "sha256": "1521b15a6f2e454ec9b96cdca897bf004ec19547fedd7bff8991ce0af14fe0a8"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/P31/files/scripts/p31_turboquant_gates.sh",
+      "bytes": 442,
+      "mtime_utc": "2026-05-12T19:52:02Z",
+      "original_path": "scripts/p31_turboquant_gates.sh",
+      "reason": "stale-run-script",
+      "run_id": "P31",
+      "sha256": "049e8b4c5613c64ce2fd6c0c99c717d54ecffb875adfadf9ec28a0691a6edc44"
+    }
+  ],
+  "repo_root": "/home/sikmindz/Coding/Libraries/semantic-memory",
+  "run_id": "P31",
+  "skipped_existing": [],
+  "superseded_by": "P30",
+  "tool": "z.py",
+  "tool_version": "2026.05.07-p29",
+  "unclassified": []
+}

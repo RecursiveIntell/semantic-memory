@@ -1,0 +1,4 @@
+error: no matching package named `chrono` found
+location searched: crates.io index
+required by package `semantic-memory v0.5.0 (/mnt/data/audit_latest/semantic-memory)`
+As a reminder, you're using offline mode (--offline) which can sometimes cause surprising resolution failures, if this error is too confusing you may wish to retry without `--offline`.

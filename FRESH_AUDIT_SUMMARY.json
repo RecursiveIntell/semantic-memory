@@ -1,0 +1,86 @@
+{
+  "schema_version": "fresh_audit_summary_v1",
+  "created_utc": "2026-05-13T06:17:00Z",
+  "source_package": "semantic-memory-semantic-memory-next-codex-context-20260513.zip",
+  "local_gate_caveat": "cargo check/test/clippy failed before build because crates.io DNS/index was unavailable and local cache lacked dependencies; cargo fmt passed",
+  "gates": [
+    {
+      "gate": "cargo_fmt_check",
+      "status_code": 0
+    },
+    {
+      "gate": "cargo_check_workspace",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_test_turbo_quant",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_test_semantic_memory_turbo",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_check_workspace_offline",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_test_turbo_quant_offline",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_test_semantic_memory_turbo_offline",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_clippy_turbo_quant_offline",
+      "status_code": 101
+    },
+    {
+      "gate": "cargo_clippy_semantic_memory_offline",
+      "status_code": 101
+    }
+  ],
+  "static_findings": [
+    {
+      "id": "H1",
+      "severity": "critical",
+      "summary": "CURRENT_RUN remains P30 despite P31/P32 trajectory"
+    },
+    {
+      "id": "H2",
+      "severity": "critical",
+      "summary": "P31 detailed evidence logs were archived/pruned from active context package"
+    },
+    {
+      "id": "H3",
+      "severity": "critical",
+      "summary": "turbo-quant README still contains zero accuracy loss claim"
+    },
+    {
+      "id": "H4",
+      "severity": "high",
+      "summary": "TurboCodeWireV1 writes but does not validate seed header"
+    },
+    {
+      "id": "H5",
+      "severity": "high",
+      "summary": "QJL packed-sign padding bits are not checked for canonical zero padding"
+    },
+    {
+      "id": "H6",
+      "severity": "high",
+      "summary": "live TurboQuant path validates raw row per artifact during query execution"
+    },
+    {
+      "id": "H7",
+      "severity": "high",
+      "summary": "live TurboQuant path full-sorts all artifacts before truncation"
+    },
+    {
+      "id": "H8",
+      "severity": "high",
+      "summary": "SQL-filtered TurboQuant falls back to raw f32"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "candidate_count": 200,
+  "candidate_multiplier": 20,
+  "corpus_size": 2000,
+  "dim": 384,
+  "exact_baseline": {
+    "full_scan_p50_ms": 0.5364140000000001,
+    "full_scan_p95_ms": 0.570808
+  },
+  "k": 10,
+  "mode": "provekv_pool_candidate_then_exact_f32_vs_usearch",
+  "provekv": {
+    "build_ms": 175.465016,
+    "candidate_p50_ms": 0.606074,
+    "candidate_p95_ms": 0.641199,
+    "compression_ratio_vs_embedding_f32": 23.98519663645094,
+    "decode_once_ms": 5272.334282,
+    "exact_rerank_p50_ms": 0.004098,
+    "exact_rerank_p95_ms": 0.004468000000000001,
+    "generation_id": "f1c40d49-45bc-40c0-8afb-6c2252d3f7b6",
+    "ndcg_at_k": 1.0,
+    "payload_bytes": 128079,
+    "pool_manifest_digest": "blake3:10455cadc89e63163df091156dde4e3545ef24fcf6cb0522e796e3a3e1e4105f",
+    "raw_f32_bytes": 3072000,
+    "recall_at_k": 1.0,
+    "total_p50_ms": 0.6103109999999999,
+    "total_p95_ms": 0.645748
+  },
+  "query_count": 100,
+  "schema_version": "semantic_memory_retrieval_backend_benchmark_v1",
+  "usearch": {
+    "backend_name": "usearch 2.25 (single-file vector search, C++ via cxx bridge)",
+    "build_ms": 167.76112,
+    "ndcg_at_k": 1.0,
+    "recall_at_k": 1.0,
+    "search_p50_ms": 0.10983499999999999,
+    "search_p95_ms": 0.131736
+  }
+}

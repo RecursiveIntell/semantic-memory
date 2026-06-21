@@ -1,0 +1,39 @@
+{
+  "candidate_count": 200,
+  "candidate_multiplier": 20,
+  "corpus_size": 2000,
+  "dim": 384,
+  "exact_baseline": {
+    "full_scan_p50_ms": 0.53476,
+    "full_scan_p95_ms": 0.5638340000000001
+  },
+  "k": 10,
+  "mode": "provekv_pool_candidate_then_exact_f32_vs_usearch",
+  "provekv": {
+    "build_ms": 165.887176,
+    "candidate_p50_ms": 0.606845,
+    "candidate_p95_ms": 0.6339060000000001,
+    "compression_ratio_vs_embedding_f32": 23.98519663645094,
+    "decode_once_ms": 5119.668088,
+    "exact_rerank_p50_ms": 0.004078,
+    "exact_rerank_p95_ms": 0.00487,
+    "generation_id": "30106067-73aa-4dbd-ba15-1eb4b4803201",
+    "ndcg_at_k": 1.0,
+    "payload_bytes": 128079,
+    "pool_manifest_digest": "blake3:10455cadc89e63163df091156dde4e3545ef24fcf6cb0522e796e3a3e1e4105f",
+    "raw_f32_bytes": 3072000,
+    "recall_at_k": 1.0,
+    "total_p50_ms": 0.611002,
+    "total_p95_ms": 0.640187
+  },
+  "query_count": 100,
+  "schema_version": "semantic_memory_retrieval_backend_benchmark_v1",
+  "usearch": {
+    "backend_name": "usearch 2.25 (single-file vector search, C++ via cxx bridge)",
+    "build_ms": 140.977447,
+    "ndcg_at_k": 1.0,
+    "recall_at_k": 1.0,
+    "search_p50_ms": 0.10109900000000001,
+    "search_p95_ms": 0.137637
+  }
+}

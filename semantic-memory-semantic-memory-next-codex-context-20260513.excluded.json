@@ -1,0 +1,159 @@
+{
+  "created_utc": "2026-05-13T08:14:55Z",
+  "excluded": [
+    {
+      "path": "forge-memory-bridge/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "semantic-memory/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_check_workspace.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_check_workspace_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_semantic_memory_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_turbo_quant.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_clippy_turbo_quant_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_fmt_check.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_semantic_memory_turbo.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_semantic_memory_turbo_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_turbo_quant.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/evidence/cargo_test_turbo_quant_offline.log",
+      "reason": "log-disabled"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-generic-rust-next-codex-context-20260507.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-generic-rust-next-codex-context-20260511.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260511.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260512.zip",
+      "reason": "archive-file"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.codex-archive.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.excluded.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.findings.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.manifest.json",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.report.md",
+      "reason": "generated-output"
+    },
+    {
+      "path": "semantic-memory/semantic-memory-semantic-memory-next-codex-context-20260513.zip",
+      "reason": "generated-output"
+    },
+    {
+      "path": "stack-ids/Cargo.lock",
+      "reason": "member-lockfile-pruned-for-packaged-workspace"
+    },
+    {
+      "path": "turbo-quant/turbo-quant-generic-rust-next-codex-context-20260506.excluded.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "turbo-quant/turbo-quant-generic-rust-next-codex-context-20260506.findings.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "turbo-quant/turbo-quant-generic-rust-next-codex-context-20260506.manifest.json",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "turbo-quant/turbo-quant-generic-rust-next-codex-context-20260506.report.md",
+      "reason": "generated-sidecar"
+    },
+    {
+      "path": "turbo-quant/turbo-quant-generic-rust-next-codex-context-20260506.zip",
+      "reason": "archive-file"
+    }
+  ],
+  "pruned_dirs": [
+    {
+      "path": "forge-memory-bridge/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "forge-memory-bridge/.git",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "semantic-memory/docs/codex-runs/archive",
+      "reason": "codex-archive-disabled"
+    },
+    {
+      "path": "semantic-memory/scripts/__pycache__",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "stack-ids/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "stack-ids/.git",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "turbo-quant/.claude",
+      "reason": "excluded-directory"
+    },
+    {
+      "path": "turbo-quant/.git",
+      "reason": "excluded-directory"
+    }
+  ],
+  "root": "/home/sikmindz/Coding/Libraries/semantic-memory",
+  "summary": {
+    "archive-file": 5,
+    "generated-output": 6,
+    "generated-sidecar": 4,
+    "log-disabled": 10,
+    "member-lockfile-pruned-for-packaged-workspace": 3
+  }
+}

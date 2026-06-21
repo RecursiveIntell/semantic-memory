@@ -1,0 +1,447 @@
+{
+  "archive_manifest_version": "CodexRunArchiveManifestV1",
+  "collisions": [],
+  "created_utc": "2026-05-13T02:36:02Z",
+  "files": [
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-gates.tsv",
+      "bytes": 916,
+      "mtime_utc": "2026-05-12T19:51:03Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-gates.tsv",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "52abca1594af5ca8d3fbc82619d9df6e561ff385320206f3aa68632488ec3c71"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-status.json",
+      "bytes": 23599,
+      "mtime_utc": "2026-05-12T19:51:36Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-status.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f780972108064f3001b36823ee3ff643ec89e31ec6c825cbca9cefc735c0dca8"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline.md",
+      "bytes": 21482,
+      "mtime_utc": "2026-05-12T19:46:59Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "799f81398ce3f4e431528c922afcdab5f38c778529edf7272a81d5d34e2a7941"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-after-phase1.json",
+      "bytes": 1764608,
+      "mtime_utc": "2026-05-12T19:52:10Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-after-phase1.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f4c3855b7508f128bbe5a02c11fb5321b861436e0061bcfa733cacf0815ea050"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-final.json",
+      "bytes": 1765251,
+      "mtime_utc": "2026-05-13T02:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-final.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "9192f47d705ad903dde91aaed979cebee49c6efd2db1be9503f043c014c30df3"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata.json",
+      "bytes": 1764608,
+      "mtime_utc": "2026-05-12T19:46:59Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f4c3855b7508f128bbe5a02c11fb5321b861436e0061bcfa733cacf0815ea050"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_check_--workspace_--all-features.log",
+      "bytes": 686,
+      "mtime_utc": "2026-05-12T19:47:24Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_check_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "fbed8bbce435820a0c69408f06e473fddc31900b3a35d8f02a897a7f97041733"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_clippy_--workspace_--all-targets_--all-features_--_-D_warnings.log",
+      "bytes": 43297,
+      "mtime_utc": "2026-05-12T19:51:00Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_clippy_--workspace_--all-targets_--all-features_--_-D_warnings.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "24f297f39645609e3d07bb97c0e51a33b982f97946873d090bcb9eb49e4ac3fb"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_fmt_--all_--check.log",
+      "bytes": 0,
+      "mtime_utc": "2026-05-12T19:47:12Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_fmt_--all_--check.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_--workspace_--all-features.log",
+      "bytes": 21044,
+      "mtime_utc": "2026-05-12T19:50:58Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "51b523d72e1aa1372a30f2b904d5b0fcdfea23bdd2b078383c2ba871649ae595"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "bytes": 25193,
+      "mtime_utc": "2026-05-12T19:48:20Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "4b8da44b2c07e764932b1000af580ddfbb282ff8eca1253696fb1893270c5736"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_turbo-quant.log",
+      "bytes": 4687,
+      "mtime_utc": "2026-05-12T19:47:25Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_turbo-quant.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "83527bba26a5745a3b0fb0fa70b9466edd0ce6465e7e79354acdfe1c9de498ec"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/commands.log",
+      "bytes": 25197,
+      "mtime_utc": "2026-05-13T02:35:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/commands.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "86cd2428f52b273cbd44fc84412071221d5ba4da72d73ea6aa3dcfe71468e7a7"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/dirty-tree-at-end.txt",
+      "bytes": 23839,
+      "mtime_utc": "2026-05-13T02:35:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/dirty-tree-at-end.txt",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "bd1285535e69a349e90310130c316cdf1d5fe7c34647daa070991bd83f36d2e4"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-gates.tsv",
+      "bytes": 1693,
+      "mtime_utc": "2026-05-13T01:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-gates.tsv",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "8a76fa388217f5821ca1473dadcbeb306e62a13174aa617e46aaed08427dfa22"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-report.md",
+      "bytes": 5266,
+      "mtime_utc": "2026-05-13T02:26:33Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-report.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "0679295b9622e4aeed6a616b77023cab05fc2f53417db7c3915e69035fc55eae"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-status.json",
+      "bytes": 2581,
+      "mtime_utc": "2026-05-13T02:35:01Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-status.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "08bde1acf4dfadb3efe1c42dec3f1f86e0b421483242e2909324026377322791"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_check_--workspace_--all-features.log",
+      "bytes": 72,
+      "mtime_utc": "2026-05-12T20:02:43Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_check_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "fecede7c2157efe2f16c8c8b9dce94b0fb4dd384dca8207046c8bf7636eb0ffe"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings_rerun.log",
+      "bytes": 228,
+      "mtime_utc": "2026-05-13T01:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings_rerun.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "737a8f8033e5bf3ba8f36ebfed5245cf17a32b63acd1f95d3386c45354f0d588"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_turbo-quant_--all-targets_--all-features_--_-D_warnings.log",
+      "bytes": 72,
+      "mtime_utc": "2026-05-12T20:04:11Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_turbo-quant_--all-targets_--all-features_--_-D_warnings.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f0788aa36d1c86b6ccdfb7f4042a5574102d82061c046422a2d42e008a1e4710"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_fmt_--all_--check.log",
+      "bytes": 0,
+      "mtime_utc": "2026-05-12T20:02:42Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_fmt_--all_--check.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "bytes": 25193,
+      "mtime_utc": "2026-05-12T20:04:11Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "c9f5dc212d4276c5899911604661d1574e9eb08d6d33d589808fefcc90219f60"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_turbo-quant.log",
+      "bytes": 5997,
+      "mtime_utc": "2026-05-12T20:03:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_turbo-quant.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "58db156d91d2ec52f5b528e1621ae738fe948ee93a0386d4ee9a9f889004d601"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/turboquant-benchmark-summary.json",
+      "bytes": 587,
+      "mtime_utc": "2026-05-13T02:26:30Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/turboquant-benchmark-summary.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "84b82ff9e5b4f2a54b6a01bfbd067824363d7bdb8fe4a56cda564f4054ec2e48"
+    }
+  ],
+  "repo_root": "/home/sikmindz/Coding/Libraries/semantic-memory",
+  "run_id": "unclassified",
+  "skipped_existing": [],
+  "superseded_by": "P30",
+  "tool": "z.py",
+  "tool_version": "2026.05.07-p29",
+  "unclassified": [
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-gates.tsv",
+      "bytes": 916,
+      "mtime_utc": "2026-05-12T19:51:03Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-gates.tsv",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "52abca1594af5ca8d3fbc82619d9df6e561ff385320206f3aa68632488ec3c71"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-status.json",
+      "bytes": 23599,
+      "mtime_utc": "2026-05-12T19:51:36Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline-status.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f780972108064f3001b36823ee3ff643ec89e31ec6c825cbca9cefc735c0dca8"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline.md",
+      "bytes": 21482,
+      "mtime_utc": "2026-05-12T19:46:59Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/baseline.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "799f81398ce3f4e431528c922afcdab5f38c778529edf7272a81d5d34e2a7941"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-after-phase1.json",
+      "bytes": 1764608,
+      "mtime_utc": "2026-05-12T19:52:10Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-after-phase1.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f4c3855b7508f128bbe5a02c11fb5321b861436e0061bcfa733cacf0815ea050"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-final.json",
+      "bytes": 1765251,
+      "mtime_utc": "2026-05-13T02:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata-final.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "9192f47d705ad903dde91aaed979cebee49c6efd2db1be9503f043c014c30df3"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata.json",
+      "bytes": 1764608,
+      "mtime_utc": "2026-05-12T19:46:59Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo-metadata.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f4c3855b7508f128bbe5a02c11fb5321b861436e0061bcfa733cacf0815ea050"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_check_--workspace_--all-features.log",
+      "bytes": 686,
+      "mtime_utc": "2026-05-12T19:47:24Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_check_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "fbed8bbce435820a0c69408f06e473fddc31900b3a35d8f02a897a7f97041733"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_clippy_--workspace_--all-targets_--all-features_--_-D_warnings.log",
+      "bytes": 43297,
+      "mtime_utc": "2026-05-12T19:51:00Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_clippy_--workspace_--all-targets_--all-features_--_-D_warnings.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "24f297f39645609e3d07bb97c0e51a33b982f97946873d090bcb9eb49e4ac3fb"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_fmt_--all_--check.log",
+      "bytes": 0,
+      "mtime_utc": "2026-05-12T19:47:12Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_fmt_--all_--check.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_--workspace_--all-features.log",
+      "bytes": 21044,
+      "mtime_utc": "2026-05-12T19:50:58Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "51b523d72e1aa1372a30f2b904d5b0fcdfea23bdd2b078383c2ba871649ae595"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "bytes": 25193,
+      "mtime_utc": "2026-05-12T19:48:20Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "4b8da44b2c07e764932b1000af580ddfbb282ff8eca1253696fb1893270c5736"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_turbo-quant.log",
+      "bytes": 4687,
+      "mtime_utc": "2026-05-12T19:47:25Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/cargo_test_-p_turbo-quant.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "83527bba26a5745a3b0fb0fa70b9466edd0ce6465e7e79354acdfe1c9de498ec"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/commands.log",
+      "bytes": 25197,
+      "mtime_utc": "2026-05-13T02:35:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/commands.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "86cd2428f52b273cbd44fc84412071221d5ba4da72d73ea6aa3dcfe71468e7a7"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/dirty-tree-at-end.txt",
+      "bytes": 23839,
+      "mtime_utc": "2026-05-13T02:35:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/dirty-tree-at-end.txt",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "bd1285535e69a349e90310130c316cdf1d5fe7c34647daa070991bd83f36d2e4"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-gates.tsv",
+      "bytes": 1693,
+      "mtime_utc": "2026-05-13T01:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-gates.tsv",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "8a76fa388217f5821ca1473dadcbeb306e62a13174aa617e46aaed08427dfa22"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-report.md",
+      "bytes": 5266,
+      "mtime_utc": "2026-05-13T02:26:33Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-report.md",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "0679295b9622e4aeed6a616b77023cab05fc2f53417db7c3915e69035fc55eae"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-status.json",
+      "bytes": 2581,
+      "mtime_utc": "2026-05-13T02:35:01Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final-status.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "08bde1acf4dfadb3efe1c42dec3f1f86e0b421483242e2909324026377322791"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_check_--workspace_--all-features.log",
+      "bytes": 72,
+      "mtime_utc": "2026-05-12T20:02:43Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_check_--workspace_--all-features.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "fecede7c2157efe2f16c8c8b9dce94b0fb4dd384dca8207046c8bf7636eb0ffe"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings_rerun.log",
+      "bytes": 228,
+      "mtime_utc": "2026-05-13T01:27:17Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_semantic-memory_--all-targets_--all-features_--_-D_warnings_rerun.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "737a8f8033e5bf3ba8f36ebfed5245cf17a32b63acd1f95d3386c45354f0d588"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_turbo-quant_--all-targets_--all-features_--_-D_warnings.log",
+      "bytes": 72,
+      "mtime_utc": "2026-05-12T20:04:11Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_clippy_-p_turbo-quant_--all-targets_--all-features_--_-D_warnings.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "f0788aa36d1c86b6ccdfb7f4042a5574102d82061c046422a2d42e008a1e4710"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_fmt_--all_--check.log",
+      "bytes": 0,
+      "mtime_utc": "2026-05-12T20:02:42Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_fmt_--all_--check.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "bytes": 25193,
+      "mtime_utc": "2026-05-12T20:04:11Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_semantic-memory_--features_turbo-quant-codec.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "c9f5dc212d4276c5899911604661d1574e9eb08d6d33d589808fefcc90219f60"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_turbo-quant.log",
+      "bytes": 5997,
+      "mtime_utc": "2026-05-12T20:03:07Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/final_cargo_test_-p_turbo-quant.log",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "58db156d91d2ec52f5b528e1621ae738fe948ee93a0386d4ee9a9f889004d601"
+    },
+    {
+      "archived_path": "docs/codex-runs/archive/unclassified/20260513T023602Z/files/docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/turboquant-benchmark-summary.json",
+      "bytes": 587,
+      "mtime_utc": "2026-05-13T02:26:30Z",
+      "original_path": "docs/audits/p31-turboquant-evidence-grade-retrieval-20260512/turboquant-benchmark-summary.json",
+      "reason": "stale-run-marked-artifact",
+      "run_id": "unclassified",
+      "sha256": "84b82ff9e5b4f2a54b6a01bfbd067824363d7bdb8fe4a56cda564f4054ec2e48"
+    }
+  ]
+}
