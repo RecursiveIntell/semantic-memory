@@ -346,6 +346,28 @@ impl MemoryStore {
     ) -> Result<String, MemoryError> {
         self.validate_content("document.content", content)?;
 
+        // Dedup: check if a document with the same title already exists
+        // in the same namespace. Return the existing document ID instead
+        // of creating a duplicate.
+        let title_check = title.to_string();
+        let ns_check = namespace.to_string();
+        let existing_id = self
+            .with_read_conn(move |conn| {
+                let result: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM documents WHERE title = ?1 AND namespace = ?2 LIMIT 1",
+                        rusqlite::params![&title_check, &ns_check],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+                Ok(result)
+            })
+            .await?;
+
+        if let Some(id) = existing_id {
+            return Ok(id);
+        }
+
         let text_chunks = chunker::chunk_text(
             content,
             &self.inner.config.chunking,

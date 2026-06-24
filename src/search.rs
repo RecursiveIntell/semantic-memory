@@ -30,6 +30,27 @@ const VECTOR_SCAN_HARD_LIMIT: usize = 250_000;
 static VECTOR_SCAN_WARN_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_WARN_THRESHOLD);
 static VECTOR_SCAN_BLOCK_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_HARD_LIMIT);
 
+
+/// Expand query terms to match hyphenated variants.
+/// "turbo-quant" -> "turbo-quant OR turboquant"
+/// This improves BM25 recall for technical terms with hyphens.
+fn expand_query_for_fts(query: &str) -> String {
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let expanded: Vec<String> = terms.iter().map(|term| {
+        if term.contains('-') {
+            let no_hyphen = term.replace('-', "");
+            if no_hyphen != *term {
+                format!("{term} OR {no_hyphen}")
+            } else {
+                term.to_string()
+            }
+        } else {
+            term.to_string()
+        }
+    }).collect();
+    expanded.join(" ")
+}
+
 /// Sanitize a raw query string for safe use in an FTS5 MATCH expression.
 ///
 /// Replaces any character that is not alphanumeric, whitespace, or a Unicode
@@ -175,6 +196,8 @@ pub struct Bm25Hit {
     pub raw_score: f64,
     /// Timestamp used for recency scoring.
     pub updated_at: Option<String>,
+    /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
+    pub temporal_weight: Option<f64>,
 }
 
 /// A vector search hit.
@@ -196,6 +219,8 @@ pub struct VectorHit {
     pub source_similarity: Option<f64>,
     /// Whether exact f32 reranking changed or confirmed this candidate ordering.
     pub reranked_from_f32: bool,
+    /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
+    pub temporal_weight: Option<f64>,
 }
 
 #[allow(dead_code)]
@@ -223,8 +248,11 @@ struct RrfCandidate {
     vector_reranked_from_f32: bool,
     /// Late interaction (ColBERT MaxSim) rank — 3rd RRF signal.
     late_interaction_rank: Option<usize>,
-    /// Late interaction raw score.
+    /// Late interaction raw score. Populated only with the `late-interaction` feature.
+    #[allow(dead_code)]
     late_interaction_score: Option<f64>,
+    /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
+    temporal_weight: Option<f64>,
 }
 
 impl RrfCandidate {
@@ -248,10 +276,14 @@ impl RrfCandidate {
         };
         let recency_score =
             recency_contribution(config, context, self.updated_at.as_deref(), best_rank);
-        let rrf_score = bm25_contribution.unwrap_or(0.0)
+        let base_score = bm25_contribution.unwrap_or(0.0)
             + vector_contribution.unwrap_or(0.0)
             + late_interaction_contribution.unwrap_or(0.0)
             + recency_score.unwrap_or(0.0);
+        // Apply temporal weight: stale facts (weight < 1.0) get downranked.
+        // Default weight is 1.0 (no effect) when temporal feature is not active.
+        let temporal_factor = self.temporal_weight.unwrap_or(1.0);
+        let rrf_score = base_score * temporal_factor;
 
         let breakdown = ScoreBreakdown {
             rrf_score,
@@ -350,6 +382,7 @@ fn scan_vector_rows(
                 source_rank: None,
                 source_similarity: None,
                 reranked_from_f32: false,
+                temporal_weight: None,
             });
         }
     }
@@ -404,7 +437,7 @@ pub(crate) fn bm25_search(
     if search_facts {
         let (ns_clause, ns_params) = build_filter_clause("f.namespace", namespaces, 3);
         let sql = format!(
-            "SELECT fm.fact_id, f.content, f.namespace, bm25(facts_fts) AS score, f.updated_at
+            "SELECT fm.fact_id, f.content, f.namespace, bm25(facts_fts) AS score, f.updated_at, f.temporal_weight
              FROM facts_fts
              JOIN facts_rowid_map fm ON facts_fts.rowid = fm.rowid
              JOIN facts f ON f.id = fm.fact_id
@@ -427,12 +460,14 @@ pub(crate) fn bm25_search(
             let namespace: String = row.get(2)?;
             let raw_score: f64 = row.get(3)?;
             let updated_at: Option<String> = row.get(4)?;
+            let temporal_weight: Option<f64> = row.get(5)?;
             Ok(Bm25Hit {
                 id: format!("fact:{fact_id}"),
                 content,
                 source: SearchSource::Fact { fact_id, namespace },
                 raw_score,
                 updated_at,
+                temporal_weight,
             })
         })?;
 
@@ -482,6 +517,7 @@ pub(crate) fn bm25_search(
                 },
                 raw_score,
                 updated_at,
+                temporal_weight: None,
             })
         })?;
 
@@ -528,6 +564,7 @@ pub(crate) fn bm25_search(
                 },
                 raw_score,
                 updated_at,
+                temporal_weight: None,
             })
         })?;
 
@@ -577,6 +614,7 @@ pub(crate) fn bm25_search(
                 },
                 raw_score,
                 updated_at,
+                temporal_weight: None,
             })
         })?;
 
@@ -1209,6 +1247,7 @@ fn turbo_quant_vector_outcome(
                 source_rank: Some(approx_rank_0 + 1),
                 source_similarity: Some(candidate.score),
                 reranked_from_f32: true,
+                temporal_weight: None,
             });
         }
     }
@@ -1544,6 +1583,7 @@ fn rrf_fuse_detailed_with_context(
                 vector_reranked_from_f32: false,
                 late_interaction_rank: None,
                 late_interaction_score: None,
+                temporal_weight: hit.temporal_weight,
             });
     }
 
@@ -1575,6 +1615,7 @@ fn rrf_fuse_detailed_with_context(
                 vector_reranked_from_f32: hit.reranked_from_f32,
                 late_interaction_rank: None,
                 late_interaction_score: None,
+            temporal_weight: None,
             });
     }
 
@@ -1675,6 +1716,7 @@ pub fn rrf_fuse_with_late_interaction(
                 vector_reranked_from_f32: false,
                 late_interaction_rank: None,
                 late_interaction_score: None,
+                temporal_weight: hit.temporal_weight,
             });
     }
 
@@ -1707,6 +1749,7 @@ pub fn rrf_fuse_with_late_interaction(
                 vector_reranked_from_f32: hit.reranked_from_f32,
                 late_interaction_rank: None,
                 late_interaction_score: None,
+            temporal_weight: None,
             });
     }
 
@@ -2077,7 +2120,7 @@ pub fn hybrid_search(
     source_types: Option<&[SearchSourceType]>,
     session_ids: Option<&[&str]>,
 ) -> Result<Vec<SearchResult>, MemoryError> {
-    Ok(hybrid_search_detailed(
+    let results: Vec<SearchResult> = hybrid_search_detailed(
         conn,
         query,
         query_embedding,
@@ -2089,7 +2132,29 @@ pub fn hybrid_search(
     )?
     .into_iter()
     .map(|result| result.result)
-    .collect())
+    .collect();
+
+    // Content dedup: remove results with identical or near-identical content,
+    // keeping the highest-scoring one. This prevents duplicate chunks from
+    // different document copies appearing in search results.
+    let mut seen_content: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<SearchResult> = results
+        .into_iter()
+        .filter(|r| {
+            // Normalize whitespace and use first 200 chars as fingerprint.
+            // This catches near-duplicates with minor whitespace differences.
+            let fingerprint: String = r
+                .content
+                .split_whitespace()
+                .take(30)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            seen_content.insert(fingerprint)
+        })
+        .collect();
+
+    Ok(deduped)
 }
 
 #[cfg(feature = "hnsw")]
@@ -2261,6 +2326,7 @@ fn build_ranked_vector_hit(
         source_rank: Some(seed.source_rank),
         source_similarity: Some(seed.source_similarity),
         reranked_from_f32: config.rerank_from_f32,
+                temporal_weight: None,
     }))
 }
 

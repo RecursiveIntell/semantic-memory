@@ -568,7 +568,7 @@ impl VectorBackend for HnswIndex {
         HnswIndex::search(self, query, top_k).map(|hits| {
             hits.into_iter()
                 .map(|h| VectorHit {
-                    key: h.key,
+                    key: h.key.clone(),
                     distance: h.distance,
                 })
                 .collect()

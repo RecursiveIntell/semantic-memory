@@ -1,4 +1,4 @@
-use semantic_memory::ChunkingConfig;
+use semantic_memory::{ChunkingConfig, ChunkingStrategy};
 use semantic_memory::EstimateTokenCounter;
 
 fn default_config() -> ChunkingConfig {
@@ -67,6 +67,7 @@ fn splitting_preserves_separator_content() {
         min_size: 100,
         max_size: 500,
         overlap: 0,
+        strategy: ChunkingStrategy::default(),
     };
     let chunks = semantic_memory::chunker::chunk_text(&text, &config, &default_counter());
     let joined = chunks
@@ -134,6 +135,7 @@ fn overlap_between_chunks() {
         min_size: 50,
         max_size: 800,
         overlap: 100,
+        strategy: ChunkingStrategy::default(),
     };
     let chunks = semantic_memory::chunker::chunk_text(&text, &config, &default_counter());
     if chunks.len() >= 2 {
@@ -168,6 +170,7 @@ fn chunk_indices_are_sequential() {
         min_size: 50,
         max_size: 400,
         overlap: 50,
+        strategy: ChunkingStrategy::default(),
     };
     let chunks = semantic_memory::chunker::chunk_text(&text, &config, &default_counter());
     for (i, chunk) in chunks.iter().enumerate() {
@@ -183,6 +186,7 @@ fn final_small_tail_merges_into_previous_chunk() {
         min_size: 80,
         max_size: 320,
         overlap: 0,
+        strategy: ChunkingStrategy::default(),
     };
     let chunks = semantic_memory::chunker::chunk_text(&text, &config, &default_counter());
     assert!(chunks

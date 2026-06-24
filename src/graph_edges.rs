@@ -27,7 +27,7 @@ use crate::error::MemoryError;
 use crate::types::{GraphEdge, GraphEdgeType};
 use chrono::Utc;
 use rusqlite::{params, Connection};
-use stack_ids::DigestBuilder;
+use std::collections::HashSet;
 
 /// A stored graph edge row.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -221,6 +221,69 @@ pub(crate) fn list_all_graph_edges(conn: &Connection) -> Result<Vec<StoredGraphE
     Ok(rows)
 }
 
+/// List graph edges within N hops of the given seed node IDs.
+///
+/// Performs a BFS expansion from the seeds, loading only edges that
+/// connect nodes already in the visited set. This avoids loading the
+/// entire graph when only a local neighborhood is needed (e.g. discord
+/// search, factor graph, graph_path).
+///
+/// `max_hops` controls the BFS depth. `max_nodes` caps the total nodes
+/// visited to prevent runaway expansion on hub nodes.
+pub(crate) fn list_graph_edges_for_neighborhood(
+    conn: &Connection,
+    seed_ids: &[String],
+    max_hops: usize,
+    max_nodes: usize,
+) -> Result<Vec<StoredGraphEdge>, MemoryError> {
+    if seed_ids.is_empty() || max_hops == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut visited: HashSet<String> = seed_ids.iter().cloned().collect();
+    let mut all_edges: Vec<StoredGraphEdge> = Vec::new();
+    let mut frontier: Vec<String> = seed_ids.iter().cloned().collect();
+
+    for _hop in 0..max_hops {
+        if frontier.is_empty() || visited.len() >= max_nodes {
+            break;
+        }
+
+        let mut next_frontier: Vec<String> = Vec::new();
+
+        for node_id in &frontier {
+            let edges = list_graph_edges_for_node(conn, node_id)?;
+            for edge in edges {
+                // Track both endpoints
+                let other = if edge.source == *node_id {
+                    &edge.target
+                } else {
+                    &edge.source
+                };
+
+                if !visited.contains(other) {
+                    visited.insert(other.clone());
+                    next_frontier.push(other.clone());
+                }
+
+                // Dedup edges by id
+                if !all_edges.iter().any(|e: &StoredGraphEdge| e.id == edge.id) {
+                    all_edges.push(edge);
+                }
+            }
+        }
+
+        frontier = next_frontier;
+        if visited.len() >= max_nodes {
+            break;
+        }
+    }
+
+    // Sort by recorded_at for deterministic ordering
+    all_edges.sort_by(|a, b| a.recorded_at.cmp(&b.recorded_at));
+    Ok(all_edges)
+}
+
 /// Invalidate a graph edge by ID. Append-only — does not delete the row.
 pub(crate) fn invalidate_graph_edge(
     conn: &Connection,
@@ -244,6 +307,7 @@ pub(crate) fn invalidate_graph_edge(
 
 /// Load stored graph edges for a node and convert them to GraphEdge objects
 /// for the derived graph view. Only non-invalidated edges are included.
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub(crate) fn stored_edges_for_node(
     conn: &Connection,
     node_id: &str,

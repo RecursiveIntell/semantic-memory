@@ -162,11 +162,15 @@ pub mod vector_snapshot;
 
 // Re-export primary public types.
 pub use config::{
-    ChunkingConfig, DerivedVectorBackendPolicy, EmbeddingConfig, MemoryConfig, MemoryLimits,
-    PoolConfig, SearchConfig,
+    ChunkingConfig, ChunkingStrategy, DerivedVectorBackendPolicy, EmbeddingConfig, MemoryConfig,
+    MemoryLimits, PoolConfig, SearchConfig,
 };
 pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
-pub use embedder::{Embedder, MockEmbedder, OllamaEmbedder};
+pub use embedder::{
+    BgeM3DeriveConfig, BgeM3Embedder, Embedder, MockEmbedder, MultiEmbedBatchFuture,
+    MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding, MultiVectorEmbedding,
+    OllamaEmbedder, SparseWeights,
+};
 #[cfg(feature = "candle-embedder")]
 pub use embedder::CandleEmbedder;
 pub use error::MemoryError;
@@ -213,6 +217,56 @@ pub(crate) use store_support::{
     as_str_slice, build_episode_search_text, merge_trace_ctx, to_owned_string_vec,
     verification_status_for_outcome,
 };
+
+/// Deduplicate search results by content fingerprint within the same source type.
+///
+/// Removes results with near-identical content from the SAME source type
+/// (fact vs chunk). Keeps cross-source-type results even if content matches,
+/// since a fact and a chunk with identical content have different provenance.
+fn dedup_by_content(results: Vec<types::SearchResult>) -> Vec<types::SearchResult> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let deduped_result: Vec<types::SearchResult> = results
+        .into_iter()
+        .filter(|r| {
+            let fingerprint: String = r
+                .content
+                .split_whitespace()
+                .take(30)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            // Include source type (not full source with IDs) in the key
+            // so cross-source-type results with identical content are kept,
+            // but same-source-type results with identical content are deduped
+            let source_type = match &r.source {
+                types::SearchSource::Fact { .. } => "fact",
+                types::SearchSource::Chunk { .. } => "chunk",
+                types::SearchSource::Message { .. } => "message",
+                types::SearchSource::Episode { .. } => "episode",
+                types::SearchSource::Projection { .. } => "projection",
+            };
+            let key = format!("{}:{}", source_type, fingerprint);
+            seen.insert(key)
+        })
+        .collect::<Vec<_>>();
+    let mut deduped = deduped_result;
+
+    // Pass 2: document diversity -- max 2 chunks per document_id
+    let mut doc_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    deduped.retain(|r| {
+        if let types::SearchSource::Chunk { document_id, .. } = &r.source {
+            let count = doc_counts.entry(document_id.clone()).or_insert(0);
+            if *count >= 2 {
+                return false;
+            }
+            *count += 1;
+        }
+        true
+    });
+
+    deduped
+}
 
 #[cfg(feature = "hnsw")]
 fn verify_hnsw_key_level_integrity(
@@ -391,6 +445,9 @@ struct MemoryStoreInner {
     config: MemoryConfig,
     paths: StoragePaths,
     token_counter: Arc<dyn TokenCounter>,
+    /// LRU cache for query embeddings. Key is the text hash, value is the
+    /// embedding vector. Capped at 256 entries (~768KB for 768d f32).
+    embedding_cache: std::sync::Mutex<lru::LruCache<String, Vec<f32>>>,
     #[cfg(feature = "hnsw")]
     hnsw_index: std::sync::RwLock<HnswIndex>,
 }
@@ -732,6 +789,9 @@ impl MemoryStore {
                 config,
                 paths,
                 token_counter,
+                embedding_cache: std::sync::Mutex::new(
+                    lru::LruCache::new(std::num::NonZeroUsize::new(256).expect("256 > 0")),
+                ),
                 #[cfg(feature = "hnsw")]
                 hnsw_index: std::sync::RwLock::new(hnsw_index),
             }),
@@ -760,22 +820,98 @@ impl MemoryStore {
     }
 
     async fn embed_text_internal(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        // Check embedding cache first -- skip the compute for repeated queries
+        let cache_key = text.to_string();
+        {
+            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
+            if let Some(cached) = cache.get(&cache_key).cloned() {
+                return Ok(cached);
+            }
+        }
+
         let _permit = self.with_embedding_permit().await?;
-        let embedding = self.inner.embedder.embed(text).await?;
+        // nomic-embed-text-v1.5 uses asymmetric prefixes:
+        // "search_query:" for queries (search-time)
+        // "search_document:" for documents (ingestion-time)
+        // The prefix is added here so ALL embedder backends (Candle, Ollama)
+        // get the same prefix without each backend needing to handle it.
+        let prefixed = format!("search_query: {text}");
+        let embedding = self.inner.embedder.embed(&prefixed).await?;
         db::validate_embedding(&embedding, self.inner.config.embedding.dimensions)?;
+
+        // Store in cache (keyed by original text, not prefixed)
+        {
+            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
+            cache.put(cache_key, embedding.clone());
+        }
+
         Ok(embedding)
     }
 
     async fn embed_batch_internal(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, MemoryError> {
         let requested = texts.len();
+
+        // Check cache for each text
+        let mut results: Vec<Option<Vec<f32>>> = Vec::with_capacity(requested);
+        let mut misses: Vec<String> = Vec::new();
+        let mut miss_indices: Vec<usize> = Vec::new();
+
+        for (i, text) in texts.iter().enumerate() {
+            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
+            if let Some(cached) = cache.get(text).cloned() {
+                results.push(Some(cached));
+            } else {
+                results.push(None);
+                miss_indices.push(i);
+                misses.push(text.clone());
+            }
+        }
+
         let _permit = self.with_embedding_permit().await?;
-        let embeddings = self.inner.embedder.embed_batch(texts).await?;
+
+        // Add search_document: prefix for all documents (ingestion path)
+        let prefixed_misses: Vec<String> = misses
+            .iter()
+            .map(|t| format!("search_document: {t}"))
+            .collect();
+
+        let miss_embeddings = if prefixed_misses.is_empty() {
+            Vec::new()
+        } else {
+            let embeddings = self.inner.embedder.embed_batch(prefixed_misses).await?;
+            // Validate batch count before caching or assembling
+            if embeddings.len() != misses.len() {
+                return Err(MemoryError::EmbeddingBatchCountMismatch {
+                    requested: misses.len(),
+                    returned: embeddings.len(),
+                });
+            }
+            // Cache the new embeddings (keyed by original text, not prefixed)
+            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
+            for (text, emb) in misses.iter().zip(embeddings.iter()) {
+                cache.put(text.clone(), emb.clone());
+            }
+            embeddings
+        };
+
+        // Assemble results in order (all slots guaranteed to have data)
+        let mut final_results = Vec::with_capacity(requested);
+        let mut miss_idx = 0;
+        for i in 0..requested {
+            if let Some(emb) = &results[i] {
+                final_results.push(emb.clone());
+            } else {
+                final_results.push(miss_embeddings[miss_idx].clone());
+                miss_idx += 1;
+            }
+        }
+
         db::validate_embedding_batch(
-            &embeddings,
+            &final_results,
             requested,
             self.inner.config.embedding.dimensions,
         )?;
-        Ok(embeddings)
+        Ok(final_results)
     }
 
     fn validate_embedding_dimensions(&self, embedding: &[f32]) -> Result<(), MemoryError> {
@@ -1111,6 +1247,27 @@ impl MemoryStore {
             .await
     }
 
+    /// List graph edges within N hops of the given seed node IDs.
+    ///
+    /// Performs a BFS expansion from the seeds, loading only edges in
+    /// the local neighborhood. Much faster than `list_all_graph_edges`
+    /// when you only need the subgraph around search results.
+    ///
+    /// - `seed_ids`: starting node IDs (typically search result IDs)
+    /// - `max_hops`: BFS depth (1 = direct neighbors, 2 = neighbors of neighbors)
+    /// - `max_nodes`: cap on total nodes visited (prevents hub explosion)
+    pub async fn list_graph_edges_for_neighborhood(
+        &self,
+        seed_ids: Vec<String>,
+        max_hops: usize,
+        max_nodes: usize,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        self.with_read_conn(move |conn| {
+            graph_edges::list_graph_edges_for_neighborhood(conn, &seed_ids, max_hops, max_nodes)
+        })
+        .await
+    }
+
     /// Invalidate a stored graph edge by ID. Append-only — the row is never deleted.
     pub async fn invalidate_graph_edge(
         &self,
@@ -1242,11 +1399,13 @@ impl MemoryStore {
                         }
                     }
                     Ok(SearchResponse {
-                        results: execution
-                            .results
-                            .into_iter()
-                            .map(|result| result.result)
-                            .collect(),
+                        results: dedup_by_content(
+                            execution
+                                .results
+                                .into_iter()
+                                .map(|result| result.result)
+                                .collect(),
+                        ),
                         receipt: execution.receipt,
                     })
                 }
@@ -1264,11 +1423,13 @@ impl MemoryStore {
                         None,
                     )?;
                     Ok(SearchResponse {
-                        results: execution
-                            .results
-                            .into_iter()
-                            .map(|result| result.result)
-                            .collect(),
+                        results: dedup_by_content(
+                            execution
+                                .results
+                                .into_iter()
+                                .map(|result| result.result)
+                                .collect(),
+                        ),
                         receipt: execution.receipt,
                     })
                 }

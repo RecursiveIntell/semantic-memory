@@ -306,6 +306,7 @@ fn rrf_fusion_order() {
             source: make_fact_source("A"),
             raw_score: 0.1,
             updated_at: None,
+            temporal_weight: None,
         },
         Bm25Hit {
             id: "B".to_string(),
@@ -313,6 +314,7 @@ fn rrf_fusion_order() {
             source: make_fact_source("B"),
             raw_score: 0.2,
             updated_at: None,
+            temporal_weight: None,
         },
         Bm25Hit {
             id: "C".to_string(),
@@ -320,6 +322,7 @@ fn rrf_fusion_order() {
             source: make_fact_source("C"),
             raw_score: 0.3,
             updated_at: None,
+            temporal_weight: None,
         },
     ];
 
@@ -333,6 +336,7 @@ fn rrf_fusion_order() {
             source_rank: Some(1),
             source_similarity: Some(0.9),
             reranked_from_f32: false,
+            temporal_weight: None,
         },
         VectorHit {
             id: "D".to_string(),
@@ -343,6 +347,7 @@ fn rrf_fusion_order() {
             source_rank: Some(2),
             source_similarity: Some(0.8),
             reranked_from_f32: false,
+            temporal_weight: None,
         },
         VectorHit {
             id: "A".to_string(),
@@ -353,6 +358,7 @@ fn rrf_fusion_order() {
             source_rank: Some(3),
             source_similarity: Some(0.7),
             reranked_from_f32: false,
+            temporal_weight: None,
         },
     ];
 

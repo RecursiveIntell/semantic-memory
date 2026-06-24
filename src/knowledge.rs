@@ -143,6 +143,7 @@ pub fn insert_fact_in_tx(
 }
 
 /// Delete a fact and its FTS entry in a transaction.
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub fn delete_fact_with_fts(conn: &Connection, fact_id: &str) -> Result<(), MemoryError> {
     with_transaction(conn, |tx| {
         let fts_rowid: i64 = tx
@@ -195,6 +196,7 @@ pub fn delete_fact_with_fts(conn: &Connection, fact_id: &str) -> Result<(), Memo
 }
 
 /// Update a fact's content and embeddings, with FTS synchronization.
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub fn update_fact_with_fts(
     conn: &Connection,
     fact_id: &str,
@@ -652,6 +654,15 @@ pub fn get_fact_embedding(
     }
 }
 
+/// List the distinct namespaces that currently contain facts.
+pub fn list_fact_namespaces(conn: &Connection) -> Result<Vec<String>, MemoryError> {
+    let mut stmt = conn.prepare("SELECT DISTINCT namespace FROM facts ORDER BY namespace")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// List facts within a namespace.
 pub fn list_facts(
     conn: &Connection,
@@ -727,6 +738,27 @@ impl MemoryStore {
         trace_ctx: Option<&TraceCtx>,
     ) -> Result<String, MemoryError> {
         self.validate_content("fact.content", content)?;
+
+        // Dedup: check if a fact with the same content already exists.
+        // This prevents the 4-5% DB bloat from duplicate ingestion.
+        let ns_check = namespace.to_string();
+        let ct_check = content.to_string();
+        let existing_id = self
+            .with_read_conn(move |conn| {
+                let result: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM facts WHERE content = ?1 AND namespace = ?2 LIMIT 1",
+                        rusqlite::params![&ct_check, &ns_check],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+                Ok(result)
+            })
+            .await?;
+
+        if let Some(id) = existing_id {
+            return Ok(id);
+        }
 
         let embedding = self.embed_text_internal(content).await?;
         self.validate_embedding_dimensions(&embedding)?;
@@ -939,5 +971,10 @@ impl MemoryStore {
         let ns = namespace.to_string();
         self.with_read_conn(move |conn| list_facts(conn, &ns, limit, offset))
             .await
+    }
+
+    /// List the distinct namespaces that currently contain facts.
+    pub async fn list_fact_namespaces(&self) -> Result<Vec<String>, MemoryError> {
+        self.with_read_conn(move |conn| list_fact_namespaces(conn)).await
     }
 }

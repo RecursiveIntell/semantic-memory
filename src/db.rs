@@ -699,6 +699,7 @@ pub fn open_database(
 }
 
 /// Open a SQLite connection with pragmas applied but without running migrations.
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub fn open_database_connection(
     path: &Path,
     pool: &PoolConfig,
@@ -764,7 +765,9 @@ fn configure_connection(
          PRAGMA busy_timeout = {};
          PRAGMA synchronous = NORMAL;
          PRAGMA temp_store = MEMORY;
-         PRAGMA wal_autocheckpoint = {};",
+         PRAGMA wal_autocheckpoint = {};
+         PRAGMA cache_size = -25600;
+         PRAGMA mmap_size = 268435456;",
         journal_mode, pool.busy_timeout_ms, pool.wal_autocheckpoint,
     ))?;
 
@@ -1275,6 +1278,7 @@ pub(crate) fn upsert_derived_vector_artifact(
     Ok(())
 }
 
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub fn delete_derived_vector_artifact(
     conn: &Connection,
     item_key: &str,
@@ -1451,6 +1455,7 @@ pub(crate) fn current_derived_vector_generation(
     .map_err(MemoryError::from)
 }
 
+#[allow(dead_code)] // public API — used by external consumers, not internally
 pub fn count_derived_vector_artifacts(
     conn: &Connection,
     codec_family: &str,
@@ -2939,6 +2944,7 @@ pub(crate) struct ProveKvPoolGenerationRow {
     pub generation: ProveKvPoolGenerationV1,
 }
 
+#[allow(dead_code)] // retained for provekv pool diagnostics, not currently called
 fn parse_provekv_status(value: &str) -> ProveKvPoolGenerationStatus {
     match value {
         "disabled" => ProveKvPoolGenerationStatus::Disabled,
@@ -3098,6 +3104,7 @@ pub(crate) fn mark_provekv_pool_generation_failed(
     Ok(())
 }
 
+#[allow(dead_code)] // retained for provekv pool diagnostics, not currently called
 pub(crate) fn provekv_pool_artifact_status(
     conn: &Connection,
 ) -> Result<ProveKvPoolArtifactStatusV1, MemoryError> {
