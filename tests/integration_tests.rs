@@ -400,3 +400,72 @@ async fn test_auto_token_count() {
     assert!(messages[0].token_count.is_some());
     assert!(messages[0].token_count.unwrap() > 0);
 }
+
+#[cfg(feature = "admin-ops")]
+#[tokio::test]
+async fn search_cache_cleared_after_update_fact() {
+    let (store, _tmp) = test_store();
+
+    // Add a fact with unique content easily matched by FTS5
+    let fact_id = store
+        .add_fact("general", "xyzzy unique marker phrase for cache test", None, None)
+        .await
+        .unwrap();
+
+    // First search populates the cache
+    let results1 = store
+        .search("xyzzy unique marker", Some(5), None, None)
+        .await
+        .unwrap();
+    assert!(
+        !results1.is_empty(),
+        "Should find the fact with xyzzy marker before update"
+    );
+    assert!(results1.iter().any(|r| r.content.contains("xyzzy unique marker")));
+
+    // Update the fact to completely different content
+    store
+        .update_fact(&fact_id, "completely replaced content nothing in common")
+        .await
+        .unwrap();
+
+    // Second search with same query: cache must have been cleared, so fresh DB query runs
+    let results2 = store
+        .search("xyzzy unique marker", Some(5), None, None)
+        .await
+        .unwrap();
+
+    // Fresh search should not return the old cached content
+    assert!(
+        results2.iter().all(|r| !r.content.contains("xyzzy unique marker")),
+        "Search cache must be cleared after update_fact — old stale content should not appear"
+    );
+}
+
+#[cfg(feature = "admin-ops")]
+#[tokio::test]
+async fn search_cache_cleared_after_delete_namespace() {
+    let (store, _tmp) = test_store();
+
+    store
+        .add_fact("testns", "qqqq distinctive namespace cache fact", None, None)
+        .await
+        .unwrap();
+
+    let results1 = store
+        .search("qqqq distinctive namespace", Some(5), None, None)
+        .await
+        .unwrap();
+    assert!(!results1.is_empty(), "Should find qqqq fact before namespace delete");
+
+    store.delete_namespace("testns").await.unwrap();
+
+    let results2 = store
+        .search("qqqq distinctive namespace", Some(5), None, None)
+        .await
+        .unwrap();
+    assert!(
+        results2.iter().all(|r| !r.content.contains("qqqq distinctive")),
+        "Cache must be cleared after delete_namespace"
+    );
+}

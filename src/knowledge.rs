@@ -912,6 +912,8 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         self.sync_pending_hnsw_ops_best_effort("update_fact").await;
 
+        self.clear_search_cache();
+
         Ok(())
     }
 
@@ -927,6 +929,8 @@ impl MemoryStore {
 
         #[cfg(feature = "hnsw")]
         self.sync_pending_hnsw_ops_best_effort("delete_fact").await;
+
+        self.clear_search_cache();
 
         Ok(())
     }
@@ -944,6 +948,8 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         self.sync_pending_hnsw_ops_best_effort("delete_namespace")
             .await;
+
+        self.clear_search_cache();
 
         Ok(count)
     }

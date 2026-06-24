@@ -609,6 +609,11 @@ impl MemoryStore {
         .map_err(|e| MemoryError::Other(format!("Blocking task panicked: {}", e)))?
     }
 
+    pub(crate) fn clear_search_cache(&self) {
+        let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
+        cache.clear();
+    }
+
     async fn persist_search_receipt(
         &self,
         receipt: &VectorSearchReceiptV1,
@@ -1397,6 +1402,21 @@ impl MemoryStore {
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
 
+        // Check search result cache for simple unfiltered queries.
+        // Cache is keyed by (query, k) and only used when no namespace/source_type
+        // filters are applied. Cleared on any mutating operation (update/delete).
+        let cache_key = if namespaces.is_none() && source_types.is_none() {
+            Some(format!("{query}:{k}"))
+        } else {
+            None
+        };
+        if let Some(ref key) = cache_key {
+            let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
+            if let Some(cached) = cache.get(key).cloned() {
+                return Ok(SearchResponse { results: cached, receipt: None });
+            }
+        }
+
         let query_embedding = self.embed_text_internal(query).await?;
 
         #[cfg(feature = "hnsw")]
@@ -1511,6 +1531,10 @@ impl MemoryStore {
             .await?;
         if let Some(receipt) = &response.receipt {
             self.persist_search_receipt(receipt).await?;
+        }
+        if let Some(ref key) = cache_key {
+            let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
+            cache.put(key.clone(), response.results.clone());
         }
         Ok(response)
     }
