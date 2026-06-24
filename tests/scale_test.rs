@@ -63,12 +63,12 @@ async fn bulk_ingestion_100_facts() {
         .search("alpha keywords", Some(5), None, None)
         .await
         .expect("search");
-    assert!(!results.results.is_empty(), "search should return results after bulk ingestion");
+    assert!(!results.is_empty(), "search should return results after bulk ingestion");
 
     // Check stats
     let stats = store.stats().await.expect("stats");
-    println!("Stats: {} facts, {} chunks", stats.fact_count, stats.chunk_count);
-    assert!(stats.fact_count >= 100, "should have at least 100 facts");
+    println!("Stats: {} facts, {} chunks", stats.total_facts, stats.total_chunks);
+    assert!(stats.total_facts >= 100, "should have at least 100 facts");
 }
 
 #[tokio::test]
@@ -133,7 +133,7 @@ async fn concurrent_search_and_add_4_threads() {
     let stats = store.stats().await.expect("stats");
     println!(
         "After concurrent test: {} facts (expected >= 20 + 50 = 70)",
-        stats.fact_count
+        stats.total_facts
     );
-    assert!(stats.fact_count >= 70, "should have at least 70 facts after concurrent adds");
+    assert!(stats.total_facts >= 70, "should have at least 70 facts after concurrent adds");
 }
