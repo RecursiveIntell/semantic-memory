@@ -265,6 +265,74 @@ fn dedup_by_content(results: Vec<types::SearchResult>) -> Vec<types::SearchResul
         true
     });
 
+    // Pass 3: heuristic embedding similarity dedup within same source type.
+    // When two same-type results have cosine scores within 0.01 of each other
+    // and their first-30-word Jaccard similarity is ≥ 0.8, drop the lower scorer.
+    {
+        let word_set = |r: &types::SearchResult| -> std::collections::HashSet<String> {
+            r.content
+                .split_whitespace()
+                .take(30)
+                .map(|w| w.to_lowercase())
+                .collect()
+        };
+        let source_type_tag = |r: &types::SearchResult| -> &'static str {
+            match &r.source {
+                types::SearchSource::Fact { .. } => "fact",
+                types::SearchSource::Chunk { .. } => "chunk",
+                types::SearchSource::Message { .. } => "message",
+                types::SearchSource::Episode { .. } => "episode",
+                types::SearchSource::Projection { .. } => "projection",
+            }
+        };
+        let n = deduped.len();
+        let mut drop: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for i in 0..n {
+            if drop.contains(&i) {
+                continue;
+            }
+            for j in (i + 1)..n {
+                if drop.contains(&j) {
+                    continue;
+                }
+                let ri = &deduped[i];
+                let rj = &deduped[j];
+                if source_type_tag(ri) != source_type_tag(rj) {
+                    continue;
+                }
+                let (Some(ci), Some(cj)) = (ri.cosine_similarity, rj.cosine_similarity) else {
+                    continue;
+                };
+                if (ci - cj).abs() > 0.01 {
+                    continue;
+                }
+                let wi = word_set(ri);
+                let wj = word_set(rj);
+                let inter = wi.intersection(&wj).count();
+                let uni = wi.union(&wj).count();
+                if uni == 0 {
+                    continue;
+                }
+                if inter as f64 / uni as f64 >= 0.8 {
+                    if ri.score >= rj.score {
+                        drop.insert(j);
+                    } else {
+                        drop.insert(i);
+                        break;
+                    }
+                }
+            }
+        }
+        if !drop.is_empty() {
+            let mut idx = 0usize;
+            deduped.retain(|_| {
+                let keep = !drop.contains(&idx);
+                idx += 1;
+                keep
+            });
+        }
+    }
+
     deduped
 }
 
