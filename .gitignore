@@ -51,6 +51,24 @@ HNSWLIB_RS_REFERENCE.md
 CLAUDE_CODE_PROMPT.md
 semantic-memory-spec.md
 
+# Codex run artifacts (never commit)
+0*_*.md
+0*_*.sh
+P32_*.md
+PHASE_*.md
+FRESH_*.md
+ISSUE_MATRIX.md
+z.py
+*.codex-archive.json
+*.excluded.json
+*.findings.json
+*.manifest.json
+*.report.md
+*_FINDINGS_INDEX.*
+docs/codex-runs/
+docs/audits/
+evidence/
+
 # Backup files
 *.bak
 
