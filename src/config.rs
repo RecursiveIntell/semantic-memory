@@ -185,6 +185,18 @@ pub struct SearchConfig {
     #[serde(default = "default_zero")]
     pub late_interaction_weight: f64,
 
+    /// BM25 k1 parameter. Controls term frequency saturation.
+    /// Default: 1.2 (FTS5 standard). Lower (0.8-1.0) helps with technical content.
+    pub bm25_k1: f64,
+
+    /// BM25 b parameter. Controls document length normalization.
+    /// Default: 0.75 (FTS5 standard).
+    pub bm25_b: f64,
+
+    /// Optional per-namespace weight multipliers.
+    /// Empty = no weighting (all namespaces scored equally).
+    pub namespace_weights: std::collections::HashMap<String, f64>,
+
     /// RRF constant (k). Controls rank importance decay.
     pub rrf_k: f64,
 
@@ -275,6 +287,9 @@ impl Default for SearchConfig {
             bm25_weight: 1.0,
             vector_weight: 1.0,
             late_interaction_weight: 0.15,
+            bm25_k1: 1.2,
+            bm25_b: 0.75,
+            namespace_weights: std::collections::HashMap::new(),
             rrf_k: 60.0,
             candidate_pool_size: 50,
             default_top_k: 5,

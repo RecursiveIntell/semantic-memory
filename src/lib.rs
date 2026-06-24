@@ -448,6 +448,9 @@ struct MemoryStoreInner {
     /// LRU cache for query embeddings. Key is the text hash, value is the
     /// embedding vector. Capped at 256 entries (~768KB for 768d f32).
     embedding_cache: std::sync::Mutex<lru::LruCache<String, Vec<f32>>>,
+    /// LRU cache for search results. Key is "query:top_k", value is results.
+    /// Capped at 64 entries.
+    search_cache: std::sync::Mutex<lru::LruCache<String, Vec<types::SearchResult>>>,
     #[cfg(feature = "hnsw")]
     hnsw_index: std::sync::RwLock<HnswIndex>,
 }
@@ -791,6 +794,9 @@ impl MemoryStore {
                 token_counter,
                 embedding_cache: std::sync::Mutex::new(
                     lru::LruCache::new(std::num::NonZeroUsize::new(256).expect("256 > 0")),
+                ),
+                search_cache: std::sync::Mutex::new(
+                    lru::LruCache::new(std::num::NonZeroUsize::new(64).expect("64 > 0")),
                 ),
                 #[cfg(feature = "hnsw")]
                 hnsw_index: std::sync::RwLock::new(hnsw_index),

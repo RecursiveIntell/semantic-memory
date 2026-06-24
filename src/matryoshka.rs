@@ -1,5 +1,17 @@
 use crate::search::cosine_similarity;
 
+/// Truncate a full embedding to N dimensions and re-normalize.
+/// Used for fast candidate generation before exact 768d rerank.
+pub fn truncate_embedding(embedding: &[f32], dims: usize) -> Vec<f32> {
+    let truncated: Vec<f32> = embedding.iter().take(dims.min(embedding.len())).copied().collect();
+    let norm: f32 = truncated.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        truncated.iter().map(|v| v / norm).collect()
+    } else {
+        truncated
+    }
+}
+
 /// Configuration for multi-resolution Matryoshka search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatryoshkaConfig {

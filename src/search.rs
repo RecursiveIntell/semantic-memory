@@ -51,6 +51,38 @@ fn expand_query_for_fts(query: &str) -> String {
     expanded.join(" ")
 }
 
+
+/// Classify whether a query needs retrieval at all.
+/// Simple greetings, confirmations, and single-word responses don't need search.
+pub fn should_retrieve(query: &str) -> bool {
+    let trimmed = query.trim();
+    if trimmed.len() < 12 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let skip_phrases = [
+        "ok", "yes", "no", "thanks", "done", "sure", "yeah", "right",
+        "correct", "agreed", "ok thanks", "got it", "sounds good",
+        "that works", "makes sense", "i see", "understood", "gotcha",
+    ];
+    for phrase in &skip_phrases {
+        if lower == *phrase {
+            return false;
+        }
+    }
+    if lower.starts_with("can you") || lower.starts_with("could you")
+        || lower.starts_with("would you") || lower.starts_with("will you")
+    {
+        if lower.len() <= 20 {
+            return false;
+        }
+    }
+    if trimmed.starts_with('/') {
+        return false;
+    }
+    true
+}
+
 /// Sanitize a raw query string for safe use in an FTS5 MATCH expression.
 ///
 /// Replaces any character that is not alphanumeric, whitespace, or a Unicode
@@ -198,6 +230,8 @@ pub struct Bm25Hit {
     pub updated_at: Option<String>,
     /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
     pub temporal_weight: Option<f64>,
+    /// Provenance confidence (0.0-1.0, default 0.5).
+    pub provenance_confidence: Option<f64>,
 }
 
 /// A vector search hit.
@@ -221,6 +255,8 @@ pub struct VectorHit {
     pub reranked_from_f32: bool,
     /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
     pub temporal_weight: Option<f64>,
+    /// Provenance confidence (0.0-1.0, default 0.5).
+    pub provenance_confidence: Option<f64>,
 }
 
 #[allow(dead_code)]
@@ -253,6 +289,8 @@ struct RrfCandidate {
     late_interaction_score: Option<f64>,
     /// Temporal weight for stale-fact downranking (0.0-1.0, default 1.0).
     temporal_weight: Option<f64>,
+    /// Provenance confidence (0.0-1.0, default 0.5). Higher = more trustworthy.
+    provenance_confidence: Option<f64>,
 }
 
 impl RrfCandidate {
@@ -283,7 +321,16 @@ impl RrfCandidate {
         // Apply temporal weight: stale facts (weight < 1.0) get downranked.
         // Default weight is 1.0 (no effect) when temporal feature is not active.
         let temporal_factor = self.temporal_weight.unwrap_or(1.0);
-        let rrf_score = base_score * temporal_factor;
+        let provenance_factor = 1.0 + (self.provenance_confidence.unwrap_or(0.5) - 0.5) * 0.2;
+        let rrf_score = base_score * temporal_factor * provenance_factor;
+        // Apply namespace weight if configured
+        let ns_weight = match &self.source {
+            SearchSource::Fact { namespace, .. } => {
+                config.namespace_weights.get(namespace).copied().unwrap_or(1.0)
+            }
+            _ => 1.0,
+        };
+        let rrf_score = rrf_score * ns_weight;
 
         let breakdown = ScoreBreakdown {
             rrf_score,
@@ -383,6 +430,7 @@ fn scan_vector_rows(
                 source_similarity: None,
                 reranked_from_f32: false,
                 temporal_weight: None,
+                provenance_confidence: None,
             });
         }
     }
@@ -468,6 +516,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight,
+                provenance_confidence: None,
             })
         })?;
 
@@ -518,6 +567,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
+            provenance_confidence: None,
             })
         })?;
 
@@ -565,6 +615,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
+            provenance_confidence: None,
             })
         })?;
 
@@ -615,6 +666,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
+            provenance_confidence: None,
             })
         })?;
 
@@ -1248,6 +1300,7 @@ fn turbo_quant_vector_outcome(
                 source_similarity: Some(candidate.score),
                 reranked_from_f32: true,
                 temporal_weight: None,
+                provenance_confidence: None,
             });
         }
     }
@@ -1584,6 +1637,7 @@ fn rrf_fuse_detailed_with_context(
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: hit.temporal_weight,
+                provenance_confidence: None,
             });
     }
 
@@ -1616,6 +1670,7 @@ fn rrf_fuse_detailed_with_context(
                 late_interaction_rank: None,
                 late_interaction_score: None,
             temporal_weight: None,
+            provenance_confidence: None,
             });
     }
 
@@ -1717,6 +1772,7 @@ pub fn rrf_fuse_with_late_interaction(
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: hit.temporal_weight,
+                provenance_confidence: None,
             });
     }
 
@@ -1750,6 +1806,7 @@ pub fn rrf_fuse_with_late_interaction(
                 late_interaction_rank: None,
                 late_interaction_score: None,
             temporal_weight: None,
+            provenance_confidence: None,
             });
     }
 
@@ -2327,6 +2384,7 @@ fn build_ranked_vector_hit(
         source_similarity: Some(seed.source_similarity),
         reranked_from_f32: config.rerank_from_f32,
                 temporal_weight: None,
+    provenance_confidence: None,
     }))
 }
 
