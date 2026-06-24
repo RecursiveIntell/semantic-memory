@@ -185,6 +185,18 @@ pub struct SearchConfig {
     #[serde(default = "default_zero")]
     pub late_interaction_weight: f64,
 
+    /// BM25 k1 parameter. Controls term frequency saturation.
+    /// Default: 1.2 (FTS5 standard). Lower (0.8-1.0) helps with technical content.
+    pub bm25_k1: f64,
+
+    /// BM25 b parameter. Controls document length normalization.
+    /// Default: 0.75 (FTS5 standard).
+    pub bm25_b: f64,
+
+    /// Optional per-namespace weight multipliers.
+    /// Empty = no weighting (all namespaces scored equally).
+    pub namespace_weights: std::collections::HashMap<String, f64>,
+
     /// RRF constant (k). Controls rank importance decay.
     pub rrf_k: f64,
 
@@ -274,7 +286,10 @@ impl Default for SearchConfig {
         Self {
             bm25_weight: 1.0,
             vector_weight: 1.0,
-            late_interaction_weight: 0.0,
+            late_interaction_weight: 0.15,
+            bm25_k1: 1.2,
+            bm25_b: 0.75,
+            namespace_weights: std::collections::HashMap::new(),
             rrf_k: 60.0,
             candidate_pool_size: 50,
             default_top_k: 5,
@@ -397,6 +412,22 @@ impl SearchConfig {
     }
 }
 
+/// Chunking strategy to use when splitting text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkingStrategy {
+    /// Plain recursive splitting (current/default behavior).
+    #[default]
+    Plain,
+    /// Sentence-boundary-aware chunking with configurable overlap.
+    Sentence,
+    /// Code-aware chunking that avoids splitting inside function bodies.
+    /// Detects Rust, Python, and TypeScript blocks.
+    Code,
+    /// Markdown-header-based chunking that splits on header boundaries.
+    Markdown,
+}
+
 /// Text chunking parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkingConfig {
@@ -411,6 +442,11 @@ pub struct ChunkingConfig {
 
     /// Overlap between adjacent chunks in characters.
     pub overlap: usize,
+
+    /// Chunking strategy to use. Defaults to [`ChunkingStrategy::Plain`]
+    /// for backward compatibility.
+    #[serde(default)]
+    pub strategy: ChunkingStrategy,
 }
 
 impl Default for ChunkingConfig {
@@ -420,6 +456,7 @@ impl Default for ChunkingConfig {
             min_size: 100,
             max_size: 2000,
             overlap: 200,
+            strategy: ChunkingStrategy::default(),
         }
     }
 }

@@ -95,6 +95,7 @@ candle-embedder = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 
 
 [dependencies]
+lru = "0.12"
 bytemuck = { version = "1", features = ["derive"] }
 blake3 = { workspace = true }
 rusqlite = { workspace = true, features = ["bundled", "blob"] }

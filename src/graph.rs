@@ -1023,7 +1023,7 @@ where
         "SELECT {id_column}, {embedding_column} FROM {table} WHERE {embedding_column} IS NOT NULL"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
 
