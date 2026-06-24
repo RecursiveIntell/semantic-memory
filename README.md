@@ -52,6 +52,38 @@ need:
 - **Topological analysis** — Betti numbers and void detection.
 - **Community detection** — Leiden-inspired with contradiction
   scanning.
+- **Late-interaction RRF** — a third retrieval signal (proxy
+  ColBERT MaxSim) fused alongside BM25 and vector.
+- **Temporal scoring** — stale facts are automatically downranked
+  via temporal weight in the RRF score.
+- **Provenance-weighted scoring** — high-confidence facts rank
+  higher via provenance confidence multiplier.
+- **Namespace-weighted scoring** — configurable per-namespace boost
+  in `SearchConfig`.
+- **Self-RAG gating** — `should_retrieve()` skips search for
+  greetings, confirmations, and trivial queries.
+- **Embedding cache** — LRU cache (256 entries) skips model
+  compute for repeated query texts.
+- **Search result cache** — LRU cache (64 entries) returns identical
+  queries instantly. Invalidated on any mutation.
+- **Query expansion** — hyphenated variants (turbo-quant /
+  turboquant) automatically matched in BM25.
+- **Result diversity** — max 2 chunks per document prevents
+  narrow single-source results.
+- **Embedding similarity dedup** — Jaccard + cosine heuristic
+  removes near-duplicate results.
+- **SimpleMem compression** — `compress_search_results()`
+  shortens result content to first sentence + key terms (opt-in
+  via `SearchConfig.compress_results`).
+- **Matryoshka 2-stage search** — 64d truncated embeddings for
+  fast candidate generation, 768d exact rerank (opt-in via
+  `SearchConfig.candidate_dims`).
+- **RL routing feedback** — `record_routing_outcome()` feeds
+  good/bad/neutral signals to the tabular routing policy.
+- **BM25 tuning** — configurable `k1` and `b` parameters in
+  `SearchConfig`.
+- **TurboQuant codec** — optional compressed vector sidecar via
+  the `turbo-quant-codec` feature flag.
 
 ## Quick start
 
