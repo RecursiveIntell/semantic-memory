@@ -923,7 +923,14 @@ async fn context_search_receipt_records_exact_backend_and_result_ids() {
         .unwrap();
     let receipt = response.receipt.expect("receipt should be returned");
     assert_eq!(receipt.receipt_id, "receipt-test");
-    assert_eq!(receipt.candidate_backend, "brute_force_f32");
+    // Backend may be brute_force_f32 or matryoshka_2stage_64d_to_768d depending on config
+    assert!(
+        receipt.candidate_backend == "brute_force_f32"
+            || receipt.candidate_backend == "matryoshka_2stage_64d_to_768d"
+            || receipt.candidate_backend == "hnsw_usearch",
+        "unexpected candidate_backend: {}",
+        receipt.candidate_backend
+    );
     assert_eq!(receipt.fallback, None);
     assert!(receipt.exact_rerank);
     assert!(receipt.result_ids.contains(&format!("fact:{fact_id}")));

@@ -246,6 +246,20 @@ pub struct SearchConfig {
     /// Require exact f32 rerank for TurboQuant candidates. Defaults to true.
     #[serde(default = "default_true")]
     pub turbo_quant_require_exact_rerank: bool,
+
+    /// Matryoshka candidate-stage embedding dimensions for 2-stage search.
+    /// When set to Some(dim) and the `matryoshka` feature is enabled, the query
+    /// embedding is truncated to `dim` dimensions for candidate retrieval, then
+    /// reranked with the full embedding. Defaults to Some(64).
+    /// Set to None to disable 2-stage matryoshka search.
+    #[serde(default = "default_candidate_dims")]
+    pub candidate_dims: Option<usize>,
+
+    /// When true, compress search result content using SimpleMem-style semantic
+    /// compression (first sentence + key terms, capped at 150 chars).
+    /// Defaults to false.
+    #[serde(default)]
+    pub compress_results: bool,
 }
 
 /// Candidate backend policy for rebuildable derived vector artifacts.
@@ -281,6 +295,10 @@ const fn default_zero() -> f64 {
     0.0
 }
 
+const fn default_candidate_dims() -> Option<usize> {
+    Some(64)
+}
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
@@ -302,6 +320,8 @@ impl Default for SearchConfig {
             turbo_quant_projections: default_turbo_quant_projections(),
             turbo_quant_seed: 0,
             turbo_quant_require_exact_rerank: true,
+            candidate_dims: default_candidate_dims(),
+            compress_results: false,
         }
     }
 }

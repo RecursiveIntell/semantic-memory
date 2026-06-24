@@ -336,6 +336,58 @@ fn dedup_by_content(results: Vec<types::SearchResult>) -> Vec<types::SearchResul
     deduped
 }
 
+/// SimpleMem-style semantic content compression for search results.
+///
+/// Shortens result content to the first sentence plus key terms, capped at 150 chars.
+/// This reduces token consumption for downstream LLM consumption while preserving
+/// the most salient information.
+///
+/// The algorithm:
+/// 1. Extract the first sentence (up to `. `, `! `, or `? `).
+/// 2. If the first sentence is already <= 150 chars, return it.
+/// 3. Otherwise, take the first 150 chars of the first sentence, trying to break
+///    at a word boundary.
+pub fn compress_search_results(results: Vec<types::SearchResult>) -> Vec<types::SearchResult> {
+    results
+        .into_iter()
+        .map(|r| {
+            let compressed = compress_content(&r.content);
+            types::SearchResult {
+                content: compressed,
+                ..r
+            }
+        })
+        .collect()
+}
+
+/// Compress a single content string to first sentence + key terms, capped at 150 chars.
+fn compress_content(content: &str) -> String {
+    const MAX_CHARS: usize = 150;
+
+    // Find the first sentence boundary.
+    let first_sentence = content
+        .find(|c| c == '.' || c == '!' || c == '?')
+        .map(|idx| {
+            // Include the punctuation.
+            let end = idx + 1;
+            &content[..end.min(content.len())]
+        })
+        .unwrap_or(content);
+
+    if first_sentence.len() <= MAX_CHARS {
+        return first_sentence.trim().to_string();
+    }
+
+    // Truncate to MAX_CHARS at a word boundary.
+    let truncated = &first_sentence[..MAX_CHARS];
+    if let Some(last_space) = truncated.rfind(' ') {
+        let at_word_boundary = &truncated[..last_space];
+        format!("{}…", at_word_boundary.trim())
+    } else {
+        format!("{}…", truncated.trim())
+    }
+}
+
 #[cfg(feature = "hnsw")]
 fn verify_hnsw_key_level_integrity(
     conn: &rusqlite::Connection,
@@ -1377,7 +1429,8 @@ impl MemoryStore {
         namespaces: Option<&[&str]>,
         source_types: Option<&[SearchSourceType]>,
     ) -> Result<Vec<SearchResult>, MemoryError> {
-        Ok(self
+        let compress = self.inner.config.search.compress_results;
+        let results = self
             .search_with_context(
                 query,
                 top_k,
@@ -1386,7 +1439,12 @@ impl MemoryStore {
                 SearchContext::default_now(),
             )
             .await?
-            .results)
+            .results;
+        if compress {
+            Ok(compress_search_results(results))
+        } else {
+            Ok(results)
+        }
     }
 
     /// Hybrid search with an explicit deterministic context and optional receipt.
@@ -1404,8 +1462,12 @@ impl MemoryStore {
 
         // Check search result cache for simple unfiltered queries.
         // Cache is keyed by (query, k) and only used when no namespace/source_type
-        // filters are applied. Cleared on any mutating operation (update/delete).
-        let cache_key = if namespaces.is_none() && source_types.is_none() {
+        // filters are applied AND receipt mode is not requested. Cleared on any
+        // mutating operation (update/delete).
+        let cache_key = if namespaces.is_none()
+            && source_types.is_none()
+            && context.receipt_mode != ReceiptMode::ReturnReceipt
+        {
             Some(format!("{query}:{k}"))
         } else {
             None
@@ -2486,5 +2548,64 @@ impl MemoryStore {
             Ok(conn.execute(&sql, &*param_refs)?)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{SearchResult, SearchSource};
+
+    fn make_result(content: &str) -> SearchResult {
+        SearchResult {
+            content: content.to_string(),
+            source: SearchSource::Fact {
+                fact_id: "test".to_string(),
+                namespace: "test".to_string(),
+            },
+            score: 1.0,
+            bm25_rank: Some(1),
+            vector_rank: Some(1),
+            cosine_similarity: Some(0.9),
+        }
+    }
+
+    #[test]
+    fn compress_search_results_shortens_long_content() {
+        let long = "This is a very long sentence that definitely exceeds the one hundred fifty character limit. It goes on and on with lots of detail that should be truncated. More text here.";
+        let results = vec![make_result(long)];
+        let compressed = compress_search_results(results);
+        assert!(
+            compressed[0].content.len() <= 152, // 150 + ellipsis char
+            "compressed content should be at most ~150 chars, got {}",
+            compressed[0].content.len()
+        );
+        assert!(
+            compressed[0].content.ends_with('…') || compressed[0].content.ends_with('.'),
+            "compressed content should end with ellipsis or sentence punctuation"
+        );
+    }
+
+    #[test]
+    fn compress_search_results_preserves_short_content() {
+        let short = "Short sentence.";
+        let results = vec![make_result(short)];
+        let compressed = compress_search_results(results);
+        assert_eq!(compressed[0].content, "Short sentence.");
+    }
+
+    #[test]
+    fn compress_search_results_preserves_first_sentence() {
+        let content = "First sentence. Second sentence that is longer.";
+        let results = vec![make_result(content)];
+        let compressed = compress_search_results(results);
+        assert_eq!(compressed[0].content, "First sentence.");
+    }
+
+    #[test]
+    fn compress_search_results_empty_content() {
+        let results = vec![make_result("")];
+        let compressed = compress_search_results(results);
+        assert_eq!(compressed[0].content, "");
     }
 }

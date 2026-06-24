@@ -2034,6 +2034,65 @@ fn filters_are_active(
         || session_ids.is_some_and(|values| !values.is_empty())
 }
 
+/// Rerank a vector hit by recomputing cosine similarity with the full embedding.
+/// Fetches the stored embedding for the hit's source from SQLite.
+fn rerank_hit_with_full_embedding(
+    conn: &Connection,
+    query_embedding: &[f32],
+    hit: &VectorHit,
+) -> Result<f64, MemoryError> {
+    // Fetch the stored embedding blob for this hit's source.
+    let blob: Option<Vec<u8>> = match &hit.source {
+        SearchSource::Fact { fact_id, .. } => conn
+            .query_row(
+                "SELECT embedding FROM facts WHERE id = ?1 AND embedding IS NOT NULL",
+                rusqlite::params![fact_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok(),
+        SearchSource::Chunk { chunk_id, .. } => conn
+            .query_row(
+                "SELECT embedding FROM chunks WHERE id = ?1 AND embedding IS NOT NULL",
+                rusqlite::params![chunk_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok(),
+        SearchSource::Message { message_id, .. } => conn
+            .query_row(
+                "SELECT embedding FROM messages WHERE id = ?1 AND embedding IS NOT NULL",
+                rusqlite::params![message_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok(),
+        SearchSource::Episode { episode_id, .. } => conn
+            .query_row(
+                "SELECT embedding FROM episodes WHERE episode_id = ?1 AND embedding IS NOT NULL",
+                rusqlite::params![episode_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok(),
+        SearchSource::Projection { projection_id, .. } => conn
+            .query_row(
+                "SELECT embedding FROM projections WHERE id = ?1 AND embedding IS NOT NULL",
+                rusqlite::params![projection_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok(),
+    };
+
+    let blob = match blob {
+        Some(b) if !b.is_empty() => b,
+        _ => return Ok(hit.similarity), // keep existing if no blob
+    };
+
+    let stored = crate::db::decode_f32_le(&blob, query_embedding.len())?;
+    if stored.len() != query_embedding.len() {
+        return Ok(hit.similarity); // dimension mismatch, keep existing
+    }
+
+    Ok(cosine_similarity(query_embedding, &stored)? as f64)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hybrid_search_detailed_with_context(
     conn: &Connection,
@@ -2058,7 +2117,7 @@ pub(crate) fn hybrid_search_detailed_with_context(
         None => Vec::new(),
     };
 
-    let vector_outcome = vector_search_with_backend(
+    let mut vector_outcome = vector_search_with_backend(
         conn,
         query_embedding,
         config.candidate_pool_size,
@@ -2069,6 +2128,69 @@ pub(crate) fn hybrid_search_detailed_with_context(
         source_types,
         session_ids,
     )?;
+
+    // Task 3: Matryoshka 2-stage search — truncate query embedding to candidate_dims
+    // for coarse retrieval, then rerank with full embedding. Falls back to direct
+    // search if the 64d index doesn't exist or matryoshka feature is off.
+    #[cfg(feature = "matryoshka")]
+    {
+        if let Some(candidate_dim) = config.candidate_dims {
+            if candidate_dim > 0 && candidate_dim < query_embedding.len()
+                && context.exactness_profile != crate::types::ExactnessProfile::PreferExact
+            {
+                use crate::matryoshka::truncate_embedding;
+                let truncated_query = truncate_embedding(query_embedding, candidate_dim);
+                match vector_search_with_backend(
+                    conn,
+                    &truncated_query,
+                    config.candidate_pool_size.saturating_mul(2),
+                    config.min_similarity * 0.5,
+                    config,
+                    context,
+                    namespaces,
+                    source_types,
+                    session_ids,
+                ) {
+                    Ok(coarse_outcome) => {
+                        // Rerank coarse candidates with full-dimension embedding.
+                        let reranked_hits: Vec<VectorHit> = coarse_outcome
+                            .hits
+                            .into_iter()
+                            .map(|mut hit| {
+                                if let Ok(full_sim) =
+                                    rerank_hit_with_full_embedding(conn, query_embedding, &hit)
+                                {
+                                    hit.similarity = full_sim;
+                                    hit.reranked_from_f32 = true;
+                                }
+                                hit
+                            })
+                            .filter(|hit| hit.similarity >= config.min_similarity)
+                            .collect();
+                        let mut reranked = reranked_hits;
+                        reranked.sort_by(|a, b| {
+                            b.similarity
+                                .partial_cmp(&a.similarity)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        reranked.truncate(config.candidate_pool_size);
+                        let new_receipt_metadata = coarse_outcome.receipt_metadata.clone();
+                        vector_outcome = VectorSearchOutcome {
+                            hits: reranked,
+                            candidate_backend: format!(
+                                "matryoshka_2stage_{}d_to_{}d",
+                                candidate_dim,
+                                query_embedding.len()
+                            ),
+                            receipt_metadata: new_receipt_metadata,
+                            ..coarse_outcome
+                        };
+                    }
+                    Err(_) => { /* keep original vector_outcome */ }
+                }
+            }
+        }
+    }
 
     let results = if config.late_interaction_weight > 0.0 {
         // Late interaction 3rd RRF signal: compute proxy MaxSim scores by

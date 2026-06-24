@@ -166,6 +166,56 @@ pub fn is_trained(policy: &RoutingPolicy) -> bool {
     policy.trained_examples > 10
 }
 
+// ─── Receipt-driven RL routing feedback ─────────────────────────────────
+
+/// The outcome quality of a routing decision, as reported by the caller
+/// after observing search results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoutingOutcome {
+    /// The routing decision produced good results.
+    Good,
+    /// The routing decision produced poor results.
+    Bad,
+    /// The routing decision produced acceptable results.
+    Neutral,
+}
+
+impl RoutingOutcome {
+    /// Convert the outcome to a numeric score for policy updates.
+    fn to_score(self) -> f64 {
+        match self {
+            RoutingOutcome::Good => 0.9,
+            RoutingOutcome::Neutral => 0.5,
+            RoutingOutcome::Bad => 0.1,
+        }
+    }
+}
+
+/// Alias for the tabular routing policy used in receipt-driven RL feedback.
+/// This is the same `RoutingPolicy` struct, aliased for clarity in the
+/// receipt-driven feedback context.
+pub type TabularRoutingPolicy = RoutingPolicy;
+
+/// Record a routing outcome and update the tabular routing policy's Q-table.
+///
+/// This is the receipt-driven RL feedback loop: after a search is performed
+/// using a routing decision, the caller reports whether the outcome was good,
+/// bad, or neutral. This function converts the outcome to a score and updates
+/// the policy weights accordingly.
+///
+/// Returns the updated policy.
+pub fn record_routing_outcome(
+    policy: &mut TabularRoutingPolicy,
+    profile: &QueryProfile,
+    decision: &RoutingDecision,
+    outcome: RoutingOutcome,
+) -> TabularRoutingPolicy {
+    let score = outcome.to_score();
+    let example = extract_training_example(profile, decision, score);
+    update_policy(policy, &[example]);
+    policy.clone()
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -348,5 +398,74 @@ mod tests {
         update_policy(&mut policy, &[]);
         assert_eq!(policy.trained_examples, initial.trained_examples);
         assert!((policy.baseline - initial.baseline).abs() < 0.001);
+    }
+
+    #[test]
+    fn record_routing_outcome_good_increases_weights() {
+        let mut policy = RoutingPolicy::default();
+        let profile = QueryProfile::from_query("compare rust vs python");
+        let decision = RoutingDecision {
+            bm25_coarse: true,
+            vector_medium: true,
+            rerank_fine: true,
+            graph_expansion: false,
+            decoder: true,
+            discord: false,
+            no_retrieval: false,
+            reasoning: "test".to_string(),
+        };
+        let initial_bm25_w = *policy.weights.get("bm25_coarse").unwrap();
+        record_routing_outcome(&mut policy, &profile, &decision, RoutingOutcome::Good);
+        let updated_bm25_w = *policy.weights.get("bm25_coarse").unwrap();
+        assert!(
+            updated_bm25_w > initial_bm25_w,
+            "good outcome should increase weight: {} -> {}",
+            initial_bm25_w,
+            updated_bm25_w
+        );
+    }
+
+    #[test]
+    fn record_routing_outcome_bad_decreases_weights() {
+        let mut policy = RoutingPolicy::default();
+        let profile = QueryProfile::from_query("compare rust vs python");
+        let decision = RoutingDecision {
+            bm25_coarse: true,
+            vector_medium: true,
+            rerank_fine: true,
+            graph_expansion: false,
+            decoder: true,
+            discord: false,
+            no_retrieval: false,
+            reasoning: "test".to_string(),
+        };
+        let initial_bm25_w = *policy.weights.get("bm25_coarse").unwrap();
+        record_routing_outcome(&mut policy, &profile, &decision, RoutingOutcome::Bad);
+        let updated_bm25_w = *policy.weights.get("bm25_coarse").unwrap();
+        assert!(
+            updated_bm25_w < initial_bm25_w,
+            "bad outcome should decrease weight: {} -> {}",
+            initial_bm25_w,
+            updated_bm25_w
+        );
+    }
+
+    #[test]
+    fn record_routing_outcome_neutral_does_not_change_much() {
+        let mut policy = RoutingPolicy::default();
+        let profile = QueryProfile::from_query("test query here");
+        let decision = RoutingDecision {
+            bm25_coarse: true,
+            vector_medium: false,
+            rerank_fine: false,
+            graph_expansion: false,
+            decoder: false,
+            discord: false,
+            no_retrieval: false,
+            reasoning: "test".to_string(),
+        };
+        let initial_trained = policy.trained_examples;
+        record_routing_outcome(&mut policy, &profile, &decision, RoutingOutcome::Neutral);
+        assert_eq!(policy.trained_examples, initial_trained + 1);
     }
 }
