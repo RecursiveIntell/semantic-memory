@@ -74,6 +74,12 @@ pub mod discord;
 /// Phase 6: decoder architecture (syndromes and corrections).
 #[cfg(feature = "decoder")]
 pub mod decoder;
+/// Content-based contradiction detection (lexical, deterministic).
+#[cfg(feature = "decoder")]
+pub mod contradiction_detect;
+/// Contradiction-detection evaluation harness (RAMDocs-style P/R/F1).
+#[cfg(feature = "decoder")]
+pub mod eval_contradiction;
 mod graph;
 /// First-class stored graph edges (durable, typed relationships).
 pub(crate) mod graph_edges;

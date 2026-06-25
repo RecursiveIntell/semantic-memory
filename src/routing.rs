@@ -102,9 +102,9 @@ impl QueryProfile {
             QueryComplexityClass::Synthesis
         } else if needs_temporal {
             QueryComplexityClass::Temporal
-        } else if token_count <= 3 && !has_relation_words && !has_synthesis_words {
-            QueryComplexityClass::Simple
         } else {
+            // Default: single-fact lookup. (Creative/generative intent is not
+            // inferable from the query text alone and is left to the caller.)
             QueryComplexityClass::Simple
         };
 
