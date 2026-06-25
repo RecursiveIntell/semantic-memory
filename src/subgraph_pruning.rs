@@ -105,7 +105,7 @@ impl DisjointSet {
             return;
         }
 
-        let (mut root, mut child) = match self.rank[ra].cmp(&self.rank[rb]) {
+        let (root, child) = match self.rank[ra].cmp(&self.rank[rb]) {
             Ordering::Less => (rb, ra),
             _ => (ra, rb),
         };
@@ -195,7 +195,7 @@ pub fn identify_subgraphs(
 
     let mut component_edges: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     for (left, right) in edges {
-        if let (Some(&left_id), Some(&right_id)) = (node_to_index.get(left), node_to_index.get(right)) {
+        if let (Some(&left_id), Some(&_right_id)) = (node_to_index.get(left), node_to_index.get(right)) {
             let root = dsu.find(left_id);
             component_edges
                 .entry(root)

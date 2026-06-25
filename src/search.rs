@@ -34,6 +34,7 @@ static VECTOR_SCAN_BLOCK_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_HARD_
 /// Expand query terms to match hyphenated variants.
 /// "turbo-quant" -> "turbo-quant OR turboquant"
 /// This improves BM25 recall for technical terms with hyphens.
+#[allow(dead_code)]
 fn expand_query_for_fts(query: &str) -> String {
     let terms: Vec<&str> = query.split_whitespace().collect();
     let expanded: Vec<String> = terms.iter().map(|term| {
@@ -2036,6 +2037,7 @@ fn filters_are_active(
 
 /// Rerank a vector hit by recomputing cosine similarity with the full embedding.
 /// Fetches the stored embedding for the hit's source from SQLite.
+#[allow(dead_code)]
 fn rerank_hit_with_full_embedding(
     conn: &Connection,
     query_embedding: &[f32],
@@ -2117,6 +2119,7 @@ pub(crate) fn hybrid_search_detailed_with_context(
         None => Vec::new(),
     };
 
+    #[allow(unused_mut)]
     let mut vector_outcome = vector_search_with_backend(
         conn,
         query_embedding,

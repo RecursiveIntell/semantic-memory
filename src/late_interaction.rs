@@ -117,6 +117,7 @@ impl LateInteractionIndex {
     }
 
     /// Maximum number of token embeddings this index stores per document.
+    #[allow(dead_code)]
     fn max_tokens_per_doc(&self) -> usize {
         self.config.max_tokens_per_doc
     }
