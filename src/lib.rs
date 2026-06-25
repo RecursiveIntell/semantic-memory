@@ -2427,6 +2427,74 @@ impl MemoryStore {
         .await
     }
 
+    // ─── Routing policy persistence ──────────────────────────────
+
+    /// Save a routing policy to the database as JSON.
+    ///
+    /// Creates the `routing_policy` table if it doesn't exist and upserts
+    /// the serialized policy into the single-row table (id=1).
+    #[cfg(feature = "rl-routing")]
+    pub async fn save_routing_policy(
+        &self,
+        policy: &rl_routing::RoutingPolicy,
+    ) -> Result<(), MemoryError> {
+        let json = serde_json::to_string(policy)
+            .map_err(|e| MemoryError::Other(format!("Failed to serialize routing policy: {e}")))?;
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        self.with_write_conn(move |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS routing_policy (\
+                 id INTEGER PRIMARY KEY, policy_json TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            )?;
+            conn.execute(
+                "INSERT INTO routing_policy (id, policy_json, updated_at) VALUES (1, ?1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET policy_json = ?1, updated_at = ?2",
+                rusqlite::params![json, updated_at],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Load the persisted routing policy from the database.
+    ///
+    /// Returns `Ok(None)` if no policy has been saved yet.
+    #[cfg(feature = "rl-routing")]
+    pub async fn load_routing_policy(
+        &self,
+    ) -> Result<Option<rl_routing::RoutingPolicy>, MemoryError> {
+        self.with_read_conn(move |conn| {
+            // Check if table exists
+            let table_exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='routing_policy')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if !table_exists {
+                return Ok(None);
+            }
+            let json: Option<String> = conn
+                .query_row(
+                    "SELECT policy_json FROM routing_policy WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            match json {
+                Some(j) => {
+                    let policy = serde_json::from_str(&j).map_err(|e| {
+                        MemoryError::Other(format!("Failed to deserialize routing policy: {e}"))
+                    })?;
+                    Ok(Some(policy))
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
     // ─── Projection Import ─────────────────────────────────────
 
     /// Import a projection envelope atomically (V10 legacy path).
