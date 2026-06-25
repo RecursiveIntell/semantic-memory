@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2021"
 rust-version = "1.75"
 description = "Local-first hybrid semantic search (SQLite + FTS5 + usearch 2.25) with bitemporal truth and typed receipts"

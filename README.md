@@ -633,8 +633,8 @@ C++17 to build, which is a documented `build.rs` prerequisite.
 `semantic-memory` is the search engine for:
 
 - [semantic-memory-mcp](https://crates.io/crates/semantic-memory-mcp)
-  — MCP server exposing 18 tools for agent integration (Hermes
-  Agent, Claude Desktop, Cursor, Windsurf).
+  — MCP server exposing 48 tools and 17 HTTP endpoints for agent
+  integration (Hermes Agent, Claude Desktop, Cursor, Windsurf).
 - The LLM agent stack (forge-pilot, llm-pipeline) — every
   retrieval over a knowledge base.
 - The LLM tool runtime — long-term tool-call memory.
