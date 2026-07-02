@@ -70,10 +70,7 @@ impl LateInteractionIndex {
     ///
     /// Returns only non-empty documents; empty documents are skipped to keep empty-index
     /// behavior predictable and cheap.
-    pub fn score_documents(
-        &self,
-        query_tokens: &[Vec<f32>],
-    ) -> Vec<(String, f32)> {
+    pub fn score_documents(&self, query_tokens: &[Vec<f32>]) -> Vec<(String, f32)> {
         if !self.config.enabled || query_tokens.is_empty() || self.documents.is_empty() {
             return Vec::new();
         }
@@ -85,8 +82,7 @@ impl LateInteractionIndex {
                 if doc_tokens.is_empty() {
                     return None;
                 }
-                let (_, matches) =
-                    score_with_provenance(query_tokens, doc_tokens, doc_id.as_str());
+                let (_, matches) = score_with_provenance(query_tokens, doc_tokens, doc_id.as_str());
                 let maxsim_score = matches
                     .iter()
                     .filter(|token_match| {
@@ -102,8 +98,7 @@ impl LateInteractionIndex {
             .collect();
 
         results.sort_by(|a, b| {
-            b.1
-                .partial_cmp(&a.1)
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.0.cmp(&a.0))
         });
@@ -215,8 +210,7 @@ pub fn score_with_provenance(
 pub fn late_interaction_rrf_rank(scores: &[(String, f32)], k: usize) -> Vec<(String, f64)> {
     let mut ranked = scores.to_vec();
     ranked.sort_by(|a, b| {
-        b.1
-            .partial_cmp(&a.1)
+        b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(&b.0))
     });
@@ -244,7 +238,11 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
 
-    let dot: f32 = a.iter().zip(b.iter()).map(|(left, right)| left * right).sum();
+    let dot: f32 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(left, right)| left * right)
+        .sum();
     let similarity = dot / (norm_a * norm_b);
     if similarity.is_finite() {
         similarity

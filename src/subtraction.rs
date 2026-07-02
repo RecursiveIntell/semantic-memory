@@ -139,7 +139,13 @@ pub fn compute_structuring_score(
     let not_contradicted = if !is_contradicted { 1.0 } else { 0.0 };
     let has_episode = if has_episode { 1.0 } else { 0.0 };
     let has_access = if access_count > 0 { 1.0 } else { 0.0 };
-    has_provenance + is_referenced + is_verified + not_contradicted + has_episode + has_access + temporal_weight
+    has_provenance
+        + is_referenced
+        + is_verified
+        + not_contradicted
+        + has_episode
+        + has_access
+        + temporal_weight
 }
 
 // ─── Candidate finding ──────────────────────────────────────────────────
@@ -170,7 +176,10 @@ pub fn find_candidates(
             } else {
                 CompactionStrategy::ColdStorage
             };
-            let reason = format!("structuring score {score:.3} below minimum {}", config.min_structuring_score);
+            let reason = format!(
+                "structuring score {score:.3} below minimum {}",
+                config.min_structuring_score
+            );
             SubtractionCandidate {
                 item_id: id.clone(),
                 structuring_score: *score,
@@ -315,8 +324,14 @@ mod tests {
         assert_eq!(candidates[0].item_id, "low1");
         assert_eq!(candidates[1].item_id, "low2");
         // 0.5 < 1.0 => DeleteWithReceipt; 1.2 < 1.5 => Quarantine.
-        assert_eq!(candidates[0].recommended_action, CompactionStrategy::DeleteWithReceipt);
-        assert_eq!(candidates[1].recommended_action, CompactionStrategy::Quarantine);
+        assert_eq!(
+            candidates[0].recommended_action,
+            CompactionStrategy::DeleteWithReceipt
+        );
+        assert_eq!(
+            candidates[1].recommended_action,
+            CompactionStrategy::Quarantine
+        );
     }
 
     #[test]

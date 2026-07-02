@@ -408,7 +408,12 @@ async fn search_cache_cleared_after_update_fact() {
 
     // Add a fact with unique content easily matched by FTS5
     let fact_id = store
-        .add_fact("general", "xyzzy unique marker phrase for cache test", None, None)
+        .add_fact(
+            "general",
+            "xyzzy unique marker phrase for cache test",
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -421,7 +426,9 @@ async fn search_cache_cleared_after_update_fact() {
         !results1.is_empty(),
         "Should find the fact with xyzzy marker before update"
     );
-    assert!(results1.iter().any(|r| r.content.contains("xyzzy unique marker")));
+    assert!(results1
+        .iter()
+        .any(|r| r.content.contains("xyzzy unique marker")));
 
     // Update the fact to completely different content
     store
@@ -437,7 +444,9 @@ async fn search_cache_cleared_after_update_fact() {
 
     // Fresh search should not return the old cached content
     assert!(
-        results2.iter().all(|r| !r.content.contains("xyzzy unique marker")),
+        results2
+            .iter()
+            .all(|r| !r.content.contains("xyzzy unique marker")),
         "Search cache must be cleared after update_fact — old stale content should not appear"
     );
 }
@@ -448,7 +457,12 @@ async fn search_cache_cleared_after_delete_namespace() {
     let (store, _tmp) = test_store();
 
     store
-        .add_fact("testns", "qqqq distinctive namespace cache fact", None, None)
+        .add_fact(
+            "testns",
+            "qqqq distinctive namespace cache fact",
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -456,7 +470,10 @@ async fn search_cache_cleared_after_delete_namespace() {
         .search("qqqq distinctive namespace", Some(5), None, None)
         .await
         .unwrap();
-    assert!(!results1.is_empty(), "Should find qqqq fact before namespace delete");
+    assert!(
+        !results1.is_empty(),
+        "Should find qqqq fact before namespace delete"
+    );
 
     store.delete_namespace("testns").await.unwrap();
 
@@ -465,7 +482,9 @@ async fn search_cache_cleared_after_delete_namespace() {
         .await
         .unwrap();
     assert!(
-        results2.iter().all(|r| !r.content.contains("qqqq distinctive")),
+        results2
+            .iter()
+            .all(|r| !r.content.contains("qqqq distinctive")),
         "Cache must be cleared after delete_namespace"
     );
 }

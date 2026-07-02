@@ -87,6 +87,10 @@ rl-routing = ["routing"]
 subgraph-pruning = ["subtraction"]
 testing = []
 turbo-quant-codec = ["dep:turbo-quant", "dep:quant-governor", "dep:scr-runtime-compression"]
+# poly-kv two-tier compressed KV cache pool for shared context compression.
+# Enables ProveKvPoolCandidateOnly search policy for approximate candidate
+# generation from compressed embedding pools.
+poly-kv-codec = ["dep:poly-kv"]
 # In-process Candle embedder (pure-Rust, CPU-only, no Ollama required).
 # When enabled, MemoryStore::open() defaults to CandleEmbedder instead of
 # OllamaEmbedder. Ollama remains available via MemoryStore::open_with_embedder
@@ -95,7 +99,7 @@ candle-embedder = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 
 
 [dependencies]
-lru = "0.12"
+lru = "0.16.3"
 bytemuck = { version = "1", features = ["derive"] }
 blake3 = { workspace = true }
 rusqlite = { workspace = true, features = ["bundled", "blob"] }
@@ -121,6 +125,7 @@ usearch = { version = "2.25", default-features = false, optional = true }
 turbo-quant = { version = "0.2.1", path = "../turbo-quant", optional = true }
 quant-governor = { version = "0.1.0", path = "../quant-governor", optional = true }
 scr-runtime-compression = { version = "0.1.0", path = "../scr-runtime-compression", optional = true }
+poly-kv = { version = "0.1.0-alpha.2", path = "../poly-kv", optional = true }
 # Candle in-process embedder deps (feature-gated, CPU-only)
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }

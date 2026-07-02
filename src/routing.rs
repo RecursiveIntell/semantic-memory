@@ -71,25 +71,84 @@ impl QueryProfile {
             .split_whitespace()
             .any(|w| w.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
 
-        let question_words = ["what", "why", "how", "when", "where", "who", "which", "is", "are", "can", "does"];
-        let is_question = query.contains('?') || question_words.iter().any(|w| lower.starts_with(w));
+        let question_words = [
+            "what", "why", "how", "when", "where", "who", "which", "is", "are", "can", "does",
+        ];
+        let is_question =
+            query.contains('?') || question_words.iter().any(|w| lower.starts_with(w));
 
         // Specificity heuristic: longer queries with more specific terms = higher specificity.
         let specificity = (token_count as f64 / 20.0).min(1.0);
 
-        let needs_provenance = ["source", "evidence", "cite", "citation", "reference", "proof"]
-            .iter().any(|w| lower.contains(w));
+        let needs_provenance = [
+            "source",
+            "evidence",
+            "cite",
+            "citation",
+            "reference",
+            "proof",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
 
-        let needs_temporal = ["recent", "latest", "before", "after", "since", "until", "current", "new", "old", "updated", "when", "chronological", "timeline"]
-            .iter().any(|w| lower.contains(w));
+        let needs_temporal = [
+            "recent",
+            "latest",
+            "before",
+            "after",
+            "since",
+            "until",
+            "current",
+            "new",
+            "old",
+            "updated",
+            "when",
+            "chronological",
+            "timeline",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
 
-        let contradiction_risk = ["vs", "compare", "conflict", "contradict", "versus", "difference", "disagree"]
-            .iter().any(|w| lower.contains(w));
+        let contradiction_risk = [
+            "vs",
+            "compare",
+            "conflict",
+            "contradict",
+            "versus",
+            "difference",
+            "disagree",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
 
-        let relation_words = ["connects", "between", "depends on", "relates to", "relationship", "how did", "how does", "work with", "lead to", "link", "lineage", "chain", "integrate", "integrate with"];
+        let relation_words = [
+            "connects",
+            "between",
+            "depends on",
+            "relates to",
+            "relationship",
+            "how did",
+            "how does",
+            "work with",
+            "lead to",
+            "link",
+            "lineage",
+            "chain",
+            "integrate",
+            "integrate with",
+        ];
         let has_relation_words = relation_words.iter().any(|w| lower.contains(w));
 
-        let synthesis_words = ["summarize", "overview", "all about", "themes", "landscape", "everything about", "synthesis", "overall"];
+        let synthesis_words = [
+            "summarize",
+            "overview",
+            "all about",
+            "themes",
+            "landscape",
+            "everything about",
+            "synthesis",
+            "overall",
+        ];
         let has_synthesis_words = synthesis_words.iter().any(|w| lower.contains(w));
 
         // Classify query complexity (Adaptive-RAG + RAGRouter-Bench validated).
@@ -241,7 +300,8 @@ impl RetrievalRouter {
         if decoder {
             reasoning_parts.push("decoder on (contradiction risk detected)".to_string());
         } else if profile.contradiction_risk {
-            reasoning_parts.push("decoder off (contradiction risk but feature not enabled)".to_string());
+            reasoning_parts
+                .push("decoder off (contradiction risk but feature not enabled)".to_string());
         }
 
         // Discord: on for multi-hop and synthesis queries (class B/D), NOT simple lookups.
@@ -330,7 +390,10 @@ mod tests {
         let router = RetrievalRouter::default();
         let decision = router.route_query("what is the architecture of semantic memory");
         assert!(decision.bm25_coarse, "normal query should use BM25");
-        assert!(decision.vector_medium, "normal query should use vector search");
+        assert!(
+            decision.vector_medium,
+            "normal query should use vector search"
+        );
         assert!(!decision.no_retrieval);
     }
 
@@ -355,7 +418,10 @@ mod tests {
         };
         let decision2 = router2.route_query("a b c");
         assert!(decision2.bm25_coarse, "BM25 always on");
-        assert!(!decision2.vector_medium, "broad query should skip vector with threshold 0.2");
+        assert!(
+            !decision2.vector_medium,
+            "broad query should skip vector with threshold 0.2"
+        );
     }
 
     #[test]
@@ -365,7 +431,10 @@ mod tests {
             ..Default::default()
         };
         let decision = router.route_query("compare rust vs python performance differences");
-        assert!(decision.decoder, "contradiction query should enable decoder");
+        assert!(
+            decision.decoder,
+            "contradiction query should enable decoder"
+        );
     }
 
     #[test]
@@ -375,21 +444,31 @@ mod tests {
             ..Default::default()
         };
         let decision = router.route_query("compare rust vs python performance differences");
-        assert!(!decision.decoder, "decoder should be off when feature not enabled");
+        assert!(
+            !decision.decoder,
+            "decoder should be off when feature not enabled"
+        );
     }
 
     #[test]
     fn route_provenance_query_noted_in_reasoning() {
         let router = RetrievalRouter::default();
-        let decision = router.route_query("what is the source of the turbo-quant compression algorithm");
-        assert!(decision.reasoning.contains("provenance"), "reasoning should mention provenance");
+        let decision =
+            router.route_query("what is the source of the turbo-quant compression algorithm");
+        assert!(
+            decision.reasoning.contains("provenance"),
+            "reasoning should mention provenance"
+        );
     }
 
     #[test]
     fn route_temporal_query_noted_in_reasoning() {
         let router = RetrievalRouter::default();
         let decision = router.route_query("what are the latest developments in vector search");
-        assert!(decision.reasoning.contains("temporal"), "reasoning should mention temporal");
+        assert!(
+            decision.reasoning.contains("temporal"),
+            "reasoning should mention temporal"
+        );
     }
 
     #[test]
@@ -399,7 +478,10 @@ mod tests {
             ..Default::default()
         };
         let decision = router.route_query("how does Semantic-Memory integrate with Turbo-Quant");
-        assert!(decision.graph_expansion, "entity query with dense corpus should enable graph expansion");
+        assert!(
+            decision.graph_expansion,
+            "entity query with dense corpus should enable graph expansion"
+        );
     }
 
     #[test]
@@ -409,7 +491,10 @@ mod tests {
             ..Default::default()
         };
         let decision = router.route_query("how does Semantic-Memory integrate with Turbo-Quant");
-        assert!(!decision.graph_expansion, "entity query with sparse corpus should skip graph expansion");
+        assert!(
+            !decision.graph_expansion,
+            "entity query with sparse corpus should skip graph expansion"
+        );
     }
 
     #[test]
@@ -419,7 +504,10 @@ mod tests {
             ..Default::default()
         };
         let decision = router.route_query("how does AiDENs work with Recall");
-        assert!(decision.discord, "entity query with discord enabled should activate discord");
+        assert!(
+            decision.discord,
+            "entity query with discord enabled should activate discord"
+        );
     }
 
     #[test]
@@ -438,13 +526,20 @@ mod tests {
     fn route_reasoning_is_populated() {
         let router = RetrievalRouter::default();
         let decision = router.route_query("compare the latest source evidence for rust vs python");
-        assert!(!decision.reasoning.is_empty(), "reasoning should be populated");
-        assert!(decision.reasoning.contains(";"), "reasoning should have multiple parts");
+        assert!(
+            !decision.reasoning.is_empty(),
+            "reasoning should be populated"
+        );
+        assert!(
+            decision.reasoning.contains(";"),
+            "reasoning should have multiple parts"
+        );
     }
 
     #[test]
     fn query_profile_detects_characteristics() {
-        let profile = QueryProfile::from_query("What is the latest source of evidence for Rust vs Python?");
+        let profile =
+            QueryProfile::from_query("What is the latest source of evidence for Rust vs Python?");
         assert!(profile.is_question);
         assert!(profile.needs_provenance);
         assert!(profile.needs_temporal);
@@ -468,7 +563,10 @@ mod tests {
     #[test]
     fn query_complexity_class_contradiction() {
         let profile = QueryProfile::from_query("compare rust vs python performance");
-        assert_eq!(profile.complexity_class, QueryComplexityClass::Contradiction);
+        assert_eq!(
+            profile.complexity_class,
+            QueryComplexityClass::Contradiction
+        );
     }
 
     #[test]
@@ -493,7 +591,10 @@ mod tests {
         };
         // "turbo-quant version" is class A (Simple) — discord should be OFF
         let decision = router.route_query("turbo-quant version");
-        assert!(!decision.discord, "simple lookup should NOT activate discord");
+        assert!(
+            !decision.discord,
+            "simple lookup should NOT activate discord"
+        );
     }
 
     #[test]

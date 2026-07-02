@@ -117,7 +117,9 @@ impl DisjointSet {
     }
 }
 
-fn build_node_index(edges: &[(String, String)]) -> (HashMap<String, usize>, Vec<String>, DisjointSet) {
+fn build_node_index(
+    edges: &[(String, String)],
+) -> (HashMap<String, usize>, Vec<String>, DisjointSet) {
     let mut index = HashMap::new();
     let mut reverse = Vec::new();
     let mut dsu = DisjointSet::new();
@@ -145,13 +147,19 @@ fn build_access_lookup(access_logs: &[AccessLog]) -> HashMap<String, (usize, Str
     let mut lookup = HashMap::new();
 
     for log in access_logs {
-        lookup.insert(log.item_id.clone(), (log.access_count, log.last_accessed.clone()));
+        lookup.insert(
+            log.item_id.clone(),
+            (log.access_count, log.last_accessed.clone()),
+        );
     }
 
     lookup
 }
 
-fn summarize_access_info(nodes: &[String], access_lookup: &HashMap<String, (usize, String)>) -> (usize, String) {
+fn summarize_access_info(
+    nodes: &[String],
+    access_lookup: &HashMap<String, (usize, String)>,
+) -> (usize, String) {
     let mut access_count = 0usize;
     let mut last_accessed = "1970-01-01T00:00:00Z".to_string();
 
@@ -169,9 +177,7 @@ fn summarize_access_info(nodes: &[String], access_lookup: &HashMap<String, (usiz
 
 fn sort_if_needed(items: &mut Vec<(String, String)>) {
     items.sort_unstable_by(|(left_a, right_a), (left_b, right_b)| {
-        left_a
-            .cmp(left_b)
-            .then_with(|| right_a.cmp(right_b))
+        left_a.cmp(left_b).then_with(|| right_a.cmp(right_b))
     });
 }
 
@@ -195,7 +201,9 @@ pub fn identify_subgraphs(
 
     let mut component_edges: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     for (left, right) in edges {
-        if let (Some(&left_id), Some(&_right_id)) = (node_to_index.get(left), node_to_index.get(right)) {
+        if let (Some(&left_id), Some(&_right_id)) =
+            (node_to_index.get(left), node_to_index.get(right))
+        {
             let root = dsu.find(left_id);
             component_edges
                 .entry(root)
@@ -385,7 +393,10 @@ mod tests {
         let subgraph = ReasoningSubgraph {
             root: "a".to_string(),
             nodes: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            edges: vec![("a".to_string(), "b".to_string()), ("b".to_string(), "c".to_string())],
+            edges: vec![
+                ("a".to_string(), "b".to_string()),
+                ("b".to_string(), "c".to_string()),
+            ],
             access_count: 11,
             last_accessed: "2026-01-01T00:00:00Z".to_string(),
         };

@@ -83,18 +83,54 @@ async fn main() {
 
     // Ground truth: 12 queries with known relevant documents.
     let queries: Vec<GoldenQuery> = vec![
-        GoldenQuery { query: "Rust programming language", relevant_titles: &["rust-lang"] },
-        GoldenQuery { query: "embedded SQL database", relevant_titles: &["sqlite-engine"] },
-        GoldenQuery { query: "vector embeddings semantic search", relevant_titles: &["vector-embeddings"] },
-        GoldenQuery { query: "BM25 ranking function", relevant_titles: &["bm25-ranking"] },
-        GoldenQuery { query: "reciprocal rank fusion hybrid", relevant_titles: &["rrf-fusion"] },
-        GoldenQuery { query: "Tokio async runtime", relevant_titles: &["tokio-runtime"] },
-        GoldenQuery { query: "full text search FTS5", relevant_titles: &["ftss-full-text"] },
-        GoldenQuery { query: "provenance evidence confidence", relevant_titles: &["provenance-semiring"] },
-        GoldenQuery { query: "temporal decay old knowledge", relevant_titles: &["temporal-decay"] },
-        GoldenQuery { query: "factor graph belief propagation", relevant_titles: &["factor-graph", "belief-propagation"] },
-        GoldenQuery { query: "cosine similarity vectors", relevant_titles: &["cosine-similarity"] },
-        GoldenQuery { query: "append only supersession history", relevant_titles: &["append-only-doctrine"] },
+        GoldenQuery {
+            query: "Rust programming language",
+            relevant_titles: &["rust-lang"],
+        },
+        GoldenQuery {
+            query: "embedded SQL database",
+            relevant_titles: &["sqlite-engine"],
+        },
+        GoldenQuery {
+            query: "vector embeddings semantic search",
+            relevant_titles: &["vector-embeddings"],
+        },
+        GoldenQuery {
+            query: "BM25 ranking function",
+            relevant_titles: &["bm25-ranking"],
+        },
+        GoldenQuery {
+            query: "reciprocal rank fusion hybrid",
+            relevant_titles: &["rrf-fusion"],
+        },
+        GoldenQuery {
+            query: "Tokio async runtime",
+            relevant_titles: &["tokio-runtime"],
+        },
+        GoldenQuery {
+            query: "full text search FTS5",
+            relevant_titles: &["ftss-full-text"],
+        },
+        GoldenQuery {
+            query: "provenance evidence confidence",
+            relevant_titles: &["provenance-semiring"],
+        },
+        GoldenQuery {
+            query: "temporal decay old knowledge",
+            relevant_titles: &["temporal-decay"],
+        },
+        GoldenQuery {
+            query: "factor graph belief propagation",
+            relevant_titles: &["factor-graph", "belief-propagation"],
+        },
+        GoldenQuery {
+            query: "cosine similarity vectors",
+            relevant_titles: &["cosine-similarity"],
+        },
+        GoldenQuery {
+            query: "append only supersession history",
+            relevant_titles: &["append-only-doctrine"],
+        },
     ];
 
     // Run search for each query, compute recall@10.

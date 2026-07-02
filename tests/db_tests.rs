@@ -1,6 +1,6 @@
-use semantic_memory::{bytes_to_embedding, decode_f32_le, embedding_to_bytes};
 use semantic_memory::embedder::{format_ollama_http_error, parse_embedding_response};
 use semantic_memory::StoragePaths;
+use semantic_memory::{bytes_to_embedding, decode_f32_le, embedding_to_bytes};
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder};
 use tempfile::TempDir;
 

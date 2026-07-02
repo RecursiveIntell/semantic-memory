@@ -411,9 +411,24 @@ const MIGRATION_V26: &str = "";
 
 /// Run V26 migration procedurally: add temporal_weight columns if absent.
 fn run_migration_v26(conn: &Connection) -> Result<(), rusqlite::Error> {
-    add_column_if_missing(conn, "facts", "temporal_weight", "REAL NOT NULL DEFAULT 1.0")?;
-    add_column_if_missing(conn, "chunks", "temporal_weight", "REAL NOT NULL DEFAULT 1.0")?;
-    add_column_if_missing(conn, "messages", "temporal_weight", "REAL NOT NULL DEFAULT 1.0")?;
+    add_column_if_missing(
+        conn,
+        "facts",
+        "temporal_weight",
+        "REAL NOT NULL DEFAULT 1.0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "chunks",
+        "temporal_weight",
+        "REAL NOT NULL DEFAULT 1.0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "messages",
+        "temporal_weight",
+        "REAL NOT NULL DEFAULT 1.0",
+    )?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_facts_temporal ON facts(temporal_weight);
          CREATE INDEX IF NOT EXISTS idx_chunks_temporal ON chunks(temporal_weight);",

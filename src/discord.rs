@@ -139,7 +139,8 @@ impl DiscordScorer {
         for edge in graph_edges {
             // Determine which endpoint is an anchor and which is the candidate
             // neighbour. We consider both directions of the edge.
-            let neighbours: Vec<(&String, &String)> = if anchor_positions.contains_key(&edge.source) {
+            let neighbours: Vec<(&String, &String)> = if anchor_positions.contains_key(&edge.source)
+            {
                 // source is an anchor → target is a candidate neighbour.
                 if direct_set.contains(&edge.target) {
                     // Both endpoints are direct results; skip.
@@ -227,7 +228,10 @@ mod tests {
     fn test_discord_excludes_direct_results() {
         // An edge between two anchors should not produce a discord result.
         let direct = vec!["a".to_string(), "b".to_string()];
-        let edges = vec![edge("a", "b", "related", 0.9), edge("a", "x", "related", 0.5)];
+        let edges = vec![
+            edge("a", "b", "related", 0.9),
+            edge("a", "x", "related", 0.5),
+        ];
         let scorer = DiscordScorer::with_defaults();
         let res = scorer.score(&direct, &edges);
         let ids: Vec<&str> = res.iter().map(|r| r.item_id.as_str()).collect();
@@ -295,7 +299,10 @@ mod tests {
         ];
         let scorer = DiscordScorer::with_defaults();
         let res = scorer.score(&direct, &edges);
-        let multi = res.iter().find(|r| r.item_id == "multi").expect("multi present");
+        let multi = res
+            .iter()
+            .find(|r| r.item_id == "multi")
+            .expect("multi present");
         let single = res
             .iter()
             .find(|r| r.item_id == "single")

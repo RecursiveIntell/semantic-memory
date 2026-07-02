@@ -89,12 +89,10 @@ pub trait ProvenanceSemiring: Sized + Send + Sync + 'static {
 
     /// Deserialize a carrier value from the `semiring_value` JSON string.
     fn decode(raw: &str) -> Result<Self::Value, MemoryError> {
-        serde_json::from_str(raw).map_err(|e| {
-            MemoryError::CorruptData {
-                table: "provenance",
-                row_id: "(unknown)".to_string(),
-                detail: format!("invalid semiring_value JSON: {e}"),
-            }
+        serde_json::from_str(raw).map_err(|e| MemoryError::CorruptData {
+            table: "provenance",
+            row_id: "(unknown)".to_string(),
+            detail: format!("invalid semiring_value JSON: {e}"),
         })
     }
 }
@@ -187,12 +185,10 @@ impl ProvenanceSemiring for TropicalSemiring {
         if raw == "\"NaN\"" || raw == "NaN" {
             return Ok(f64::NAN);
         }
-        serde_json::from_str::<f64>(raw).map_err(|e| {
-            MemoryError::CorruptData {
-                table: "provenance",
-                row_id: "(unknown)".to_string(),
-                detail: format!("invalid semiring_value JSON: {e}"),
-            }
+        serde_json::from_str::<f64>(raw).map_err(|e| MemoryError::CorruptData {
+            table: "provenance",
+            row_id: "(unknown)".to_string(),
+            detail: format!("invalid semiring_value JSON: {e}"),
         })
     }
 }
@@ -444,7 +440,9 @@ pub(crate) fn insert_provenance(
 ) -> Result<ProvenanceRecord, MemoryError> {
     // Use chrono UTC with microsecond precision to avoid timestamp collisions
     // that break ORDER BY recorded_at DESC (SQLite datetime('now') is second-precision).
-    let recorded_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let recorded_at = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string();
     db_with_transaction(conn, |tx| {
         tx.execute(
             "INSERT INTO provenance
@@ -596,12 +594,11 @@ fn decode_support_chain(raw: &str) -> Result<Vec<String>, MemoryError> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(raw)
-        .map_err(|e| MemoryError::CorruptData {
-            table: "provenance",
-            row_id: "(unknown)".to_string(),
-            detail: format!("invalid support_chain_json: {e}"),
-        })
+    serde_json::from_str(raw).map_err(|e| MemoryError::CorruptData {
+        table: "provenance",
+        row_id: "(unknown)".to_string(),
+        detail: format!("invalid support_chain_json: {e}"),
+    })
 }
 
 // ─── MemoryStore API ───────────────────────────────────────────────────
@@ -663,12 +660,8 @@ impl MemoryStore {
         let semiring_label = S::label().to_string();
 
         self.with_read_conn(move |conn| {
-            let Some(record) = read_latest_provenance(
-                conn,
-                &item_type_label,
-                &item_id_owned,
-                &semiring_label,
-            )?
+            let Some(record) =
+                read_latest_provenance(conn, &item_type_label, &item_id_owned, &semiring_label)?
             else {
                 return Ok(None);
             };
@@ -759,9 +752,7 @@ impl MemoryStore {
                         let merged = merge_support_chains(&old_chain, &new_chain);
                         // Preserve the existing episode_id when the caller does
                         // not supply one (supersession propagation).
-                        let ep = episode_id_for_read
-                            .clone()
-                            .or(record.episode_id.clone());
+                        let ep = episode_id_for_read.clone().or(record.episode_id.clone());
                         (combined, merged, ep)
                     }
                     None => {
@@ -771,7 +762,11 @@ impl MemoryStore {
                         // semirings where zero is not the true identity for
                         // arbitrary inputs, e.g. tropical +inf). Use the value
                         // directly to match set_provenance semantics.
-                        (new_value.clone(), new_chain.clone(), episode_id_for_read.clone())
+                        (
+                            new_value.clone(),
+                            new_chain.clone(),
+                            episode_id_for_read.clone(),
+                        )
                     }
                 };
 
@@ -813,16 +808,12 @@ impl MemoryStore {
         namespaces: Option<&[&str]>,
         source_types: Option<&[SearchSourceType]>,
     ) -> Result<Vec<ProvenanceSearchResult<S::Value>>, MemoryError> {
-        let results = self
-            .search(query, top_k, namespaces, source_types)
-            .await?;
+        let results = self.search(query, top_k, namespaces, source_types).await?;
 
         let mut annotated = Vec::with_capacity(results.len());
         for result in results {
             let (item_type, item_id) = provenance_key_for_source(&result.source);
-            let provenance = self
-                .get_provenance::<S>(&item_type, &item_id)
-                .await?;
+            let provenance = self.get_provenance::<S>(&item_type, &item_id).await?;
 
             let annotation = match provenance {
                 Some((value, chain)) => {
@@ -907,9 +898,7 @@ fn merge_support_chains(existing: &[String], new: &[String]) -> Vec<String> {
 /// provenance records.
 fn provenance_key_for_source(source: &crate::SearchSource) -> (ProvenanceItemType, String) {
     match source {
-        crate::SearchSource::Fact { fact_id, .. } => {
-            (ProvenanceItemType::Fact, fact_id.clone())
-        }
+        crate::SearchSource::Fact { fact_id, .. } => (ProvenanceItemType::Fact, fact_id.clone()),
         crate::SearchSource::Chunk { chunk_id, .. } => {
             (ProvenanceItemType::Chunk, chunk_id.clone())
         }
@@ -1064,10 +1053,7 @@ mod tests {
     fn tropical_add_identity() {
         for &a in &tropical_values() {
             assert!(
-                approx_eq(
-                    TropicalSemiring::add(&a, &TropicalSemiring::zero()),
-                    a
-                ),
+                approx_eq(TropicalSemiring::add(&a, &TropicalSemiring::zero()), a),
                 "a + 0 = a"
             );
         }
@@ -1077,10 +1063,7 @@ mod tests {
     fn tropical_mul_identity() {
         for &a in &tropical_values() {
             assert!(
-                approx_eq(
-                    TropicalSemiring::mul(&a, &TropicalSemiring::one()),
-                    a
-                ),
+                approx_eq(TropicalSemiring::mul(&a, &TropicalSemiring::one()), a),
                 "a * 1 = a"
             );
         }
@@ -1104,10 +1087,7 @@ mod tests {
         for &a in &tropical_values() {
             for &b in &tropical_values() {
                 assert!(
-                    approx_eq(
-                        TropicalSemiring::add(&a, &b),
-                        TropicalSemiring::add(&b, &a)
-                    ),
+                    approx_eq(TropicalSemiring::add(&a, &b), TropicalSemiring::add(&b, &a)),
                     "add commutative"
                 );
             }
@@ -1179,10 +1159,7 @@ mod tests {
     fn probability_mul_identity() {
         for &a in &prob_values() {
             assert!(
-                approx_eq(
-                    ProbabilitySemiring::mul(&a, &ProbabilitySemiring::one()),
-                    a
-                ),
+                approx_eq(ProbabilitySemiring::mul(&a, &ProbabilitySemiring::one()), a),
                 "a * 1 = a"
             );
         }
@@ -1222,8 +1199,7 @@ mod tests {
             for &b in &prob_values() {
                 for &c in &prob_values() {
                     let left = ProbabilitySemiring::add(&ProbabilitySemiring::add(&a, &b), &c);
-                    let right =
-                        ProbabilitySemiring::add(&a, &ProbabilitySemiring::add(&b, &c));
+                    let right = ProbabilitySemiring::add(&a, &ProbabilitySemiring::add(&b, &c));
                     assert!(approx_eq(left, right), "add associative");
                 }
             }
@@ -1236,8 +1212,7 @@ mod tests {
             for &b in &prob_values() {
                 for &c in &prob_values() {
                     let left = ProbabilitySemiring::mul(&ProbabilitySemiring::mul(&a, &b), &c);
-                    let right =
-                        ProbabilitySemiring::mul(&a, &ProbabilitySemiring::mul(&b, &c));
+                    let right = ProbabilitySemiring::mul(&a, &ProbabilitySemiring::mul(&b, &c));
                     assert!(approx_eq(left, right), "mul associative");
                 }
             }
@@ -1280,10 +1255,7 @@ mod tests {
     fn confidence_add_identity() {
         for a in &confidence_values() {
             assert!(
-                confidence_approx_eq(
-                    ConfidenceSemiring::add(a, &ConfidenceSemiring::zero()),
-                    *a
-                ),
+                confidence_approx_eq(ConfidenceSemiring::add(a, &ConfidenceSemiring::zero()), *a),
                 "a + 0 = a"
             );
         }
@@ -1293,10 +1265,7 @@ mod tests {
     fn confidence_mul_identity() {
         for a in &confidence_values() {
             assert!(
-                confidence_approx_eq(
-                    ConfidenceSemiring::mul(a, &ConfidenceSemiring::one()),
-                    *a
-                ),
+                confidence_approx_eq(ConfidenceSemiring::mul(a, &ConfidenceSemiring::one()), *a),
                 "a * 1 = a"
             );
         }
@@ -1391,8 +1360,12 @@ mod tests {
         assert!(!ProbabilitySemiring::is_supported(&0.0));
         assert!(ProbabilitySemiring::is_supported(&0.5));
 
-        assert!(!ConfidenceSemiring::is_supported(&ConfidenceValue::new(0.0, 0)));
-        assert!(ConfidenceSemiring::is_supported(&ConfidenceValue::new(0.5, 1)));
+        assert!(!ConfidenceSemiring::is_supported(&ConfidenceValue::new(
+            0.0, 0
+        )));
+        assert!(ConfidenceSemiring::is_supported(&ConfidenceValue::new(
+            0.5, 1
+        )));
     }
 
     // ── Encode/decode round-trip ───────────────────────────────────────

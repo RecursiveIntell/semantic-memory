@@ -239,10 +239,8 @@ impl FactorGraphConfig {
 
     /// Normalize weights so they sum to 1.0.
     pub fn normalized_weights(&self) -> (f64, f64, f64, f64) {
-        let total = self.semantic_weight
-            + self.temporal_weight
-            + self.causal_weight
-            + self.entity_weight;
+        let total =
+            self.semantic_weight + self.temporal_weight + self.causal_weight + self.entity_weight;
         if total <= 0.0 {
             return (0.25, 0.25, 0.25, 0.25);
         }
@@ -260,11 +258,7 @@ impl FactorGraph {
     ///
     /// `nodes` is a list of (item_id, initial_belief). `factors` is a list
     /// of Factor edges connecting nodes.
-    pub fn new(
-        nodes: &[(String, f64)],
-        factors: Vec<Factor>,
-        config: FactorGraphConfig,
-    ) -> Self {
+    pub fn new(nodes: &[(String, f64)], factors: Vec<Factor>, config: FactorGraphConfig) -> Self {
         let mut node_map: HashMap<String, FactorGraphNode> = nodes
             .iter()
             .map(|(id, belief)| {
@@ -303,16 +297,12 @@ impl FactorGraph {
                     },
                 );
             }
-            node_map
-                .get_mut(&factor.source)
-                .unwrap()
-                .factors
-                .push(factor.clone());
-            node_map
-                .get_mut(&factor.target)
-                .unwrap()
-                .factors
-                .push(factor.clone());
+            if let Some(node) = node_map.get_mut(&factor.source) {
+                node.factors.push(factor.clone());
+            }
+            if let Some(node) = node_map.get_mut(&factor.target) {
+                node.factors.push(factor.clone());
+            }
         }
 
         Self {
@@ -522,27 +512,18 @@ pub fn factors_from_edges(
         .map(|(source, target, edge_type, weight, metadata_json)| {
             let kind = FactorKind::from_edge_type(edge_type);
             let mut metadata = match edge_type {
-                GraphEdgeType::Semantic { cosine_similarity } => {
-                    Some(FactorMetadata::Semantic {
-                        cosine_similarity: Some(*cosine_similarity as f64),
-                    })
-                }
-                GraphEdgeType::Temporal { delta_secs } => {
-                    Some(FactorMetadata::Temporal {
-                        delta_secs: *delta_secs as i64,
-                    })
-                }
-                GraphEdgeType::Causal {
-                    confidence,
-                    ..
-                } => Some(FactorMetadata::Causal {
+                GraphEdgeType::Semantic { cosine_similarity } => Some(FactorMetadata::Semantic {
+                    cosine_similarity: Some(*cosine_similarity as f64),
+                }),
+                GraphEdgeType::Temporal { delta_secs } => Some(FactorMetadata::Temporal {
+                    delta_secs: *delta_secs as i64,
+                }),
+                GraphEdgeType::Causal { confidence, .. } => Some(FactorMetadata::Causal {
                     confidence: *confidence as f64,
                 }),
-                GraphEdgeType::Entity { relation } => {
-                    Some(FactorMetadata::Entity {
-                        relation: relation.clone(),
-                    })
-                }
+                GraphEdgeType::Entity { relation } => Some(FactorMetadata::Entity {
+                    relation: relation.clone(),
+                }),
             };
 
             if let Some(json) = metadata_json.as_ref() {
@@ -550,33 +531,29 @@ pub fn factors_from_edges(
                     if let Some(obj) = value.as_object() {
                         match &mut metadata {
                             Some(FactorMetadata::Semantic { cosine_similarity }) => {
-                                if let Some(override_cosine) = obj
-                                    .get("cosine_similarity")
-                                    .and_then(|v| v.as_f64())
+                                if let Some(override_cosine) =
+                                    obj.get("cosine_similarity").and_then(|v| v.as_f64())
                                 {
                                     *cosine_similarity = Some(override_cosine);
                                 }
                             }
                             Some(FactorMetadata::Temporal { delta_secs }) => {
-                                if let Some(override_delta) = obj
-                                    .get("delta_secs")
-                                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|v| v as i64)))
-                                {
+                                if let Some(override_delta) = obj.get("delta_secs").and_then(|v| {
+                                    v.as_i64().or_else(|| v.as_u64().map(|v| v as i64))
+                                }) {
                                     *delta_secs = override_delta;
                                 }
                             }
                             Some(FactorMetadata::Causal { confidence }) => {
-                                if let Some(override_confidence) = obj
-                                    .get("confidence")
-                                    .and_then(|v| v.as_f64())
+                                if let Some(override_confidence) =
+                                    obj.get("confidence").and_then(|v| v.as_f64())
                                 {
                                     *confidence = override_confidence;
                                 }
                             }
                             Some(FactorMetadata::Entity { relation }) => {
-                                if let Some(override_relation) = obj
-                                    .get("relation")
-                                    .and_then(|v| v.as_str())
+                                if let Some(override_relation) =
+                                    obj.get("relation").and_then(|v| v.as_str())
                                 {
                                     *relation = override_relation.to_string();
                                 }
@@ -631,24 +608,31 @@ mod tests {
     fn factor_graph_propagates_semantic_reinforcement() {
         // Two high-belief nodes connected by a semantic edge should
         // reinforce each other's beliefs.
-        let nodes = vec![
-            ("fact:a".to_string(), 0.7),
-            ("fact:b".to_string(), 0.7),
-        ];
+        let nodes = vec![("fact:a".to_string(), 0.7), ("fact:b".to_string(), 0.7)];
         let factors = vec![Factor {
             source: "fact:a".to_string(),
             target: "fact:b".to_string(),
             kind: FactorKind::Semantic,
             edge_weight: 1.0,
-            metadata: Some(FactorMetadata::Semantic { cosine_similarity: Some(0.9) }),
+            metadata: Some(FactorMetadata::Semantic {
+                cosine_similarity: Some(0.9),
+            }),
         }];
         let graph = FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
         let result = graph.propagate();
         // Both nodes should remain high (reinforcing).
         let a_belief = result.node_beliefs["fact:a"];
         let b_belief = result.node_beliefs["fact:b"];
-        assert!(a_belief > 0.65, "fact:a belief should be reinforced: {}", a_belief);
-        assert!(b_belief > 0.65, "fact:b belief should be reinforced: {}", b_belief);
+        assert!(
+            a_belief > 0.65,
+            "fact:a belief should be reinforced: {}",
+            a_belief
+        );
+        assert!(
+            b_belief > 0.65,
+            "fact:b belief should be reinforced: {}",
+            b_belief
+        );
     }
 
     #[test]
@@ -664,7 +648,9 @@ mod tests {
             target: "fact:low".to_string(),
             kind: FactorKind::Semantic,
             edge_weight: 1.0,
-            metadata: Some(FactorMetadata::Semantic { cosine_similarity: Some(0.8) }),
+            metadata: Some(FactorMetadata::Semantic {
+                cosine_similarity: Some(0.8),
+            }),
         }];
         let graph = FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
         let result = graph.propagate();
@@ -694,7 +680,9 @@ mod tests {
                 target: "fact:sem".to_string(),
                 kind: FactorKind::Semantic,
                 edge_weight: 1.0,
-                metadata: Some(FactorMetadata::Semantic { cosine_similarity: Some(0.9) }),
+                metadata: Some(FactorMetadata::Semantic {
+                    cosine_similarity: Some(0.9),
+                }),
             },
             Factor {
                 source: "fact:center".to_string(),
@@ -715,7 +703,9 @@ mod tests {
                 target: "fact:ent".to_string(),
                 kind: FactorKind::Entity,
                 edge_weight: 1.0,
-                metadata: Some(FactorMetadata::Entity { relation: "depends_on".to_string() }),
+                metadata: Some(FactorMetadata::Entity {
+                    relation: "depends_on".to_string(),
+                }),
             },
         ];
         let graph = FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
@@ -743,7 +733,9 @@ mod tests {
                 target: "fact:b".to_string(),
                 kind: FactorKind::Entity,
                 edge_weight: 1.0,
-                metadata: Some(FactorMetadata::Entity { relation: "sibling".to_string() }),
+                metadata: Some(FactorMetadata::Entity {
+                    relation: "sibling".to_string(),
+                }),
             },
             Factor {
                 source: "fact:b".to_string(),
@@ -786,19 +778,19 @@ mod tests {
             edge_weight: 1.0,
             metadata: Some(FactorMetadata::Temporal { delta_secs: 100 }), // 100 seconds ago
         }];
-        let recent_graph = FactorGraph::new(&recent_nodes, recent_factors, FactorGraphConfig::default());
+        let recent_graph =
+            FactorGraph::new(&recent_nodes, recent_factors, FactorGraphConfig::default());
         let recent_result = recent_graph.propagate();
 
-        let old_nodes = vec![
-            ("fact:a".to_string(), 0.5),
-            ("fact:b_old".to_string(), 0.9),
-        ];
+        let old_nodes = vec![("fact:a".to_string(), 0.5), ("fact:b_old".to_string(), 0.9)];
         let old_factors = vec![Factor {
             source: "fact:a".to_string(),
             target: "fact:b_old".to_string(),
             kind: FactorKind::Temporal,
             edge_weight: 1.0,
-            metadata: Some(FactorMetadata::Temporal { delta_secs: 31_536_000 }), // 1 year ago
+            metadata: Some(FactorMetadata::Temporal {
+                delta_secs: 31_536_000,
+            }), // 1 year ago
         }];
         let old_graph = FactorGraph::new(&old_nodes, old_factors, FactorGraphConfig::default());
         let old_result = old_graph.propagate();
@@ -864,22 +856,33 @@ mod tests {
             (
                 "fact:c".to_string(),
                 "fact:d".to_string(),
-                GraphEdgeType::Causal { confidence: 0.0, evidence_ids: vec![] },
+                GraphEdgeType::Causal {
+                    confidence: 0.0,
+                    evidence_ids: vec![],
+                },
                 1.0,
                 Some(r#"{"confidence": 0.8}"#.to_string()),
             ),
             (
                 "fact:e".to_string(),
                 "fact:f".to_string(),
-                GraphEdgeType::Entity { relation: "depends_on".to_string() },
+                GraphEdgeType::Entity {
+                    relation: "depends_on".to_string(),
+                },
                 1.0,
                 Some(r#"{"relation": "depends_on"}"#.to_string()),
             ),
         ];
         let factors = factors_from_edges(&edges);
         assert_eq!(factors.len(), 3);
-        assert!(matches!(factors[0].metadata, Some(FactorMetadata::Temporal { delta_secs: 86400 })));
-        assert!(matches!(factors[1].metadata, Some(FactorMetadata::Causal { confidence: 0.8 })));
+        assert!(matches!(
+            factors[0].metadata,
+            Some(FactorMetadata::Temporal { delta_secs: 86400 })
+        ));
+        assert!(matches!(
+            factors[1].metadata,
+            Some(FactorMetadata::Causal { confidence: 0.8 })
+        ));
         assert!(matches!(
             factors[2].metadata,
             Some(FactorMetadata::Entity { ref relation }) if relation == "depends_on"
@@ -934,7 +937,10 @@ mod tests {
     fn factor_graph_normalized_weights_sum_to_one() {
         let config = FactorGraphConfig::default();
         let (s, t, c, e) = config.normalized_weights();
-        assert!((s + t + c + e - 1.0).abs() < 0.001, "weights should sum to 1.0");
+        assert!(
+            (s + t + c + e - 1.0).abs() < 0.001,
+            "weights should sum to 1.0"
+        );
     }
 
     #[test]

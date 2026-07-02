@@ -30,28 +30,29 @@ const VECTOR_SCAN_HARD_LIMIT: usize = 250_000;
 static VECTOR_SCAN_WARN_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_WARN_THRESHOLD);
 static VECTOR_SCAN_BLOCK_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_HARD_LIMIT);
 
-
 /// Expand query terms to match hyphenated variants.
 /// "turbo-quant" -> "turbo-quant OR turboquant"
 /// This improves BM25 recall for technical terms with hyphens.
 #[allow(dead_code)]
 fn expand_query_for_fts(query: &str) -> String {
     let terms: Vec<&str> = query.split_whitespace().collect();
-    let expanded: Vec<String> = terms.iter().map(|term| {
-        if term.contains('-') {
-            let no_hyphen = term.replace('-', "");
-            if no_hyphen != *term {
-                format!("{term} OR {no_hyphen}")
+    let expanded: Vec<String> = terms
+        .iter()
+        .map(|term| {
+            if term.contains('-') {
+                let no_hyphen = term.replace('-', "");
+                if no_hyphen != *term {
+                    format!("{term} OR {no_hyphen}")
+                } else {
+                    term.to_string()
+                }
             } else {
                 term.to_string()
             }
-        } else {
-            term.to_string()
-        }
-    }).collect();
+        })
+        .collect();
     expanded.join(" ")
 }
-
 
 /// Classify whether a query needs retrieval at all.
 /// Simple greetings, confirmations, and single-word responses don't need search.
@@ -62,17 +63,34 @@ pub fn should_retrieve(query: &str) -> bool {
     }
     let lower = trimmed.to_lowercase();
     let skip_phrases = [
-        "ok", "yes", "no", "thanks", "done", "sure", "yeah", "right",
-        "correct", "agreed", "ok thanks", "got it", "sounds good",
-        "that works", "makes sense", "i see", "understood", "gotcha",
+        "ok",
+        "yes",
+        "no",
+        "thanks",
+        "done",
+        "sure",
+        "yeah",
+        "right",
+        "correct",
+        "agreed",
+        "ok thanks",
+        "got it",
+        "sounds good",
+        "that works",
+        "makes sense",
+        "i see",
+        "understood",
+        "gotcha",
     ];
     for phrase in &skip_phrases {
         if lower == *phrase {
             return false;
         }
     }
-    if lower.starts_with("can you") || lower.starts_with("could you")
-        || lower.starts_with("would you") || lower.starts_with("will you")
+    if lower.starts_with("can you")
+        || lower.starts_with("could you")
+        || lower.starts_with("would you")
+        || lower.starts_with("will you")
     {
         if lower.len() <= 20 {
             return false;
@@ -326,9 +344,11 @@ impl RrfCandidate {
         let rrf_score = base_score * temporal_factor * provenance_factor;
         // Apply namespace weight if configured
         let ns_weight = match &self.source {
-            SearchSource::Fact { namespace, .. } => {
-                config.namespace_weights.get(namespace).copied().unwrap_or(1.0)
-            }
+            SearchSource::Fact { namespace, .. } => config
+                .namespace_weights
+                .get(namespace)
+                .copied()
+                .unwrap_or(1.0),
             _ => 1.0,
         };
         let rrf_score = rrf_score * ns_weight;
@@ -568,7 +588,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
-            provenance_confidence: None,
+                provenance_confidence: None,
             })
         })?;
 
@@ -616,7 +636,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
-            provenance_confidence: None,
+                provenance_confidence: None,
             })
         })?;
 
@@ -667,7 +687,7 @@ pub(crate) fn bm25_search(
                 raw_score,
                 updated_at,
                 temporal_weight: None,
-            provenance_confidence: None,
+                provenance_confidence: None,
             })
         })?;
 
@@ -1670,8 +1690,8 @@ fn rrf_fuse_detailed_with_context(
                 vector_reranked_from_f32: hit.reranked_from_f32,
                 late_interaction_rank: None,
                 late_interaction_score: None,
-            temporal_weight: None,
-            provenance_confidence: None,
+                temporal_weight: None,
+                provenance_confidence: None,
             });
     }
 
@@ -1806,18 +1826,15 @@ pub fn rrf_fuse_with_late_interaction(
                 vector_reranked_from_f32: hit.reranked_from_f32,
                 late_interaction_rank: None,
                 late_interaction_score: None,
-            temporal_weight: None,
-            provenance_confidence: None,
+                temporal_weight: None,
+                provenance_confidence: None,
             });
     }
 
     // Insert late interaction hits (ranked by score descending).
     // Match against existing candidates by scanning for matching content/source.
     let mut li_sorted: Vec<&(String, f64)> = late_interaction_scores.iter().collect();
-    li_sorted.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    li_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (rank_0, (item_key, score)) in li_sorted.iter().enumerate() {
         let rank = rank_0 + 1;
         // Try to find an existing candidate whose content or source matches item_key.
@@ -2138,7 +2155,8 @@ pub(crate) fn hybrid_search_detailed_with_context(
     #[cfg(feature = "matryoshka")]
     {
         if let Some(candidate_dim) = config.candidate_dims {
-            if candidate_dim > 0 && candidate_dim < query_embedding.len()
+            if candidate_dim > 0
+                && candidate_dim < query_embedding.len()
                 && context.exactness_profile != crate::types::ExactnessProfile::PreferExact
             {
                 use crate::matryoshka::truncate_embedding;
@@ -2200,10 +2218,8 @@ pub(crate) fn hybrid_search_detailed_with_context(
         // splitting the query embedding into segments and comparing against
         // document embeddings. This is an approximation of ColBERT late
         // interaction using existing dense embeddings.
-        let li_scores = compute_proxy_late_interaction_scores(
-            query_embedding,
-            &vector_outcome.hits,
-        );
+        let li_scores =
+            compute_proxy_late_interaction_scores(query_embedding, &vector_outcome.hits);
         #[cfg(feature = "late-interaction")]
         {
             rrf_fuse_with_late_interaction(
@@ -2508,8 +2524,8 @@ fn build_ranked_vector_hit(
         source_rank: Some(seed.source_rank),
         source_similarity: Some(seed.source_similarity),
         reranked_from_f32: config.rerank_from_f32,
-                temporal_weight: None,
-    provenance_confidence: None,
+        temporal_weight: None,
+        provenance_confidence: None,
     }))
 }
 

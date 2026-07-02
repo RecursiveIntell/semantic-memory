@@ -83,8 +83,10 @@ pub(crate) fn insert_graph_edge(
         .map_err(|e| MemoryError::Other(format!("failed to serialize edge_type: {e}")))?;
 
     let metadata_json = match &params.metadata {
-        Some(v) => Some(serde_json::to_string(v)
-            .map_err(|e| MemoryError::Other(format!("failed to serialize metadata: {e}")))?),
+        Some(v) => Some(
+            serde_json::to_string(v)
+                .map_err(|e| MemoryError::Other(format!("failed to serialize metadata: {e}")))?,
+        ),
         None => None,
     };
 
@@ -317,12 +319,13 @@ pub(crate) fn stored_edges_for_node(
     for row in rows {
         let edge_type: GraphEdgeType = serde_json::from_str(&row.edge_type)
             .map_err(|e| MemoryError::Other(format!("failed to deserialize edge_type: {e}")))?;
-        let metadata: Option<serde_json::Value> = match &row.metadata {
-            Some(s) => Some(serde_json::from_str(s).map_err(|e| {
-                MemoryError::Other(format!("failed to deserialize metadata: {e}"))
-            })?),
-            None => None,
-        };
+        let metadata: Option<serde_json::Value> =
+            match &row.metadata {
+                Some(s) => Some(serde_json::from_str(s).map_err(|e| {
+                    MemoryError::Other(format!("failed to deserialize metadata: {e}"))
+                })?),
+                None => None,
+            };
         edges.push(GraphEdge {
             source: row.source,
             target: row.target,
@@ -408,12 +411,13 @@ fn rows_to_graph_edges(rows: Vec<StoredGraphEdge>) -> Result<Vec<GraphEdge>, Mem
     for row in rows {
         let edge_type: GraphEdgeType = serde_json::from_str(&row.edge_type)
             .map_err(|e| MemoryError::Other(format!("failed to deserialize edge_type: {e}")))?;
-        let metadata: Option<serde_json::Value> = match &row.metadata {
-            Some(s) => Some(serde_json::from_str(s).map_err(|e| {
-                MemoryError::Other(format!("failed to deserialize metadata: {e}"))
-            })?),
-            None => None,
-        };
+        let metadata: Option<serde_json::Value> =
+            match &row.metadata {
+                Some(s) => Some(serde_json::from_str(s).map_err(|e| {
+                    MemoryError::Other(format!("failed to deserialize metadata: {e}"))
+                })?),
+                None => None,
+            };
         edges.push(GraphEdge {
             source: row.source,
             target: row.target,

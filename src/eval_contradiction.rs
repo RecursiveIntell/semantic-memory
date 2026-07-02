@@ -97,7 +97,11 @@ impl ContradictionMetrics {
     /// 1.0 (the system correctly found no conflicts).
     pub fn from_counts(tp: usize, fp: usize, fn_: usize) -> Self {
         let precision = if tp + fp == 0 {
-            if fn_ == 0 { 1.0 } else { 0.0 }
+            if fn_ == 0 {
+                1.0
+            } else {
+                0.0
+            }
         } else {
             tp as f64 / (tp + fp) as f64
         };
@@ -255,10 +259,11 @@ pub fn run_case_from_content(
         .iter()
         .map(|i| (i.id.clone(), i.content.clone()))
         .collect();
-    let detected: HashSet<(String, String)> = crate::contradiction_detect::detect_contradictions(&items, cfg)
-        .iter()
-        .map(|p| norm_pair(&p.a, &p.b))
-        .collect();
+    let detected: HashSet<(String, String)> =
+        crate::contradiction_detect::detect_contradictions(&items, cfg)
+            .iter()
+            .map(|p| norm_pair(&p.a, &p.b))
+            .collect();
     let expected: HashSet<(String, String)> = case
         .expected_conflicts
         .iter()
@@ -323,8 +328,14 @@ pub fn builtin_cases() -> Vec<ContradictionCase> {
             id: "clean-no-conflict".to_string(),
             query: "what port does the warm server use".to_string(),
             items: vec![
-                item("fact:a1", "The warm server listens on port 1739 by default."),
-                item("fact:a2", "The warm HTTP server is co-hosted by the MCP server."),
+                item(
+                    "fact:a1",
+                    "The warm server listens on port 1739 by default.",
+                ),
+                item(
+                    "fact:a2",
+                    "The warm HTTP server is co-hosted by the MCP server.",
+                ),
             ],
             candidate_contradictions: vec![],
             // Only a benign relation edge — no contradiction edge to derive.
@@ -350,7 +361,10 @@ pub fn builtin_cases() -> Vec<ContradictionCase> {
             id: "noisy-one-real-conflict".to_string(),
             query: "which embedder is the default".to_string(),
             items: vec![
-                item("fact:c1", "The default embedder is Candle (in-process, CPU)."),
+                item(
+                    "fact:c1",
+                    "The default embedder is Candle (in-process, CPU).",
+                ),
                 item("fact:c2", "The default embedder is Ollama."),
                 item("fact:c3", "Candle downloads nomic-embed-text on first use."),
             ],
@@ -445,7 +459,10 @@ mod tests {
     #[test]
     fn single_conflict_detected() {
         let cases = builtin_cases();
-        let c = cases.iter().find(|c| c.id == "single-direct-conflict").unwrap();
+        let c = cases
+            .iter()
+            .find(|c| c.id == "single-direct-conflict")
+            .unwrap();
         let m = run_case(c);
         assert_eq!(m.true_positives, 1);
         assert_eq!(m.false_negatives, 0);
@@ -473,8 +490,7 @@ mod tests {
 
     #[test]
     fn derive_candidates_filters_type_and_scope() {
-        let scope: HashSet<String> =
-            ["x", "y", "z"].iter().map(|s| s.to_string()).collect();
+        let scope: HashSet<String> = ["x", "y", "z"].iter().map(|s| s.to_string()).collect();
         let mk = |s: &str, t: &str, et: &str| EvalEdge {
             source: s.to_string(),
             target: t.to_string(),
@@ -494,10 +510,16 @@ mod tests {
     #[test]
     fn edge_path_scores_single_conflict() {
         let cases = builtin_cases();
-        let c = cases.iter().find(|c| c.id == "single-direct-conflict").unwrap();
+        let c = cases
+            .iter()
+            .find(|c| c.id == "single-direct-conflict")
+            .unwrap();
         let m = run_case_from_edges(c);
         assert_eq!(m.true_positives, 1);
-        assert_eq!(m.false_positives, 0, "the relates_to distractor must not count");
+        assert_eq!(
+            m.false_positives, 0,
+            "the relates_to distractor must not count"
+        );
         assert_eq!(m.false_negatives, 0);
     }
 
@@ -523,11 +545,17 @@ mod tests {
     #[test]
     fn edge_path_is_cleaner_than_candidate_path_on_noisy_case() {
         let cases = builtin_cases();
-        let c = cases.iter().find(|c| c.id == "noisy-one-real-conflict").unwrap();
+        let c = cases
+            .iter()
+            .find(|c| c.id == "noisy-one-real-conflict")
+            .unwrap();
         // The candidate path is fed c1/c3 and would over-flag if the decoder
         // structured it; the edge path derives only the real c1/c2 contradiction.
         let edge_m = run_case_from_edges(c);
-        assert_eq!(edge_m.false_positives, 0, "edge predicate drops the benign c1/c3");
+        assert_eq!(
+            edge_m.false_positives, 0,
+            "edge predicate drops the benign c1/c3"
+        );
         assert!((edge_m.f1 - 1.0).abs() < 1e-9);
     }
 }

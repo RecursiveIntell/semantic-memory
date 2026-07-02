@@ -134,13 +134,14 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     }
 }
 
-const NEGATIONS: &[&str] = &["not", "no", "never", "cannot", "without", "n't", "isn", "aren", "doesn"];
+const NEGATIONS: &[&str] = &[
+    "not", "no", "never", "cannot", "without", "n't", "isn", "aren", "doesn",
+];
 
 /// Whether the text carries a negation marker.
 fn has_negation(s: &str) -> bool {
     let toks = tokens(s);
-    toks.iter().any(|t| NEGATIONS.contains(&t.as_str()))
-        || s.to_lowercase().contains("n't")
+    toks.iter().any(|t| NEGATIONS.contains(&t.as_str())) || s.to_lowercase().contains("n't")
 }
 
 const ANTONYMS: &[(&str, &str)] = &[
@@ -157,9 +158,9 @@ const ANTONYMS: &[(&str, &str)] = &[
 
 /// First antonym pair present across the two word sets, if any.
 fn antonym_hit(a: &HashSet<String>, b: &HashSet<String>) -> bool {
-    ANTONYMS.iter().any(|(x, y)| {
-        (a.contains(*x) && b.contains(*y)) || (a.contains(*y) && b.contains(*x))
-    })
+    ANTONYMS
+        .iter()
+        .any(|(x, y)| (a.contains(*x) && b.contains(*y)) || (a.contains(*y) && b.contains(*x)))
 }
 
 /// Extract `(subject_words, value_token)` from an `<subject> is/are <value>`
@@ -180,7 +181,11 @@ fn subject_value(original: &str) -> Option<(HashSet<String>, String)> {
     let value = after
         .split(|c: char| !c.is_alphanumeric())
         .find(|t| !t.is_empty())?;
-    let entity_like = value.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+    let entity_like = value
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false);
     if !entity_like {
         return None;
     }
@@ -225,7 +230,9 @@ fn evaluate_pair(
     if let (Some((sa, va)), Some((sb, vb))) = (subject_value(a_text), subject_value(b_text)) {
         if va != vb && jaccard(&sa, &sb) >= cfg.min_subject_overlap {
             signals.push(ContradictionSignal::ValueDisagreement);
-            reasons.push(format!("same subject asserts different values '{va}' vs '{vb}'"));
+            reasons.push(format!(
+                "same subject asserts different values '{va}' vs '{vb}'"
+            ));
         }
     }
 
@@ -233,7 +240,9 @@ fn evaluate_pair(
     if overlap >= cfg.min_overlap {
         if has_negation(a_text) != has_negation(b_text) {
             signals.push(ContradictionSignal::NegationPolarity);
-            reasons.push(format!("same wording (overlap {overlap:.2}) but opposite negation"));
+            reasons.push(format!(
+                "same wording (overlap {overlap:.2}) but opposite negation"
+            ));
         }
         if antonym_hit(&a_words, &b_words) {
             signals.push(ContradictionSignal::Antonym);
@@ -258,7 +267,10 @@ fn evaluate_pair(
 /// Propose candidate contradictions across a set of items. `items` is
 /// `(id, content)`. O(n²) over the set — intended for a retrieved working set
 /// (tens of items), not the whole corpus.
-pub fn detect_contradictions(items: &[(String, String)], cfg: &DetectorConfig) -> Vec<DetectedPair> {
+pub fn detect_contradictions(
+    items: &[(String, String)],
+    cfg: &DetectorConfig,
+) -> Vec<DetectedPair> {
     let mut out = Vec::new();
     for i in 0..items.len() {
         for j in (i + 1)..items.len() {
@@ -315,7 +327,10 @@ mod tests {
     use super::*;
 
     fn items(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(i, c)| (i.to_string(), c.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(i, c)| (i.to_string(), c.to_string()))
+            .collect()
     }
 
     #[test]
@@ -326,7 +341,9 @@ mod tests {
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
         assert_eq!(found.len(), 1);
-        assert!(found[0].signals.contains(&ContradictionSignal::NumericDisagreement));
+        assert!(found[0]
+            .signals
+            .contains(&ContradictionSignal::NumericDisagreement));
     }
 
     #[test]
@@ -337,7 +354,9 @@ mod tests {
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
         assert_eq!(found.len(), 1);
-        assert!(found[0].signals.contains(&ContradictionSignal::ValueDisagreement));
+        assert!(found[0]
+            .signals
+            .contains(&ContradictionSignal::ValueDisagreement));
     }
 
     #[test]
@@ -348,7 +367,9 @@ mod tests {
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
         assert_eq!(found.len(), 1, "negation flip should be flagged");
-        assert!(found[0].signals.contains(&ContradictionSignal::NegationPolarity));
+        assert!(found[0]
+            .signals
+            .contains(&ContradictionSignal::NegationPolarity));
     }
 
     #[test]
@@ -358,7 +379,9 @@ mod tests {
             ("b", "The autocapture feature is disabled by default."),
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
-        assert!(found.iter().any(|p| p.signals.contains(&ContradictionSignal::Antonym)));
+        assert!(found
+            .iter()
+            .any(|p| p.signals.contains(&ContradictionSignal::Antonym)));
     }
 
     #[test]
@@ -368,7 +391,10 @@ mod tests {
             ("b", "The warm HTTP server is co-hosted by the MCP server."),
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
-        assert!(found.is_empty(), "different claims, no shared number/value → no flag");
+        assert!(
+            found.is_empty(),
+            "different claims, no shared number/value → no flag"
+        );
     }
 
     #[test]
@@ -379,7 +405,10 @@ mod tests {
             ("c", "Candle downloads nomic-embed-text on first use."),
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
-        assert!(found.is_empty(), "compatible statements about Candle must not be flagged");
+        assert!(
+            found.is_empty(),
+            "compatible statements about Candle must not be flagged"
+        );
     }
 
     #[test]
@@ -406,6 +435,9 @@ mod tests {
             ("b", "The server is built with rmcp."),
         ]);
         let found = detect_contradictions(&it, &DetectorConfig::default());
-        assert!(found.is_empty(), "lowercase predicate values must not compete");
+        assert!(
+            found.is_empty(),
+            "lowercase predicate values must not compete"
+        );
     }
 }

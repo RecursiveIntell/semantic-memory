@@ -395,7 +395,11 @@ pub fn run_benchmark(
 
         // Simulate quality/latency/tokens based on routing decision.
         let (quality, latency, tokens) = if decision.no_retrieval {
-            (case.no_retrieval_quality, case.no_retrieval_latency_ms, case.no_retrieval_tokens)
+            (
+                case.no_retrieval_quality,
+                case.no_retrieval_latency_ms,
+                case.no_retrieval_tokens,
+            )
         } else {
             // Partial savings from skipping stages.
             let stages_active = [
@@ -403,7 +407,10 @@ pub fn run_benchmark(
                 decision.vector_medium,
                 decision.rerank_fine,
                 decision.graph_expansion,
-            ].iter().filter(|&&b| b).count() as f64;
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count() as f64;
             let total_stages = 4.0;
             let stage_ratio = stages_active / total_stages;
             let quality = case.full_retrieval_quality * stage_ratio.max(0.3);
@@ -464,23 +471,44 @@ pub fn format_report(report: &BenchmarkReport) -> String {
     let mut out = String::new();
     out.push_str("=== RAGRouter-Bench Report ===\n\n");
     out.push_str(&format!("Total cases:      {}\n", report.total_cases));
-    out.push_str(&format!("Routing accuracy: {:.1}% ({} correct, {} incorrect)\n",
+    out.push_str(&format!(
+        "Routing accuracy: {:.1}% ({} correct, {} incorrect)\n",
         report.routing_accuracy * 100.0,
         report.correct_routes,
         report.incorrect_routes,
     ));
-    out.push_str(&format!("Avg quality delta: {:.4} (positive = adaptive better)\n", report.avg_quality_delta));
-    out.push_str(&format!("Avg latency saved: {:.1} ms\n", report.avg_latency_saved_ms));
-    out.push_str(&format!("Avg tokens saved:  {:.1}\n", report.avg_tokens_saved));
-    out.push_str(&format!("Retrieval underuse: {} (should have retrieved, didn't)\n", report.retrieval_underuse));
-    out.push_str(&format!("Retrieval overuse:  {} (shouldn't have retrieved, did)\n", report.retrieval_overuse));
+    out.push_str(&format!(
+        "Avg quality delta: {:.4} (positive = adaptive better)\n",
+        report.avg_quality_delta
+    ));
+    out.push_str(&format!(
+        "Avg latency saved: {:.1} ms\n",
+        report.avg_latency_saved_ms
+    ));
+    out.push_str(&format!(
+        "Avg tokens saved:  {:.1}\n",
+        report.avg_tokens_saved
+    ));
+    out.push_str(&format!(
+        "Retrieval underuse: {} (should have retrieved, didn't)\n",
+        report.retrieval_underuse
+    ));
+    out.push_str(&format!(
+        "Retrieval overuse:  {} (shouldn't have retrieved, did)\n",
+        report.retrieval_overuse
+    ));
     out.push_str(&format!("Benchmark elapsed:  {} ms\n\n", report.elapsed_ms));
     out.push_str("--- Per-case results ---\n");
     for (i, case) in report.cases.iter().enumerate() {
         let status = if case.routing_correct { "OK" } else { "MISS" };
         out.push_str(&format!(
             "{}. [{}] q=\"{}\" dq={:.3} dl={:.0}ms dt={}\n",
-            i + 1, status, case.query, case.quality_delta, case.latency_saved_ms, case.tokens_saved
+            i + 1,
+            status,
+            case.query,
+            case.quality_delta,
+            case.latency_saved_ms,
+            case.tokens_saved
         ));
     }
     out
@@ -648,7 +676,12 @@ impl RetrievalBenchmarkReport {
         out.push_str("--- Quality Metrics ---\n");
         out.push_str(&format!("MRR:        {:.4}\n", self.metrics.mean_mrr));
         for &k in DEFAULT_K_VALUES {
-            let recall = self.metrics.mean_recall_at_k.get(&k).copied().unwrap_or(0.0);
+            let recall = self
+                .metrics
+                .mean_recall_at_k
+                .get(&k)
+                .copied()
+                .unwrap_or(0.0);
             let ndcg = self.metrics.mean_ndcg_at_k.get(&k).copied().unwrap_or(0.0);
             out.push_str(&format!("Recall@{}:   {:.4}\n", k, recall));
             out.push_str(&format!("nDCG@{}:    {:.4}\n", k, ndcg));
@@ -667,7 +700,10 @@ impl BenchmarkComparison {
     /// Generate a human-readable comparison summary.
     pub fn summary(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("=== Benchmark Comparison: {} → {} ===\n\n", self.before_label, self.after_label));
+        out.push_str(&format!(
+            "=== Benchmark Comparison: {} → {} ===\n\n",
+            self.before_label, self.after_label
+        ));
         out.push_str("--- Quality Deltas (positive = improved) ---\n");
         out.push_str(&format!("MRR:        {:+.4}\n", self.mrr_delta));
         for &k in DEFAULT_K_VALUES {
@@ -680,7 +716,11 @@ impl BenchmarkComparison {
         out.push_str(&format!("Mean:  {:+.2} ms\n", self.mean_latency_delta_ms));
         out.push_str(&format!("p95:   {:+.2} ms\n", self.p95_latency_delta_ms));
         out.push_str(&format!("p99:   {:+.2} ms\n", self.p99_latency_delta_ms));
-        let verdict = if self.improved { "IMPROVED" } else { "MIXED/REGRESSED" };
+        let verdict = if self.improved {
+            "IMPROVED"
+        } else {
+            "MIXED/REGRESSED"
+        };
         out.push_str(&format!("\nVerdict: {}\n", verdict));
         out
     }
@@ -702,11 +742,7 @@ pub fn recall_at_k(returned: &[String], relevant: &[String], k: usize) -> f64 {
 /// Compute nDCG@k: normalized discounted cumulative gain.
 ///
 /// Uses relevance grades from the fixture if available, otherwise binary.
-pub fn ndcg_at_k(
-    returned: &[String],
-    fixture: &QueryFixture,
-    k: usize,
-) -> f64 {
+pub fn ndcg_at_k(returned: &[String], fixture: &QueryFixture, k: usize) -> f64 {
     let top_k: Vec<&String> = returned.iter().take(k).collect();
 
     // DCG: sum of rel_i / log2(i + 2) for i = 0..k
@@ -714,11 +750,13 @@ pub fn ndcg_at_k(
         .iter()
         .enumerate()
         .map(|(i, id)| {
-            let grade = fixture
-                .relevance_grades
-                .get(*id)
-                .copied()
-                .unwrap_or(if fixture.relevant_ids.contains(id) { 1.0 } else { 0.0 });
+            let grade = fixture.relevance_grades.get(*id).copied().unwrap_or(
+                if fixture.relevant_ids.contains(id) {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
             grade / (i as f64 + 2.0).log2()
         })
         .sum();
@@ -727,13 +765,7 @@ pub fn ndcg_at_k(
     let mut ideal_grades: Vec<f64> = fixture
         .relevant_ids
         .iter()
-        .map(|id| {
-            fixture
-                .relevance_grades
-                .get(id)
-                .copied()
-                .unwrap_or(1.0)
-        })
+        .map(|id| fixture.relevance_grades.get(id).copied().unwrap_or(1.0))
         .collect();
     ideal_grades.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let idcg: f64 = ideal_grades
@@ -815,10 +847,7 @@ pub fn builtin_fixtures() -> Vec<QueryFixture> {
         },
         QueryFixture {
             query: "provenance semiring confidence scoring".to_string(),
-            relevant_ids: vec![
-                "fact:prov-0001".to_string(),
-                "fact:prov-0002".to_string(),
-            ],
+            relevant_ids: vec!["fact:prov-0001".to_string(), "fact:prov-0002".to_string()],
             relevance_grades: HashMap::new(),
             namespaces: None,
             top_k: Some(10),
@@ -846,10 +875,7 @@ pub fn builtin_fixtures() -> Vec<QueryFixture> {
         },
         QueryFixture {
             query: "graph edges temporal causal semantic entity types".to_string(),
-            relevant_ids: vec![
-                "fact:graph-0001".to_string(),
-                "fact:graph-0002".to_string(),
-            ],
+            relevant_ids: vec!["fact:graph-0001".to_string(), "fact:graph-0002".to_string()],
             relevance_grades: HashMap::new(),
             namespaces: None,
             top_k: Some(10),
@@ -866,10 +892,7 @@ pub fn builtin_fixtures() -> Vec<QueryFixture> {
         },
         QueryFixture {
             query: "conversation session message storage".to_string(),
-            relevant_ids: vec![
-                "fact:conv-0001".to_string(),
-                "msg:conv-msg-001".to_string(),
-            ],
+            relevant_ids: vec!["fact:conv-0001".to_string(), "msg:conv-msg-001".to_string()],
             relevance_grades: HashMap::new(),
             namespaces: None,
             top_k: Some(10),
@@ -886,9 +909,7 @@ pub fn builtin_fixtures() -> Vec<QueryFixture> {
         },
         QueryFixture {
             query: "decoder syndrome detection contradiction correction".to_string(),
-            relevant_ids: vec![
-                "fact:decoder-0001".to_string(),
-            ],
+            relevant_ids: vec!["fact:decoder-0001".to_string()],
             relevance_grades: HashMap::new(),
             namespaces: None,
             top_k: Some(5),
@@ -981,18 +1002,14 @@ impl BenchmarkRunner {
         let fixtures = Self::load_fixtures(&config)?;
         let start = Instant::now();
 
-        let db_path = config
-            .db_path
-            .clone()
-            .unwrap_or_else(|| default_db_path());
+        let db_path = config.db_path.clone().unwrap_or_else(|| default_db_path());
 
         let db_exists = Path::new(&db_path).exists();
 
         // Open the live store if available (read-only mode: we only call search).
         let store = if db_exists {
-            Self::open_store(&db_path).map_err(|e| {
-                format!("failed to open store at {}: {}", db_path, e)
-            })?
+            Self::open_store(&db_path)
+                .map_err(|e| format!("failed to open store at {}: {}", db_path, e))?
         } else {
             None
         };
@@ -1044,7 +1061,10 @@ impl BenchmarkRunner {
     }
 
     /// Compare two benchmark reports (before vs after).
-    pub fn compare(before: &RetrievalBenchmarkReport, after: &RetrievalBenchmarkReport) -> BenchmarkComparison {
+    pub fn compare(
+        before: &RetrievalBenchmarkReport,
+        after: &RetrievalBenchmarkReport,
+    ) -> BenchmarkComparison {
         let mut recall_delta = HashMap::new();
         let mut ndcg_delta = HashMap::new();
 
@@ -1054,11 +1074,26 @@ impl BenchmarkRunner {
         all_ks.extend(after.metrics.mean_recall_at_k.keys());
 
         for &k in &all_ks {
-            let b = before.metrics.mean_recall_at_k.get(&k).copied().unwrap_or(0.0);
-            let a = after.metrics.mean_recall_at_k.get(&k).copied().unwrap_or(0.0);
+            let b = before
+                .metrics
+                .mean_recall_at_k
+                .get(&k)
+                .copied()
+                .unwrap_or(0.0);
+            let a = after
+                .metrics
+                .mean_recall_at_k
+                .get(&k)
+                .copied()
+                .unwrap_or(0.0);
             recall_delta.insert(k, a - b);
 
-            let b = before.metrics.mean_ndcg_at_k.get(&k).copied().unwrap_or(0.0);
+            let b = before
+                .metrics
+                .mean_ndcg_at_k
+                .get(&k)
+                .copied()
+                .unwrap_or(0.0);
             let a = after.metrics.mean_ndcg_at_k.get(&k).copied().unwrap_or(0.0);
             ndcg_delta.insert(k, a - b);
         }
@@ -1138,12 +1173,7 @@ impl BenchmarkRunner {
 
         let start = Instant::now();
         let result = store
-            .search(
-                &fixture.query,
-                Some(top_k),
-                ns.as_deref(),
-                None,
-            )
+            .search(&fixture.query, Some(top_k), ns.as_deref(), None)
             .await;
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -1173,18 +1203,16 @@ impl BenchmarkRunner {
                     error: None,
                 }
             }
-            Err(e) => {
-                QueryResult {
-                    query: fixture.query.clone(),
-                    returned_ids: Vec::new(),
-                    recall_at_k: HashMap::new(),
-                    ndcg_at_k: HashMap::new(),
-                    mrr: 0.0,
-                    latency_ms,
-                    errored: true,
-                    error: Some(format!("{}", e)),
-                }
-            }
+            Err(e) => QueryResult {
+                query: fixture.query.clone(),
+                returned_ids: Vec::new(),
+                recall_at_k: HashMap::new(),
+                ndcg_at_k: HashMap::new(),
+                mrr: 0.0,
+                latency_ms,
+                errored: true,
+                error: Some(format!("{}", e)),
+            },
         }
     }
 
@@ -1271,7 +1299,11 @@ impl BenchmarkRunner {
                 .filter(|r| !r.errored)
                 .map(|r| r.recall_at_k.get(&k).copied().unwrap_or(0.0))
                 .collect();
-            let mean = if vals.is_empty() { 0.0 } else { vals.iter().sum::<f64>() / vals.len() as f64 };
+            let mean = if vals.is_empty() {
+                0.0
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            };
             mean_recall_at_k.insert(k, mean);
         }
 
@@ -1283,7 +1315,11 @@ impl BenchmarkRunner {
                 .filter(|r| !r.errored)
                 .map(|r| r.ndcg_at_k.get(&k).copied().unwrap_or(0.0))
                 .collect();
-            let mean = if vals.is_empty() { 0.0 } else { vals.iter().sum::<f64>() / vals.len() as f64 };
+            let mean = if vals.is_empty() {
+                0.0
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            };
             mean_ndcg_at_k.insert(k, mean);
         }
 
@@ -1293,13 +1329,21 @@ impl BenchmarkRunner {
             .filter(|r| !r.errored)
             .map(|r| r.mrr)
             .collect();
-        let mean_mrr = if mrr_vals.is_empty() { 0.0 } else { mrr_vals.iter().sum::<f64>() / mrr_vals.len() as f64 };
+        let mean_mrr = if mrr_vals.is_empty() {
+            0.0
+        } else {
+            mrr_vals.iter().sum::<f64>() / mrr_vals.len() as f64
+        };
 
         // Latency percentiles
         let mut sorted_latencies = latencies.to_vec();
         sorted_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mean_latency = if latencies.is_empty() { 0.0 } else { latencies.iter().sum::<f64>() / latencies.len() as f64 };
+        let mean_latency = if latencies.is_empty() {
+            0.0
+        } else {
+            latencies.iter().sum::<f64>() / latencies.len() as f64
+        };
         let min_latency = latencies.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let max_latency = latencies.iter().fold(0.0f64, |a, &b| a.max(b));
         let p95 = percentile(&sorted_latencies, 95.0);
@@ -1313,8 +1357,16 @@ impl BenchmarkRunner {
             p95_latency_ms: p95,
             p99_latency_ms: p99,
             mean_latency_ms: mean_latency,
-            min_latency_ms: if latencies.is_empty() { 0.0 } else { min_latency },
-            max_latency_ms: if latencies.is_empty() { 0.0 } else { max_latency },
+            min_latency_ms: if latencies.is_empty() {
+                0.0
+            } else {
+                min_latency
+            },
+            max_latency_ms: if latencies.is_empty() {
+                0.0
+            } else {
+                max_latency
+            },
             num_errors,
         }
     }
@@ -1404,7 +1456,10 @@ mod tests {
         // Case 1: "hi" should be routed to no_retrieval.
         let case1 = &report.cases[0];
         assert!(case1.routing_correct, "short query should route correctly");
-        assert!(case1.latency_saved_ms > 0.0, "short query should save latency");
+        assert!(
+            case1.latency_saved_ms > 0.0,
+            "short query should save latency"
+        );
     }
 
     #[test]
@@ -1412,7 +1467,10 @@ mod tests {
         let report = run_default_benchmark();
         // Case 3: contradiction query should enable decoder.
         let case3 = &report.cases[2];
-        assert!(case3.routing_correct, "contradiction query should route correctly");
+        assert!(
+            case3.routing_correct,
+            "contradiction query should route correctly"
+        );
     }
 
     // ─── Retrieval benchmark tests ────────────────────────────────────
@@ -1462,7 +1520,11 @@ mod tests {
         let returned = vec!["a".to_string(), "b".to_string()];
         // Perfect ranking: nDCG should be 1.0
         let ndcg = ndcg_at_k(&returned, &fixture, 2);
-        assert!((ndcg - 1.0).abs() < 1e-6, "perfect ranking nDCG should be 1.0, got {}", ndcg);
+        assert!(
+            (ndcg - 1.0).abs() < 1e-6,
+            "perfect ranking nDCG should be 1.0, got {}",
+            ndcg
+        );
     }
 
     #[test]
@@ -1480,13 +1542,24 @@ mod tests {
         // Best order: a (grade 3) then b (grade 1) → nDCG = 1.0
         let best = vec!["a".to_string(), "b".to_string()];
         let ndcg_best = ndcg_at_k(&best, &fixture, 2);
-        assert!((ndcg_best - 1.0).abs() < 1e-6, "best order nDCG should be 1.0");
+        assert!(
+            (ndcg_best - 1.0).abs() < 1e-6,
+            "best order nDCG should be 1.0"
+        );
 
         // Worst order: b (grade 1) then a (grade 3) → nDCG < 1.0
         let worst = vec!["b".to_string(), "a".to_string()];
         let ndcg_worst = ndcg_at_k(&worst, &fixture, 2);
-        assert!(ndcg_worst < 1.0, "worst order nDCG should be < 1.0, got {}", ndcg_worst);
-        assert!(ndcg_worst > 0.0, "worst order nDCG should be > 0.0, got {}", ndcg_worst);
+        assert!(
+            ndcg_worst < 1.0,
+            "worst order nDCG should be < 1.0, got {}",
+            ndcg_worst
+        );
+        assert!(
+            ndcg_worst > 0.0,
+            "worst order nDCG should be > 0.0, got {}",
+            ndcg_worst
+        );
     }
 
     #[test]
@@ -1531,10 +1604,21 @@ mod tests {
         let report = BenchmarkRunner::run(config).unwrap();
         assert_eq!(report.num_fixtures, 15, "should have 15 built-in fixtures");
         assert_eq!(report.metrics.num_queries, 15);
-        assert_eq!(report.metrics.num_errors, 0, "fixture-only mode should not error");
-        assert!(report.metrics.mean_mrr > 0.0, "fixture-only mode should have MRR > 0");
+        assert_eq!(
+            report.metrics.num_errors, 0,
+            "fixture-only mode should not error"
+        );
+        assert!(
+            report.metrics.mean_mrr > 0.0,
+            "fixture-only mode should have MRR > 0"
+        );
         // Should have at least some Recall@5 > 0 (relevant items are in returned)
-        let r5 = report.metrics.mean_recall_at_k.get(&5).copied().unwrap_or(0.0);
+        let r5 = report
+            .metrics
+            .mean_recall_at_k
+            .get(&5)
+            .copied()
+            .unwrap_or(0.0);
         assert!(r5 > 0.0, "fixture-only Recall@5 should be > 0, got {}", r5);
     }
 
@@ -1558,7 +1642,10 @@ mod tests {
         assert_eq!(comp.before_label, "before");
         assert_eq!(comp.after_label, "after");
         // In fixture-only mode with same config, deltas should be ~0.
-        assert!(comp.mrr_delta.abs() < 1e-6, "identical runs should have ~0 MRR delta");
+        assert!(
+            comp.mrr_delta.abs() < 1e-6,
+            "identical runs should have ~0 MRR delta"
+        );
     }
 
     #[test]

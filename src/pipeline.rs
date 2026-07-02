@@ -460,10 +460,8 @@ impl RetrievalPipeline {
         let syndromes = crate::decoder::detect_syndromes(&result.final_results, contradictions);
 
         // Phase 5b: Build conflict graph from results + syndromes.
-        let graph = crate::decoder::ConflictGraph::from_syndromes(
-            &result.final_results,
-            &syndromes,
-        );
+        let graph =
+            crate::decoder::ConflictGraph::from_syndromes(&result.final_results, &syndromes);
 
         // Phase 5c: Run belief propagation to refine confidence scores.
         let mp = crate::decoder::pass_messages(&graph, max_iterations, convergence_threshold);
@@ -479,9 +477,7 @@ impl RetrievalPipeline {
             .collect();
 
         // Sort best-first by refined confidence.
-        refined.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        refined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let syndrome_count = syndromes.len();
         result.final_results = refined;
@@ -491,11 +487,7 @@ impl RetrievalPipeline {
             stage_name: "decoder_refine".to_string(),
             input_count: graph.nodes.len(),
             output_count: result.final_results.len(),
-            confidence: result
-                .final_results
-                .first()
-                .map(|(_, s)| *s)
-                .unwrap_or(0.0),
+            confidence: result.final_results.first().map(|(_, s)| *s).unwrap_or(0.0),
             stop_reason: format!(
                 "syndromes={} iterations={} converged={}",
                 syndrome_count, mp.iterations, mp.converged
@@ -528,7 +520,12 @@ mod tests {
             },
             confidence_threshold: threshold,
             stage_fn: Box::new(move |_input: &StageInput| {
-                Ok(StageOutput::new(results.clone(), confidence, elapsed_ms, items))
+                Ok(StageOutput::new(
+                    results.clone(),
+                    confidence,
+                    elapsed_ms,
+                    items,
+                ))
             }),
         }
     }
@@ -555,7 +552,13 @@ mod tests {
         // Low confidence on every stage → pipeline runs all three.
         let pipe = RetrievalPipeline::new()
             .stage(fixed_stage("s1", 0.8, vec![("a".to_string(), 0.5)], 0.1, 1))
-            .stage(fixed_stage("s2", 0.85, vec![("a".to_string(), 0.5)], 0.1, 1))
+            .stage(fixed_stage(
+                "s2",
+                0.85,
+                vec![("a".to_string(), 0.5)],
+                0.1,
+                1,
+            ))
             .stage(fixed_stage("s3", 0.9, vec![("a".to_string(), 0.5)], 0.1, 1));
         let res = pipe.execute("q", 5);
         assert_eq!(res.stages_executed.len(), 3);
@@ -617,8 +620,20 @@ mod tests {
     fn test_pipeline_receipt_chain() {
         // All stage receipts are present and in order.
         let pipe = RetrievalPipeline::new()
-            .stage(fixed_stage("alpha", 0.8, vec![("a".to_string(), 0.4)], 0.1, 1))
-            .stage(fixed_stage("beta", 0.85, vec![("a".to_string(), 0.4)], 0.1, 1))
+            .stage(fixed_stage(
+                "alpha",
+                0.8,
+                vec![("a".to_string(), 0.4)],
+                0.1,
+                1,
+            ))
+            .stage(fixed_stage(
+                "beta",
+                0.85,
+                vec![("a".to_string(), 0.4)],
+                0.1,
+                1,
+            ))
             .stage(fixed_stage(
                 "gamma",
                 0.9,
@@ -638,9 +653,27 @@ mod tests {
     fn test_pipeline_depth_limit() {
         // execute_with_depth limits the number of stages run.
         let pipe = RetrievalPipeline::new()
-            .stage(fixed_stage("s1", 0.99, vec![("a".to_string(), 0.1)], 0.0, 1))
-            .stage(fixed_stage("s2", 0.99, vec![("a".to_string(), 0.1)], 0.0, 1))
-            .stage(fixed_stage("s3", 0.99, vec![("a".to_string(), 0.1)], 0.0, 1));
+            .stage(fixed_stage(
+                "s1",
+                0.99,
+                vec![("a".to_string(), 0.1)],
+                0.0,
+                1,
+            ))
+            .stage(fixed_stage(
+                "s2",
+                0.99,
+                vec![("a".to_string(), 0.1)],
+                0.0,
+                1,
+            ))
+            .stage(fixed_stage(
+                "s3",
+                0.99,
+                vec![("a".to_string(), 0.1)],
+                0.0,
+                1,
+            ));
         let res = pipe.execute_with_depth("q", 5, 2);
         assert_eq!(res.stages_executed.len(), 2);
         assert_eq!(res.stages_executed[0].stage_name, "s1");
@@ -724,9 +757,7 @@ mod tests {
         assert_eq!(res.stages_executed[1].stage_name, "decoder_refine");
         // Decoder receipt should contain syndrome/iteration info.
         assert!(
-            res.stages_executed[1]
-                .stop_reason
-                .contains("syndromes="),
+            res.stages_executed[1].stop_reason.contains("syndromes="),
             "decoder receipt should include syndrome count"
         );
     }
@@ -738,10 +769,7 @@ mod tests {
         let pipe = RetrievalPipeline::new().stage(fixed_stage(
             "s1",
             0.8,
-            vec![
-                ("high".to_string(), 0.95),
-                ("low".to_string(), 0.30),
-            ],
+            vec![("high".to_string(), 0.95), ("low".to_string(), 0.30)],
             0.9,
             1,
         ));
@@ -777,8 +805,7 @@ mod tests {
     #[test]
     fn test_decoder_refine_empty_results_noop() {
         // Pipeline returns no results → decoder should be a no-op.
-        let pipe =
-            RetrievalPipeline::new().stage(fixed_stage("s1", 0.8, vec![], 0.0, 1));
+        let pipe = RetrievalPipeline::new().stage(fixed_stage("s1", 0.8, vec![], 0.0, 1));
         let res = pipe.execute_with_decoder("q", 5, &[], 50, 0.001);
         // No results, no decoder receipt (decoder returns early).
         assert!(res.final_results.is_empty());
@@ -793,10 +820,7 @@ mod tests {
         let pipe = RetrievalPipeline::new().stage(fixed_stage(
             "s1",
             0.8,
-            vec![
-                ("a".to_string(), 0.95),
-                ("b".to_string(), 0.90),
-            ],
+            vec![("a".to_string(), 0.95), ("b".to_string(), 0.90)],
             0.9,
             1,
         ));

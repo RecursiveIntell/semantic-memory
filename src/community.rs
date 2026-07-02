@@ -51,10 +51,7 @@ impl LcgRng {
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 
@@ -251,9 +248,7 @@ fn refine_merge(
         if candidates.is_empty() {
             break;
         }
-        candidates.sort_unstable_by(|left, right| {
-            (left.0, left.1).cmp(&(right.0, right.1))
-        });
+        candidates.sort_unstable_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
 
         let mut merged = false;
         for (a, b, count) in candidates {
@@ -321,13 +316,7 @@ fn local_move_step(
             continue;
         }
 
-        let current_quality = modularity(
-            edges,
-            node_count,
-            assignments,
-            node_degrees,
-            resolution,
-        );
+        let current_quality = modularity(edges, node_count, assignments, node_degrees, resolution);
         let mut best_comm = current_comm;
         let mut best_quality = current_quality;
 
@@ -337,8 +326,7 @@ fn local_move_step(
             }
             let mut next = assignments.to_owned();
             next[vertex] = candidate;
-            let next_quality =
-                modularity(edges, node_count, &next, node_degrees, resolution);
+            let next_quality = modularity(edges, node_count, &next, node_degrees, resolution);
             let delta = next_quality - best_quality;
             if delta > 1.0e-12 {
                 best_quality = next_quality;
@@ -390,7 +378,8 @@ fn detect_communities_internal(
 
     relabel_assignments(&mut assignments);
 
-    let mut communities: Vec<Vec<String>> = vec![Vec::new(); assignments.iter().copied().max().map_or(0, |v| v + 1)];
+    let mut communities: Vec<Vec<String>> =
+        vec![Vec::new(); assignments.iter().copied().max().map_or(0, |v| v + 1)];
     for (node_idx, community_idx) in assignments.iter().copied().enumerate() {
         if let Some(members) = communities.get_mut(community_idx) {
             members.push(nodes[node_idx].clone());
@@ -503,10 +492,16 @@ pub fn community_aware_compression(
                     "isolated low-importance fact".to_string(),
                 )
             } else {
-                ("SQ8".to_string(), "moderate single-node community".to_string())
+                (
+                    "SQ8".to_string(),
+                    "moderate single-node community".to_string(),
+                )
             }
         } else if average >= 0.75 && community.members.len() >= 2 {
-            ("SQ8".to_string(), "tight high-importance community".to_string())
+            (
+                "SQ8".to_string(),
+                "tight high-importance community".to_string(),
+            )
         } else {
             ("SQ8".to_string(), "default community encoding".to_string())
         };
@@ -539,8 +534,10 @@ mod tests {
         let communities = detect_communities(&edges, 1.0, 7);
         assert_eq!(communities.len(), 2);
 
-        let mut sorted_members: Vec<Vec<String>> =
-            communities.into_iter().map(|community| community.members).collect();
+        let mut sorted_members: Vec<Vec<String>> = communities
+            .into_iter()
+            .map(|community| community.members)
+            .collect();
         sorted_members.sort_unstable();
         assert!(
             sorted_members.contains(&vec![item("a"), item("b"), item("c")])
@@ -559,12 +556,14 @@ mod tests {
         let communities = detect_communities(&edges, 1.0, 19);
         // A fully connected graph should produce at most 2 communities
         // (Leiden may split depending on resolution and iterations).
-        assert!(communities.len() <= 2, "expected at most 2 communities, got {}", communities.len());
+        assert!(
+            communities.len() <= 2,
+            "expected at most 2 communities, got {}",
+            communities.len()
+        );
         // All members across communities should cover all 5 nodes.
-        let total_members: std::collections::HashSet<&String> = communities
-            .iter()
-            .flat_map(|c| c.members.iter())
-            .collect();
+        let total_members: std::collections::HashSet<&String> =
+            communities.iter().flat_map(|c| c.members.iter()).collect();
         assert_eq!(total_members.len(), 5);
     }
 

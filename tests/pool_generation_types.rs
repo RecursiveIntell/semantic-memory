@@ -1,8 +1,7 @@
 use chrono::Utc;
 use semantic_memory::{
-    build_embedding_snapshot, DerivedCandidateReceiptV1, EmbeddingSnapshotRow,
-    ProveKvPoolArtifactBuildReceiptV1, ProveKvPoolArtifactStatusV1, ProveKvPoolGenerationStatus,
-    ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1,
+    DerivedCandidateReceiptV1, ProveKvPoolArtifactBuildReceiptV1, ProveKvPoolArtifactStatusV1,
+    ProveKvPoolGenerationStatus, ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1,
 };
 
 #[test]

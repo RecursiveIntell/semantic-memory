@@ -981,6 +981,7 @@ impl MemoryStore {
 
     /// List the distinct namespaces that currently contain facts.
     pub async fn list_fact_namespaces(&self) -> Result<Vec<String>, MemoryError> {
-        self.with_read_conn(move |conn| list_fact_namespaces(conn)).await
+        self.with_read_conn(move |conn| list_fact_namespaces(conn))
+            .await
     }
 }

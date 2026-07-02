@@ -129,7 +129,9 @@ fn sentence_split(text: &str, config: &ChunkingConfig) -> Vec<String> {
     overlapped.push(result[0].clone());
 
     for chunk in result.iter().skip(1) {
-        let prev = overlapped.last().unwrap();
+        let Some(prev) = overlapped.last() else {
+            continue;
+        };
         let overlap_start = find_sentence_overlap_start(prev, config.overlap);
         let mut combined = String::new();
         if overlap_start < prev.len() {
@@ -156,8 +158,9 @@ fn split_into_sentences(text: &str) -> Vec<String> {
         current.push(ch);
 
         // Detect sentence-ending punctuation followed by whitespace or EOF
-        if (ch == '.' || ch == '!' || ch == '?') && (i + 1 >= chars.len() || chars[i + 1].is_whitespace() || chars[i + 1] == '\n') {
-
+        if (ch == '.' || ch == '!' || ch == '?')
+            && (i + 1 >= chars.len() || chars[i + 1].is_whitespace() || chars[i + 1] == '\n')
+        {
             // Don't split on decimals like "3.14" (digit before and after)
             if ch == '.' && i > 0 && chars[i - 1].is_ascii_digit() {
                 i += 1;
@@ -368,7 +371,10 @@ fn detect_code_block_boundaries(text: &str) -> Vec<CodeBlockBoundary> {
     // Remove overlapping boundaries (prefer the earlier one)
     let mut result = Vec::new();
     for b in boundaries {
-        if result.last().map_or(true, |last: &CodeBlockBoundary| last.end <= b.start) {
+        if result
+            .last()
+            .map_or(true, |last: &CodeBlockBoundary| last.end <= b.start)
+        {
             result.push(b);
         }
     }
@@ -1084,7 +1090,8 @@ mod tests {
     fn test_plain_unicode_safe() {
         let config = default_config();
         let counter = token_counter();
-        let text = "日本語のテストです。これは非常に長いテキストで、チャンク分割が必要です。".repeat(20);
+        let text =
+            "日本語のテストです。これは非常に長いテキストで、チャンク分割が必要です。".repeat(20);
         let chunks = chunk_text(&text, &config, &counter);
         // Should not panic and should produce valid UTF-8 chunks
         for chunk in &chunks {
@@ -1124,7 +1131,11 @@ mod tests {
         let counter = token_counter();
         let text = "First sentence here. Second one follows. Third one now. Fourth.";
         let chunks = chunk_text(text, &config, &counter);
-        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
         // Each chunk should not exceed max_size
         for chunk in &chunks {
             assert!(
@@ -1318,7 +1329,11 @@ fn bar() {
         let text = "# Title\n\nSome content here.\n\n## Section A\n\nContent for A.\n\n## Section B\n\nContent for B.";
         let chunks = chunk_text(text, &config, &counter);
         // Should produce multiple chunks based on headers
-        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
     }
 
     #[test]
@@ -1411,7 +1426,11 @@ fn bar() {
         ] {
             let config = make_config(strategy);
             let chunks = chunk_text("", &config, &counter);
-            assert!(chunks.is_empty(), "{:?} should return empty for empty input", strategy);
+            assert!(
+                chunks.is_empty(),
+                "{:?} should return empty for empty input",
+                strategy
+            );
         }
     }
 

@@ -66,20 +66,18 @@ impl GraphView for StoreGraphView {
         let from = from.to_string();
         let to = to.to_string();
         let min_similarity = self.inner.config.search.min_similarity.max(0.0) as f32;
-        self.inner
-            .pool
-            .with_read_conn(|conn| {
-                shortest_path(
-                    conn,
-                    &from,
-                    &to,
-                    max_depth,
-                    min_similarity,
-                    DEFAULT_MAX_GRAPH_NODES,
-                    DEFAULT_MAX_EDGES_PER_NODE,
-                    DEFAULT_GRAPH_TRAVERSAL_DEADLINE_MS,
-                )
-            })
+        self.inner.pool.with_read_conn(|conn| {
+            shortest_path(
+                conn,
+                &from,
+                &to,
+                max_depth,
+                min_similarity,
+                DEFAULT_MAX_GRAPH_NODES,
+                DEFAULT_MAX_EDGES_PER_NODE,
+                DEFAULT_GRAPH_TRAVERSAL_DEADLINE_MS,
+            )
+        })
     }
 }
 

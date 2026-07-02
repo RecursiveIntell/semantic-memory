@@ -1,5 +1,5 @@
-use semantic_memory::{ChunkingConfig, ChunkingStrategy};
 use semantic_memory::EstimateTokenCounter;
+use semantic_memory::{ChunkingConfig, ChunkingStrategy};
 
 fn default_config() -> ChunkingConfig {
     ChunkingConfig::default()

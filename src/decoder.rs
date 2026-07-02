@@ -73,10 +73,7 @@ pub enum CorrectionOperation {
     /// Mark `item_id` as superseded for `reason`.
     MarkSuperseded { item_id: String, reason: String },
     /// Mark `item_id` as contradicted by `by_item_id`.
-    MarkContradicted {
-        item_id: String,
-        by_item_id: String,
-    },
+    MarkContradicted { item_id: String, by_item_id: String },
     /// Add a graph edge `from` → `to` of `edge_type`.
     AddGraphEdge {
         from: String,
@@ -163,8 +160,7 @@ pub fn detect_syndromes(
     contradictions: &[(String, String)],
 ) -> Vec<Syndrome> {
     let mut syndromes = Vec::new();
-    let result_ids: std::collections::HashSet<&String> =
-        results.iter().map(|(id, _)| id).collect();
+    let result_ids: std::collections::HashSet<&String> = results.iter().map(|(id, _)| id).collect();
 
     // Direct contradictions.
     for (idx, (a, b)) in contradictions.iter().enumerate() {
@@ -192,9 +188,7 @@ pub fn detect_syndromes(
                 id: format!("syn-missing-{}-{}", id_a, id_b),
                 severity: SyndromeSeverity::Warning,
                 items: vec![id_a.clone(), id_b.clone()],
-                description: format!(
-                    "Expected link between close-scoring items {id_a} and {id_b}"
-                ),
+                description: format!("Expected link between close-scoring items {id_a} and {id_b}"),
                 syndrome_type: SyndromeType::MissingLink,
             });
         }
@@ -209,9 +203,7 @@ pub fn detect_syndromes(
                     id: format!("syn-orphan-{id}"),
                     severity: SyndromeSeverity::Warning,
                     items: vec![id.clone()],
-                    description: format!(
-                        "Item {id} references {target} which is not present"
-                    ),
+                    description: format!("Item {id} references {target} which is not present"),
                     syndrome_type: SyndromeType::OrphanReference,
                 });
             }
@@ -243,10 +235,7 @@ pub fn detect_syndromes(
                     id: format!("syn-source-{id}"),
                     severity: SyndromeSeverity::Error,
                     items: vec![(**id).clone()],
-                    description: format!(
-                        "Item {id} appears with differing scores: {:?}",
-                        scores
-                    ),
+                    description: format!("Item {id} appears with differing scores: {:?}", scores),
                     syndrome_type: SyndromeType::SourceConflict,
                 });
             }
@@ -289,16 +278,17 @@ pub fn compute_correction(syndromes: &[Syndrome], max_cost: f64) -> Vec<Correcti
                 continue;
             }
             let confidence = 1.0 / (subset.len() as f64);
-            let operations = subset
-                .iter()
-                .flat_map(|s| s.items.iter())
-                .fold(Vec::new(), |mut acc, item| {
-                    acc.push(CorrectionOperation::FlagForReview {
-                        item_id: item.clone(),
-                        reason: "syndrome resolution".to_string(),
+            let operations =
+                subset
+                    .iter()
+                    .flat_map(|s| s.items.iter())
+                    .fold(Vec::new(), |mut acc, item| {
+                        acc.push(CorrectionOperation::FlagForReview {
+                            item_id: item.clone(),
+                            reason: "syndrome resolution".to_string(),
+                        });
+                        acc
                     });
-                    acc
-                });
             corrections.push(Correction {
                 id: format!("corr-{idx}"),
                 syndrome_ids: subset.iter().map(|s| s.id.clone()).collect(),
@@ -350,7 +340,11 @@ pub fn compute_correction(syndromes: &[Syndrome], max_cost: f64) -> Vec<Correcti
         }
     }
 
-    corrections.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap_or(std::cmp::Ordering::Equal));
+    corrections.sort_by(|a, b| {
+        a.cost
+            .partial_cmp(&b.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     corrections
 }
 
@@ -371,7 +365,9 @@ pub fn promote_to_hyperedges(
     }
     let mut by_source: HashMap<String, (Vec<String>, String)> = HashMap::new();
     for (from, to, edge_type) in edges {
-        let entry = by_source.entry(from.clone()).or_insert_with(|| (Vec::new(), edge_type.clone()));
+        let entry = by_source
+            .entry(from.clone())
+            .or_insert_with(|| (Vec::new(), edge_type.clone()));
         if !entry.0.contains(to) {
             entry.0.push(to.clone());
         }
@@ -428,9 +424,10 @@ pub fn refute_correction(
             .iter()
             .filter(|op| match op {
                 CorrectionOperation::MarkSuperseded { item_id, .. } => item_id != item,
-                CorrectionOperation::MarkContradicted { item_id, by_item_id } => {
-                    item_id != item && by_item_id != item
-                }
+                CorrectionOperation::MarkContradicted {
+                    item_id,
+                    by_item_id,
+                } => item_id != item && by_item_id != item,
                 CorrectionOperation::AddGraphEdge { from, to, .. } => from != item && to != item,
                 CorrectionOperation::QuarantineItem { item_id, .. } => item_id != item,
                 CorrectionOperation::FlagForReview { item_id, .. } => item_id != item,
@@ -473,10 +470,7 @@ impl ConflictGraph {
     /// Build a conflict graph from search results and syndromes.
     /// Each result item is a node. Each syndrome creates edges between
     /// the items it references.
-    pub fn from_syndromes(
-        results: &[(String, f64)],
-        syndromes: &[Syndrome],
-    ) -> Self {
+    pub fn from_syndromes(results: &[(String, f64)], syndromes: &[Syndrome]) -> Self {
         let mut nodes: HashMap<String, ConflictNode> = HashMap::new();
 
         // Initialize nodes from results.
@@ -518,8 +512,12 @@ impl ConflictGraph {
                         );
                     }
                     // Add bidirectional edges.
-                    nodes.get_mut(&items[i]).unwrap().neighbors.push(items[j].clone());
-                    nodes.get_mut(&items[j]).unwrap().neighbors.push(items[i].clone());
+                    if let Some(node) = nodes.get_mut(&items[i]) {
+                        node.neighbors.push(items[j].clone());
+                    }
+                    if let Some(node) = nodes.get_mut(&items[j]) {
+                        node.neighbors.push(items[i].clone());
+                    }
                 }
             }
         }
@@ -642,30 +640,31 @@ mod tests {
             .filter(|s| s.syndrome_type == SyndromeType::DirectContradiction)
             .collect();
         assert_eq!(direct.len(), 1);
-        assert_eq!(direct[0].items, vec!["item-a".to_string(), "item-b".to_string()]);
+        assert_eq!(
+            direct[0].items,
+            vec!["item-a".to_string(), "item-b".to_string()]
+        );
         assert_eq!(direct[0].severity, SyndromeSeverity::Error);
     }
 
     #[test]
     fn detects_missing_link() {
         // Two adjacent items with very close scores (diff < 0.1).
-        let results = vec![
-            ("x".to_string(), 0.80),
-            ("y".to_string(), 0.79),
-        ];
+        let results = vec![("x".to_string(), 0.80), ("y".to_string(), 0.79)];
         let syndromes = detect_syndromes(&results, &[]);
         let missing: Vec<&Syndrome> = syndromes
             .iter()
             .filter(|s| s.syndrome_type == SyndromeType::MissingLink)
             .collect();
-        assert!(!missing.is_empty(), "should detect a missing link between close-scoring items");
+        assert!(
+            !missing.is_empty(),
+            "should detect a missing link between close-scoring items"
+        );
     }
 
     #[test]
     fn detects_orphan_reference() {
-        let results = vec![
-            ("ref_missing".to_string(), 0.5),
-        ];
+        let results = vec![("ref_missing".to_string(), 0.5)];
         let syndromes = detect_syndromes(&results, &[]);
         let orphan: Vec<&Syndrome> = syndromes
             .iter()
@@ -689,10 +688,7 @@ mod tests {
 
     #[test]
     fn detects_source_conflict() {
-        let results = vec![
-            ("dup".to_string(), 0.5),
-            ("dup".to_string(), 0.9),
-        ];
+        let results = vec![("dup".to_string(), 0.5), ("dup".to_string(), 0.9)];
         let syndromes = detect_syndromes(&results, &[]);
         let source: Vec<&Syndrome> = syndromes
             .iter()
@@ -779,8 +775,14 @@ mod tests {
             id: "c1".to_string(),
             syndrome_ids: vec!["s1".to_string()],
             operations: vec![
-                CorrectionOperation::FlagForReview { item_id: "a".to_string(), reason: "r".to_string() },
-                CorrectionOperation::FlagForReview { item_id: "b".to_string(), reason: "r".to_string() },
+                CorrectionOperation::FlagForReview {
+                    item_id: "a".to_string(),
+                    reason: "r".to_string(),
+                },
+                CorrectionOperation::FlagForReview {
+                    item_id: "b".to_string(),
+                    reason: "r".to_string(),
+                },
             ],
             confidence: 0.9,
             cost: 1.0,
@@ -798,9 +800,10 @@ mod tests {
         let correction = Correction {
             id: "c1".to_string(),
             syndrome_ids: vec!["s1".to_string()],
-            operations: vec![
-                CorrectionOperation::FlagForReview { item_id: "only".to_string(), reason: "r".to_string() },
-            ],
+            operations: vec![CorrectionOperation::FlagForReview {
+                item_id: "only".to_string(),
+                reason: "r".to_string(),
+            }],
             confidence: 0.9,
             cost: 1.0,
         };
@@ -868,7 +871,11 @@ mod tests {
         let corrections = compute_correction(&syndromes, 10.0);
         // Confidence is 1.0/subset_size; verify it's in (0, 1].
         for c in &corrections {
-            assert!(c.confidence > 0.0 && c.confidence <= 1.0, "confidence {} out of range", c.confidence);
+            assert!(
+                c.confidence > 0.0 && c.confidence <= 1.0,
+                "confidence {} out of range",
+                c.confidence
+            );
         }
     }
 
@@ -884,17 +891,16 @@ mod tests {
         // No neighbors → all nodes keep initial confidence.
         for (id, node) in &graph.nodes {
             let conf = mp.node_confidences.get(id).unwrap();
-            assert!((conf - node.initial_confidence).abs() < 0.001,
-                "node {id} should keep initial confidence");
+            assert!(
+                (conf - node.initial_confidence).abs() < 0.001,
+                "node {id} should keep initial confidence"
+            );
         }
     }
 
     #[test]
     fn message_passing_pulls_contradicted_nodes_down() {
-        let results = vec![
-            ("clean".to_string(), 0.9),
-            ("conflicted".to_string(), 0.9),
-        ];
+        let results = vec![("clean".to_string(), 0.9), ("conflicted".to_string(), 0.9)];
         let syndromes = vec![Syndrome {
             id: "s1".to_string(),
             severity: SyndromeSeverity::Error,
@@ -909,15 +915,15 @@ mod tests {
         // Both are connected and both start at 0.9, so they pull each other
         // toward 0.9 * 0.7 + 0.9 * 0.3 = 0.9. But they'll converge at 0.9
         // since both start equal. Let's test with different initial values.
-        assert!(*clean_conf <= 0.91, "clean node should not increase beyond initial");
+        assert!(
+            *clean_conf <= 0.91,
+            "clean node should not increase beyond initial"
+        );
     }
 
     #[test]
     fn message_passing_unequal_initial_beliefs_converge() {
-        let results = vec![
-            ("high".to_string(), 0.95),
-            ("low".to_string(), 0.30),
-        ];
+        let results = vec![("high".to_string(), 0.95), ("low".to_string(), 0.30)];
         let syndromes = vec![Syndrome {
             id: "s1".to_string(),
             severity: SyndromeSeverity::Error,
@@ -938,10 +944,7 @@ mod tests {
 
     #[test]
     fn message_passing_max_iterations_stops_without_convergence() {
-        let results = vec![
-            ("a".to_string(), 0.99),
-            ("b".to_string(), 0.01),
-        ];
+        let results = vec![("a".to_string(), 0.99), ("b".to_string(), 0.01)];
         let syndromes = vec![Syndrome {
             id: "s1".to_string(),
             severity: SyndromeSeverity::Error,
@@ -954,13 +957,18 @@ mod tests {
         // a starts at 0.99, b at 0.01, they pull toward each other strongly.
         let mp = pass_messages(&graph, 1, 0.0001);
         // After 1 iteration: a → 0.7*0.99 + 0.3*0.01 = 0.696, delta = 0.294 > 0.0001
-        assert!(!mp.converged, "should not converge in 1 iteration with large initial delta");
+        assert!(
+            !mp.converged,
+            "should not converge in 1 iteration with large initial delta"
+        );
         assert_eq!(mp.iterations, 1);
     }
 
     #[test]
     fn message_passing_empty_graph() {
-        let graph = ConflictGraph { nodes: HashMap::new() };
+        let graph = ConflictGraph {
+            nodes: HashMap::new(),
+        };
         let mp = pass_messages(&graph, 10, 0.001);
         assert!(mp.converged, "empty graph should converge immediately");
         assert_eq!(mp.iterations, 1);
@@ -991,9 +999,22 @@ mod tests {
         let graph = ConflictGraph::from_syndromes(&results, &syndromes);
         // 'a' from results, 'b' added from syndrome.
         assert_eq!(graph.nodes.len(), 2);
-        assert!(graph.nodes.contains_key("b"), "syndrome item should be added as node");
+        assert!(
+            graph.nodes.contains_key("b"),
+            "syndrome item should be added as node"
+        );
         // Both should be neighbors.
-        assert!(graph.nodes.get("a").unwrap().neighbors.contains(&"b".to_string()));
-        assert!(graph.nodes.get("b").unwrap().neighbors.contains(&"a".to_string()));
+        assert!(graph
+            .nodes
+            .get("a")
+            .unwrap()
+            .neighbors
+            .contains(&"b".to_string()));
+        assert!(graph
+            .nodes
+            .get("b")
+            .unwrap()
+            .neighbors
+            .contains(&"a".to_string()));
     }
 }

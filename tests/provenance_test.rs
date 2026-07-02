@@ -16,9 +16,9 @@
 #![allow(clippy::expect_used)]
 
 use semantic_memory::provenance::{
-    ConfidenceSemiring, ConfidenceValue, ProvenanceAnnotation, ProvenanceItemType,
-    ProvenanceOperation, ProvenanceSemiring, ProbabilitySemiring, TropicalSemiring,
-    BooleanSemiring,
+    BooleanSemiring, ConfidenceSemiring, ConfidenceValue, ProbabilitySemiring,
+    ProvenanceAnnotation, ProvenanceItemType, ProvenanceOperation, ProvenanceSemiring,
+    TropicalSemiring,
 };
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig};
 use tempfile::TempDir;
@@ -64,13 +64,10 @@ fn boolean_semiring_properties_integration() {
         assert_eq!(BooleanSemiring::add(&a, &BooleanSemiring::zero()), a);
         assert_eq!(BooleanSemiring::mul(&a, &BooleanSemiring::one()), a);
         // annihilation
-        assert_eq!(BooleanSemiring::mul(&a, &BooleanSemiring::zero()), false);
+        assert!(!BooleanSemiring::mul(&a, &BooleanSemiring::zero()));
         for &b in &vals {
             // commutativity of add
-            assert_eq!(
-                BooleanSemiring::add(&a, &b),
-                BooleanSemiring::add(&b, &a)
-            );
+            assert_eq!(BooleanSemiring::add(&a, &b), BooleanSemiring::add(&b, &a));
             for &c in &vals {
                 // associativity of add
                 assert_eq!(
@@ -407,7 +404,10 @@ async fn tropical_provenance_combine_uses_min() {
         .await
         .expect("get_provenance")
         .expect("provenance should exist");
-    assert!(approx_eq(value, 3.0), "tropical add = min, expected 3.0, got {value}");
+    assert!(
+        approx_eq(value, 3.0),
+        "tropical add = min, expected 3.0, got {value}"
+    );
     assert_eq!(chain, vec!["path:a".to_string(), "path:b".to_string()]);
 }
 
@@ -515,21 +515,31 @@ async fn confidence_provenance_combine_uses_max_confidence_and_sums_support() {
 async fn provenance_can_reference_an_episode() {
     let (store, _dir) = test_store();
     let doc_id = store
-        .ingest_document("prov-doc", "episode-linked provenance content", "general", None, None)
+        .ingest_document(
+            "prov-doc",
+            "episode-linked provenance content",
+            "general",
+            None,
+            None,
+        )
         .await
         .expect("ingest_document");
 
     let ep_id = store
-        .create_episode("ep-prov-1", &doc_id, &semantic_memory::EpisodeMeta {
-            cause_ids: vec![],
-            effect_type: "linked_effect".to_string(),
-            outcome: semantic_memory::EpisodeOutcome::Pending,
-            confidence: 0.5,
-            verification_status: semantic_memory::VerificationStatus::Unverified,
-            experiment_id: None,
-            valid_time: None,
-            fact_digest: None,
-        })
+        .create_episode(
+            "ep-prov-1",
+            &doc_id,
+            &semantic_memory::EpisodeMeta {
+                cause_ids: vec![],
+                effect_type: "linked_effect".to_string(),
+                outcome: semantic_memory::EpisodeOutcome::Pending,
+                confidence: 0.5,
+                verification_status: semantic_memory::VerificationStatus::Unverified,
+                experiment_id: None,
+                valid_time: None,
+                fact_digest: None,
+            },
+        )
         .await
         .expect("create_episode");
 
@@ -561,21 +571,31 @@ async fn provenance_can_reference_an_episode() {
 async fn combine_preserves_existing_episode_id_when_caller_omits_it() {
     let (store, _dir) = test_store();
     let doc_id = store
-        .ingest_document("sup-doc", "supersession propagation content", "general", None, None)
+        .ingest_document(
+            "sup-doc",
+            "supersession propagation content",
+            "general",
+            None,
+            None,
+        )
         .await
         .expect("ingest_document");
 
     let ep_id = store
-        .create_episode("ep-sup-1", &doc_id, &semantic_memory::EpisodeMeta {
-            cause_ids: vec![],
-            effect_type: "sup_effect".to_string(),
-            outcome: semantic_memory::EpisodeOutcome::Pending,
-            confidence: 0.5,
-            verification_status: semantic_memory::VerificationStatus::Unverified,
-            experiment_id: None,
-            valid_time: None,
-            fact_digest: None,
-        })
+        .create_episode(
+            "ep-sup-1",
+            &doc_id,
+            &semantic_memory::EpisodeMeta {
+                cause_ids: vec![],
+                effect_type: "sup_effect".to_string(),
+                outcome: semantic_memory::EpisodeOutcome::Pending,
+                confidence: 0.5,
+                verification_status: semantic_memory::VerificationStatus::Unverified,
+                experiment_id: None,
+                valid_time: None,
+                fact_digest: None,
+            },
+        )
         .await
         .expect("create_episode");
 
@@ -706,11 +726,21 @@ async fn search_with_provenance_annotates_supported_and_unsupported() {
 
     // Two facts with distinguishable content
     let supported_id = store
-        .add_fact("general", "the quick brown fox jumps over the lazy dog", None, None)
+        .add_fact(
+            "general",
+            "the quick brown fox jumps over the lazy dog",
+            None,
+            None,
+        )
         .await
         .expect("add_fact supported");
     let _unsupported_id = store
-        .add_fact("general", "a completely unrelated fact about rust memory model", None, None)
+        .add_fact(
+            "general",
+            "a completely unrelated fact about rust memory model",
+            None,
+            None,
+        )
         .await
         .expect("add_fact unsupported");
 
@@ -727,12 +757,7 @@ async fn search_with_provenance_annotates_supported_and_unsupported() {
         .expect("set_provenance");
 
     let annotated = store
-        .search_with_provenance::<BooleanSemiring>(
-            "quick brown fox",
-            Some(10),
-            None,
-            None,
-        )
+        .search_with_provenance::<BooleanSemiring>("quick brown fox", Some(10), None, None)
         .await
         .expect("search_with_provenance");
 
@@ -787,7 +812,10 @@ async fn every_provenance_operation_emits_a_receipt() {
         )
         .await
         .expect("set_provenance");
-    assert!(!set_receipt.provenance_id.is_empty(), "set receipt needs an id");
+    assert!(
+        !set_receipt.provenance_id.is_empty(),
+        "set receipt needs an id"
+    );
     assert_eq!(set_receipt.operation, ProvenanceOperation::Set);
     assert_eq!(set_receipt.schema_version, "provenance.v1");
 
@@ -801,7 +829,10 @@ async fn every_provenance_operation_emits_a_receipt() {
         )
         .await
         .expect("combine_provenance");
-    assert!(!combine_receipt.provenance_id.is_empty(), "combine receipt needs an id");
+    assert!(
+        !combine_receipt.provenance_id.is_empty(),
+        "combine receipt needs an id"
+    );
     assert_eq!(combine_receipt.operation, ProvenanceOperation::Combine);
     assert_ne!(
         set_receipt.provenance_id, combine_receipt.provenance_id,

@@ -640,9 +640,7 @@ impl BgeM3Embedder {
 impl MultiFunctionEmbedder for BgeM3Embedder {
     fn embed_multi<'a>(&'a self, text: &'a str) -> MultiEmbedFuture<'a> {
         Box::pin(async move {
-            let mut results = self
-                .fetch_dense(&[text.to_string()])
-                .await?;
+            let mut results = self.fetch_dense(&[text.to_string()]).await?;
             let dense = results.pop().ok_or_else(|| {
                 MemoryError::Other("Ollama returned empty embeddings for single text".to_string())
             })?;
@@ -728,17 +726,17 @@ pub struct CandleEmbedder {
 impl CandleEmbedder {
     /// Create a new CandleEmbedder with the default model (nomic-embed-text-v1.5, 768d).
     pub fn try_new(config: &EmbeddingConfig) -> Result<Self, MemoryError> {
-        Self::try_new_with_model(
-            "nomic-ai/nomic-embed-text-v1.5",
-            config,
-        )
+        Self::try_new_with_model("nomic-ai/nomic-embed-text-v1.5", config)
     }
 
     /// Create a CandleEmbedder with a specific HuggingFace model ID.
     ///
     /// The model must be a NomicBert architecture (nomic-embed-text-v1.5).
     /// For other architectures (BERT, MiniLM), use a different model loader.
-    pub fn try_new_with_model(model_id: &str, config: &EmbeddingConfig) -> Result<Self, MemoryError> {
+    pub fn try_new_with_model(
+        model_id: &str,
+        config: &EmbeddingConfig,
+    ) -> Result<Self, MemoryError> {
         let device = candle_core::Device::Cpu;
         let dimensions = config.dimensions;
         let max_seq_len = 8192; // nomic-embed-text supports up to 8192 tokens
@@ -766,7 +764,10 @@ impl CandleEmbedder {
 
         // Load tokenizer.
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
-            MemoryError::EmbedderUnavailable(format!("failed to load tokenizer from {}: {e}", tokenizer_path.display()))
+            MemoryError::EmbedderUnavailable(format!(
+                "failed to load tokenizer from {}: {e}",
+                tokenizer_path.display()
+            ))
         })?;
 
         // Load model config.
@@ -791,17 +792,23 @@ impl CandleEmbedder {
         // Read the safetensors file into memory and load from buffer.
         // This avoids the unsafe mmap API (workspace lints deny unsafe_code).
         let weights_bytes = std::fs::read(&weights_path).map_err(|e| {
-            MemoryError::EmbedderUnavailable(format!("failed to read weights file {}: {e}", weights_path.display()))
+            MemoryError::EmbedderUnavailable(format!(
+                "failed to read weights file {}: {e}",
+                weights_path.display()
+            ))
         })?;
         let vb = candle_nn::VarBuilder::from_buffered_safetensors(weights_bytes, dtype, &device)
             .map_err(|e| {
                 MemoryError::EmbedderUnavailable(format!("failed to load model weights: {e}"))
             })?;
 
-        let model = candle_transformers::models::nomic_bert::NomicBertModel::load(vb, &model_config)
-            .map_err(|e| {
-                MemoryError::EmbedderUnavailable(format!("failed to build NomicBert model: {e}"))
-            })?;
+        let model =
+            candle_transformers::models::nomic_bert::NomicBertModel::load(vb, &model_config)
+                .map_err(|e| {
+                    MemoryError::EmbedderUnavailable(format!(
+                        "failed to build NomicBert model: {e}"
+                    ))
+                })?;
 
         Ok(Self {
             model,
@@ -814,9 +821,13 @@ impl CandleEmbedder {
     }
 
     /// Tokenize and embed a batch of texts, returning f32 vectors.
-    fn embed_batch_sync(&self, texts: &[String], _query_mode: bool) -> Result<Vec<Vec<f32>>, MemoryError> {
+    fn embed_batch_sync(
+        &self,
+        texts: &[String],
+        _query_mode: bool,
+    ) -> Result<Vec<Vec<f32>>, MemoryError> {
         use candle_core::Tensor;
-        use candle_transformers::models::nomic_bert::{mean_pooling, l2_normalize};
+        use candle_transformers::models::nomic_bert::{l2_normalize, mean_pooling};
 
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
@@ -830,9 +841,10 @@ impl CandleEmbedder {
         for text in texts {
             let prefixed: &str = text;
 
-            let encoding = self.tokenizer.encode(prefixed, true).map_err(|e| {
-                MemoryError::Other(format!("tokenizer error: {e}"))
-            })?;
+            let encoding = self
+                .tokenizer
+                .encode(prefixed, true)
+                .map_err(|e| MemoryError::Other(format!("tokenizer error: {e}")))?;
 
             let input_ids = encoding.get_ids();
             let attention_mask = encoding.get_attention_mask();
@@ -842,10 +854,8 @@ impl CandleEmbedder {
             let input_ids = &input_ids[..seq_len];
             let attention_mask = &attention_mask[..seq_len];
 
-            let input_ids_tensor = Tensor::new(input_ids, &self.device)?
-                .unsqueeze(0)?; // (1, seq_len)
-            let attention_mask_tensor = Tensor::new(attention_mask, &self.device)?
-                .unsqueeze(0)?; // (1, seq_len)
+            let input_ids_tensor = Tensor::new(input_ids, &self.device)?.unsqueeze(0)?; // (1, seq_len)
+            let attention_mask_tensor = Tensor::new(attention_mask, &self.device)?.unsqueeze(0)?; // (1, seq_len)
 
             // Run forward pass — NomicBertModel doesn't need token_type_ids
             // (it uses rotary embeddings, and type_vocab_size may be 0).
@@ -862,9 +872,10 @@ impl CandleEmbedder {
 
             // Extract the single embedding (batch size 1).
             let embedding_vec = normalized.to_vec2::<f32>()?;
-            let embedding = embedding_vec.into_iter().next().ok_or_else(|| {
-                MemoryError::Other("model returned empty embedding".to_string())
-            })?;
+            let embedding = embedding_vec
+                .into_iter()
+                .next()
+                .ok_or_else(|| MemoryError::Other("model returned empty embedding".to_string()))?;
 
             if embedding.len() != self.dimensions {
                 return Err(MemoryError::DimensionMismatch {
@@ -1230,7 +1241,11 @@ mod bge_m3_tests {
 
         let texts = vec!["hello".to_string(), "world".to_string(), "test".to_string()];
         let results = embedder.embed_batch_multi(texts).await;
-        assert!(results.is_ok(), "Ollama batch call failed: {:?}", results.err());
+        assert!(
+            results.is_ok(),
+            "Ollama batch call failed: {:?}",
+            results.err()
+        );
         let embeddings = results.unwrap();
         assert_eq!(embeddings.len(), 3);
         for mfe in &embeddings {

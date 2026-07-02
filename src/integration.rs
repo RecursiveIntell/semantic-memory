@@ -101,7 +101,10 @@ pub fn corrections_to_subtraction_candidates(
                         reason: reason.clone(),
                     });
                 }
-                crate::decoder::CorrectionOperation::MarkContradicted { item_id, by_item_id: _ } => {
+                crate::decoder::CorrectionOperation::MarkContradicted {
+                    item_id,
+                    by_item_id: _,
+                } => {
                     candidates.push(DecoderSubtractionCandidate {
                         item_id: item_id.clone(),
                         correction_id: correction.id.clone(),
@@ -156,10 +159,7 @@ pub fn provenance_to_temporal_input(
     contradictors: &[crate::provenance::ConfidenceValue],
 ) -> ProvenanceTemporalInput {
     let is_superseded = confidence.confidence <= 0.0;
-    let contradiction_count = contradictors
-        .iter()
-        .filter(|c| c.confidence > 0.0)
-        .count();
+    let contradiction_count = contradictors.iter().filter(|c| c.confidence > 0.0).count();
 
     ProvenanceTemporalInput {
         support_count: confidence.support_count as usize,
@@ -210,7 +210,10 @@ pub fn should_trigger_recompression(
         if had_high_importance_subtracted {
             "high-importance item subtracted — recompression needed".to_string()
         } else {
-            format!("{:.1}% of items subtracted — recompression needed", ratio_subtracted * 100.0)
+            format!(
+                "{:.1}% of items subtracted — recompression needed",
+                ratio_subtracted * 100.0
+            )
         }
     } else {
         "subtraction below threshold — no recompression needed".to_string()
@@ -263,9 +266,7 @@ where
                 .anchor_ids
                 .iter()
                 .filter_map(|aid| {
-                    provenance_lookup(aid).map(|cv| {
-                        (aid.clone(), cv.confidence, cv.support_count)
-                    })
+                    provenance_lookup(aid).map(|cv| (aid.clone(), cv.confidence, cv.support_count))
                 })
                 .collect();
 
@@ -295,8 +296,7 @@ where
 ///
 /// This is the "autonomous memory manager" — run periodically to keep
 /// the knowledge base healthy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemoryLifecycleReport {
     /// Number of items re-evaluated for temporal weight.
     pub temporal_recomputed: usize,
@@ -339,7 +339,12 @@ pub fn demon_extract(
     episode_ids: &[String],
 ) -> DemonExtract {
     let prov = provenance.map(|pv| {
-        ("fact".to_string(), "Confidence".to_string(), pv.confidence, pv.support_count)
+        (
+            "fact".to_string(),
+            "Confidence".to_string(),
+            pv.confidence,
+            pv.support_count,
+        )
     });
     let summary = format!(
         "Demon extract for {}: {} provenance, {} neighbors, {} contradictions, {} episodes",
@@ -375,23 +380,39 @@ pub struct ConfidenceQuantizationRecommendation {
 pub fn confidence_aware_quantization(
     mp_result: &crate::decoder::MessagePassingResult,
 ) -> Vec<ConfidenceQuantizationRecommendation> {
-    mp_result.node_confidences.iter().map(|(item_id, confidence)| {
-        let (level, reason) = if *confidence >= 0.8 {
-            ("F32", "high confidence — verified knowledge, full precision")
-        } else if *confidence >= 0.5 {
-            ("SQ8", "medium confidence — stable knowledge, 4x compression")
-        } else if *confidence >= 0.2 {
-            ("SQ4", "low confidence — uncertain knowledge, aggressive compression")
-        } else {
-            ("SQ4Marked", "very low confidence — contradicted, maximum compression")
-        };
-        ConfidenceQuantizationRecommendation {
-            item_id: item_id.clone(),
-            refined_confidence: *confidence,
-            recommended_level: level.to_string(),
-            reason: reason.to_string(),
-        }
-    }).collect()
+    mp_result
+        .node_confidences
+        .iter()
+        .map(|(item_id, confidence)| {
+            let (level, reason) = if *confidence >= 0.8 {
+                (
+                    "F32",
+                    "high confidence — verified knowledge, full precision",
+                )
+            } else if *confidence >= 0.5 {
+                (
+                    "SQ8",
+                    "medium confidence — stable knowledge, 4x compression",
+                )
+            } else if *confidence >= 0.2 {
+                (
+                    "SQ4",
+                    "low confidence — uncertain knowledge, aggressive compression",
+                )
+            } else {
+                (
+                    "SQ4Marked",
+                    "very low confidence — contradicted, maximum compression",
+                )
+            };
+            ConfidenceQuantizationRecommendation {
+                item_id: item_id.clone(),
+                refined_confidence: *confidence,
+                recommended_level: level.to_string(),
+                reason: reason.to_string(),
+            }
+        })
+        .collect()
 }
 
 // ─── Wire 8: System health → routing (noise-aware self-regulation) ─────
@@ -417,9 +438,7 @@ pub struct RoutingAdjustments {
 }
 
 /// Compute system health from item metadata.
-pub fn compute_system_health(
-    items: &[(String, bool, bool, bool)],
-) -> SystemHealth {
+pub fn compute_system_health(items: &[(String, bool, bool, bool)]) -> SystemHealth {
     let structured = items.iter().filter(|(_, p, r, e)| *p || *r || *e).count();
     let unstructured = items.len() - structured;
     let health_ratio = if items.is_empty() {
@@ -435,7 +454,10 @@ pub fn compute_system_health(
             tighten_vector: true,
             force_decoder: true,
             boost_structured: true,
-            summary: format!("System noisy: {:.0}% structured — tightening", health_ratio * 100.0),
+            summary: format!(
+                "System noisy: {:.0}% structured — tightening",
+                health_ratio * 100.0
+            ),
         }
     } else {
         RoutingAdjustments {
@@ -443,7 +465,10 @@ pub fn compute_system_health(
             tighten_vector: false,
             force_decoder: false,
             boost_structured: false,
-            summary: format!("System healthy: {:.0}% structured — relaxed", health_ratio * 100.0),
+            summary: format!(
+                "System healthy: {:.0}% structured — relaxed",
+                health_ratio * 100.0
+            ),
         }
     };
 
@@ -507,22 +532,25 @@ pub struct EntropySearchBoost {
 }
 
 /// Compute IDS-inspired search priority for items.
-pub fn ids_search_boost(
-    items: &[(String, usize, usize, f64, usize)],
-) -> Vec<EntropySearchBoost> {
-    items.iter().map(|(item_id, graph_degree, episode_count, confidence, support_count)| {
-        let entropy = (*graph_degree + *episode_count) as f64;
-        let structuring = confidence * (1.0 + *support_count as f64);
-        let priority = entropy / (1.0 + structuring);
-        EntropySearchBoost {
-            item_id: item_id.clone(),
-            graph_degree: *graph_degree,
-            causal_degree: *episode_count,
-            entropy,
-            structuring,
-            priority,
-        }
-    }).collect()
+pub fn ids_search_boost(items: &[(String, usize, usize, f64, usize)]) -> Vec<EntropySearchBoost> {
+    items
+        .iter()
+        .map(
+            |(item_id, graph_degree, episode_count, confidence, support_count)| {
+                let entropy = (*graph_degree + *episode_count) as f64;
+                let structuring = confidence * (1.0 + *support_count as f64);
+                let priority = entropy / (1.0 + structuring);
+                EntropySearchBoost {
+                    item_id: item_id.clone(),
+                    graph_degree: *graph_degree,
+                    causal_degree: *episode_count,
+                    entropy,
+                    structuring,
+                    priority,
+                }
+            },
+        )
+        .collect()
 }
 
 // ─── Wire 11: Temporal well boost in discord scoring ───────────────────
@@ -533,10 +561,17 @@ pub fn temporal_well_discord_boost(
     well_items: &[String],
 ) -> Vec<(crate::discord::DiscordResult, f64)> {
     let well_set: std::collections::HashSet<&String> = well_items.iter().collect();
-    discord_results.iter().map(|result| {
-        let boost = if well_set.contains(&result.item_id) { 1.5 } else { 1.0 };
-        (result.clone(), result.discord_score * boost)
-    }).collect()
+    discord_results
+        .iter()
+        .map(|result| {
+            let boost = if well_set.contains(&result.item_id) {
+                1.5
+            } else {
+                1.0
+            };
+            (result.clone(), result.discord_score * boost)
+        })
+        .collect()
 }
 
 // ─── Wire 12: Episode-aware decoder syndromes ───────────────────────────
@@ -558,24 +593,27 @@ pub fn episode_aware_syndromes<F>(
 where
     F: Fn(&str) -> Vec<String>,
 {
-    syndromes.iter().filter_map(|s| {
-        if s.items.len() >= 2 {
-            let ep_a = episode_lookup(&s.items[0]);
-            let ep_b = episode_lookup(&s.items[1]);
-            let causal_chain = format!(
-                "Contradiction: '{}' (episodes {:?}) vs '{}' (episodes {:?})",
-                s.items[0], ep_a, s.items[1], ep_b
-            );
-            Some(EpisodeAwareSyndrome {
-                syndrome: s.clone(),
-                episode_a: ep_a,
-                episode_b: ep_b,
-                causal_chain,
-            })
-        } else {
-            None
-        }
-    }).collect()
+    syndromes
+        .iter()
+        .filter_map(|s| {
+            if s.items.len() >= 2 {
+                let ep_a = episode_lookup(&s.items[0]);
+                let ep_b = episode_lookup(&s.items[1]);
+                let causal_chain = format!(
+                    "Contradiction: '{}' (episodes {:?}) vs '{}' (episodes {:?})",
+                    s.items[0], ep_a, s.items[1], ep_b
+                );
+                Some(EpisodeAwareSyndrome {
+                    syndrome: s.clone(),
+                    episode_a: ep_a,
+                    episode_b: ep_b,
+                    causal_chain,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 // ─── Wire 13: Temporal stability in compression governor ───────────────
@@ -589,7 +627,10 @@ pub fn temporal_stability_importance(
     config: &crate::compression_governor::ImportanceConfig,
 ) -> f64 {
     let base = crate::compression_governor::compute_importance(
-        access_frequency, entropy, structuring_score, config,
+        access_frequency,
+        entropy,
+        structuring_score,
+        config,
     );
     if in_temporal_well {
         let well_boost = config.structuring_weight * structuring_score;
@@ -607,16 +648,21 @@ pub fn erasure_cost_routing_boost(
     erasure_costs: &[ErasureCost],
 ) -> Vec<(String, f64)> {
     let cost_map: std::collections::HashMap<&String, f64> = erasure_costs
-        .iter().map(|ec| (&ec.item_id, ec.cost)).collect();
-    results.iter().map(|(id, score)| {
-        let boost = cost_map.get(id).copied().unwrap_or(1.0);
-        let boosted = if boost > 1.0 {
-            score * (1.0 + (boost - 1.0) * 0.1)
-        } else {
-            *score
-        };
-        (id.clone(), boosted)
-    }).collect()
+        .iter()
+        .map(|ec| (&ec.item_id, ec.cost))
+        .collect();
+    results
+        .iter()
+        .map(|(id, score)| {
+            let boost = cost_map.get(id).copied().unwrap_or(1.0);
+            let boosted = if boost > 1.0 {
+                score * (1.0 + (boost - 1.0) * 0.1)
+            } else {
+                *score
+            };
+            (id.clone(), boosted)
+        })
+        .collect()
 }
 
 // ─── Wire 15: Autonomous knowledge revision pipeline ──────────────────
@@ -655,23 +701,38 @@ pub fn autonomous_knowledge_revision(
         let provenance = provenance_lookup(&candidate.item_id);
         let neighbors = graph_neighbors_lookup(&candidate.item_id);
         let episodes = episode_lookup(&candidate.item_id);
-        let contradicted_by: Vec<String> = contradictions.iter().filter_map(|(a, b)| {
-            if a == &candidate.item_id { Some(b.clone()) }
-            else if b == &candidate.item_id { Some(a.clone()) }
-            else { None }
-        }).collect();
+        let contradicted_by: Vec<String> = contradictions
+            .iter()
+            .filter_map(|(a, b)| {
+                if a == &candidate.item_id {
+                    Some(b.clone())
+                } else if b == &candidate.item_id {
+                    Some(a.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let extract = demon_extract(
-            &candidate.item_id, provenance.as_ref(),
-            &neighbors, &contradicted_by, &episodes,
+            &candidate.item_id,
+            provenance.as_ref(),
+            &neighbors,
+            &contradicted_by,
+            &episodes,
         );
         demon_extracts.push(extract);
 
         let (confidence, support_count) = provenance
-            .map(|pv| (pv.confidence, pv.support_count)).unwrap_or((0.0, 0));
+            .map(|pv| (pv.confidence, pv.support_count))
+            .unwrap_or((0.0, 0));
         let cost = landauer_erasure_cost(
-            &candidate.item_id, confidence, support_count,
-            contradicted_by.len(), system_avg_structuring, 1.0,
+            &candidate.item_id,
+            confidence,
+            support_count,
+            contradicted_by.len(),
+            system_avg_structuring,
+            1.0,
         );
         if !cost.is_expensive {
             items_to_erase.push(candidate.item_id.clone());
@@ -718,9 +779,9 @@ pub fn topology_aware_gap_detection(
 ) -> Vec<KnowledgeGap> {
     let mut gaps = Vec::new();
     for void in voids {
-        let is_contradiction_gap = contradictions.iter().any(|(a, b)| {
-            void.nearby_items.contains(a) && void.nearby_items.contains(b)
-        });
+        let is_contradiction_gap = contradictions
+            .iter()
+            .any(|(a, b)| void.nearby_items.contains(a) && void.nearby_items.contains(b));
         let gap_type = if is_contradiction_gap {
             "ContradictionGap"
         } else {
@@ -754,7 +815,8 @@ pub fn community_aware_compression_pass(
     importance_scores: &[(String, f64)],
     contradictions: &[(String, String)],
 ) -> CommunityCompressionReport {
-    let community_contras = crate::community::community_contradiction_scan(communities, contradictions);
+    let community_contras =
+        crate::community::community_contradiction_scan(communities, contradictions);
     let decisions = crate::community::community_aware_compression(communities, importance_scores);
     CommunityCompressionReport {
         communities_scanned: communities.len(),
@@ -808,8 +870,7 @@ pub fn autonomous_subgraph_maintenance(
         receipts,
         summary: format!(
             "Subgraph maintenance: {} identified, {} pruned",
-            identified_count,
-            pruned_count
+            identified_count, pruned_count
         ),
     }
 }
@@ -842,10 +903,14 @@ pub fn multi_resolution_route(
     } else if profile.specificity < 0.3 {
         (config.candidate_dim, "reduced-dim: broad query".to_string())
     } else {
-        (config.candidate_dim, "standard: candidate-dim + exact rerank".to_string())
+        (
+            config.candidate_dim,
+            "standard: candidate-dim + exact rerank".to_string(),
+        )
     };
 
-    let estimated_recall = crate::matryoshka::estimate_recall_at_dim(candidate_dim, config.exact_dim);
+    let estimated_recall =
+        crate::matryoshka::estimate_recall_at_dim(candidate_dim, config.exact_dim);
 
     MultiResolutionRoutingDecision {
         base_decision: base,
@@ -862,10 +927,10 @@ pub fn multi_resolution_route(
 mod tests {
     use super::*;
     use crate::decoder::*;
+    use crate::discord::*;
+    use crate::provenance::*;
     use crate::routing::*;
     use crate::subtraction::*;
-    use crate::provenance::*;
-    use crate::discord::*;
 
     // ── Wire 1 tests ───────────────────────────────────────────────────
 
@@ -980,7 +1045,10 @@ mod tests {
             cost: 1.0,
         }];
         let candidates = corrections_to_subtraction_candidates(&corrections);
-        assert!(candidates.is_empty(), "FlagForReview should not trigger subtraction");
+        assert!(
+            candidates.is_empty(),
+            "FlagForReview should not trigger subtraction"
+        );
     }
 
     #[test]
@@ -1006,7 +1074,11 @@ mod tests {
             cost: 1.0,
         }];
         let candidates = corrections_to_subtraction_candidates(&corrections);
-        assert_eq!(candidates.len(), 2, "only MarkSuperseded + QuarantineItem, not FlagForReview");
+        assert_eq!(
+            candidates.len(),
+            2,
+            "only MarkSuperseded + QuarantineItem, not FlagForReview"
+        );
     }
 
     // ── Wire 3 tests ───────────────────────────────────────────────────
@@ -1040,7 +1112,10 @@ mod tests {
             ConfidenceValue::new(0.0, 0), // annihilated — doesn't count
         ];
         let input = provenance_to_temporal_input(&confidence, &contradictors);
-        assert_eq!(input.contradiction_count, 2, "only non-zero confidence contradictors count");
+        assert_eq!(
+            input.contradiction_count, 2,
+            "only non-zero confidence contradictors count"
+        );
     }
 
     // ── Wire 4 tests ───────────────────────────────────────────────────
@@ -1055,14 +1130,20 @@ mod tests {
     #[test]
     fn recompression_triggered_by_high_importance() {
         let result = should_trigger_recompression(1, 99, true);
-        assert!(result.triggered, "high-importance subtraction should trigger");
+        assert!(
+            result.triggered,
+            "high-importance subtraction should trigger"
+        );
         assert!(result.reason.contains("high-importance"));
     }
 
     #[test]
     fn recompression_not_triggered_below_threshold() {
         let result = should_trigger_recompression(1, 99, false);
-        assert!(!result.triggered, "1% with no high-importance should not trigger");
+        assert!(
+            !result.triggered,
+            "1% with no high-importance should not trigger"
+        );
         assert!(result.reason.contains("below threshold"));
     }
 
@@ -1082,12 +1163,10 @@ mod tests {
             anchor_ids: vec!["a1".to_string(), "a2".to_string()],
             relationship_types: vec!["semantic".to_string()],
         }];
-        let enriched = enrich_discord_with_provenance(&discord_results, |id| {
-            match id {
-                "a1" => Some(ConfidenceValue::new(0.9, 3)),
-                "a2" => Some(ConfidenceValue::new(0.7, 2)),
-                _ => None,
-            }
+        let enriched = enrich_discord_with_provenance(&discord_results, |id| match id {
+            "a1" => Some(ConfidenceValue::new(0.9, 3)),
+            "a2" => Some(ConfidenceValue::new(0.7, 2)),
+            _ => None,
         });
         assert_eq!(enriched.len(), 1);
         assert_eq!(enriched[0].anchor_provenance.len(), 2);
@@ -1103,11 +1182,9 @@ mod tests {
             anchor_ids: vec!["a1".to_string(), "unknown".to_string()],
             relationship_types: vec!["semantic".to_string()],
         }];
-        let enriched = enrich_discord_with_provenance(&discord_results, |id| {
-            match id {
-                "a1" => Some(ConfidenceValue::new(0.9, 3)),
-                _ => None,
-            }
+        let enriched = enrich_discord_with_provenance(&discord_results, |id| match id {
+            "a1" => Some(ConfidenceValue::new(0.9, 3)),
+            _ => None,
         });
         assert_eq!(enriched[0].anchor_provenance.len(), 1);
         assert!((enriched[0].avg_anchor_confidence - 0.9).abs() < 0.001);
@@ -1143,7 +1220,8 @@ mod tests {
     fn demon_extract_preserves_structure() {
         let prov = ConfidenceValue::new(0.85, 3);
         let extract = demon_extract(
-            "fact-42", Some(&prov),
+            "fact-42",
+            Some(&prov),
             &["n1".to_string(), "n2".to_string()],
             &["c1".to_string()],
             &["ep1".to_string()],
@@ -1171,8 +1249,12 @@ mod tests {
                 ("mid".to_string(), 0.6),
                 ("low".to_string(), 0.3),
                 ("bad".to_string(), 0.1),
-            ].into_iter().collect(),
-            iterations: 1, converged: true, elapsed_ms: 0,
+            ]
+            .into_iter()
+            .collect(),
+            iterations: 1,
+            converged: true,
+            elapsed_ms: 0,
         };
         let recs = confidence_aware_quantization(&mp);
         assert_eq!(recs.len(), 4);
@@ -1315,8 +1397,20 @@ mod tests {
     fn erasure_cost_boosts_valuable() {
         let results = vec![("val".to_string(), 0.5), ("cheap".to_string(), 0.5)];
         let costs = vec![
-            ErasureCost { item_id: "val".to_string(), structuring: 3.0, system_avg: 1.0, cost: 2.0, is_expensive: true },
-            ErasureCost { item_id: "cheap".to_string(), structuring: 0.5, system_avg: 1.0, cost: 0.5, is_expensive: false },
+            ErasureCost {
+                item_id: "val".to_string(),
+                structuring: 3.0,
+                system_avg: 1.0,
+                cost: 2.0,
+                is_expensive: true,
+            },
+            ErasureCost {
+                item_id: "cheap".to_string(),
+                structuring: 0.5,
+                system_avg: 1.0,
+                cost: 0.5,
+                is_expensive: false,
+            },
         ];
         let boosted = erasure_cost_routing_boost(&results, &costs);
         assert!(boosted[0].1 > boosted[1].1);
@@ -1327,7 +1421,12 @@ mod tests {
         let results = vec![("old".to_string(), 0.9), ("new".to_string(), 0.95)];
         let contras = vec![("old".to_string(), "new".to_string())];
         let report = autonomous_knowledge_revision(
-            &results, &contras, &|_| None, &|_| vec![], &|_| vec![], 1.0,
+            &results,
+            &contras,
+            &|_| None,
+            &|_| vec![],
+            &|_| vec![],
+            1.0,
         );
         assert!(report.syndromes_detected > 0);
         assert!(report.corrections_computed > 0);
@@ -1336,10 +1435,7 @@ mod tests {
     #[test]
     fn autonomous_revision_with_provenance_and_episodes() {
         // Use a direct contradiction which triggers MarkContradicted → subtraction candidate
-        let results = vec![
-            ("a".to_string(), 0.8),
-            ("b".to_string(), 0.9),
-        ];
+        let results = vec![("a".to_string(), 0.8), ("b".to_string(), 0.9)];
         let contras = vec![("a".to_string(), "b".to_string())];
         let report = autonomous_knowledge_revision(
             &results,
@@ -1364,7 +1460,10 @@ mod tests {
         if !report.subtraction_candidates.is_empty() {
             assert!(!report.demon_extracts.is_empty());
             assert!(report.demon_extracts.iter().any(|d| d.provenance.is_some()));
-            assert!(report.demon_extracts.iter().any(|d| !d.episode_ids.is_empty()));
+            assert!(report
+                .demon_extracts
+                .iter()
+                .any(|d| !d.episode_ids.is_empty()));
         }
         // Syndromes should be detected regardless
         assert!(report.syndromes_detected > 0);

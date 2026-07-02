@@ -86,14 +86,13 @@ pub fn compute_temporal_weight(
     };
 
     // Support factor
-    let support_factor = (1.0 + config.support_boost_per_item * support_count as f64)
-        .min(config.support_boost_cap);
+    let support_factor =
+        (1.0 + config.support_boost_per_item * support_count as f64).min(config.support_boost_cap);
 
     // Contradiction factor
-    let contradiction_factor =
-        (1.0 - config.contradiction_penalty_per_item * contradiction_count as f64).max(
-            config.contradiction_floor,
-        );
+    let contradiction_factor = (1.0
+        - config.contradiction_penalty_per_item * contradiction_count as f64)
+        .max(config.contradiction_floor);
 
     base * age_factor * supersession_factor * support_factor * contradiction_factor
 }
@@ -236,7 +235,10 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn test_episode(recorded_at: DateTime<Utc>, valid_to: Option<DateTime<Utc>>) -> (DateTime<Utc>, bool) {
+    fn test_episode(
+        recorded_at: DateTime<Utc>,
+        valid_to: Option<DateTime<Utc>>,
+    ) -> (DateTime<Utc>, bool) {
         (recorded_at, valid_to.is_some())
     }
 
@@ -247,7 +249,10 @@ mod tests {
         let (recorded_at, is_superseded) = test_episode(now, None);
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 0, 0, &config);
         // Fresh, active, no support, no contradictions → weight ≈ 1.0
-        assert!((weight - 1.0).abs() < 0.01, "fresh active item should be ~1.0, got {weight}");
+        assert!(
+            (weight - 1.0).abs() < 0.01,
+            "fresh active item should be ~1.0, got {weight}"
+        );
     }
 
     #[test]
@@ -258,8 +263,14 @@ mod tests {
         let (recorded_at, is_superseded) = test_episode(past, Some(now));
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 0, 0, &config);
         // Superseded → weight drops to superseded_weight (0.1) * age_factor
-        assert!(weight < 0.2, "superseded item should be < 0.2, got {weight}");
-        assert!(weight > 0.05, "superseded item should be > 0.05, got {weight}");
+        assert!(
+            weight < 0.2,
+            "superseded item should be < 0.2, got {weight}"
+        );
+        assert!(
+            weight > 0.05,
+            "superseded item should be > 0.05, got {weight}"
+        );
     }
 
     #[test]
@@ -270,8 +281,14 @@ mod tests {
         let (recorded_at, is_superseded) = test_episode(old, None);
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 0, 0, &config);
         // 2 half-lives → age_factor ≈ exp(-2) ≈ 0.135
-        assert!(weight < 0.2, "2-year-old item should be < 0.2, got {weight}");
-        assert!(weight > 0.05, "2-year-old item should be > 0.05, got {weight}");
+        assert!(
+            weight < 0.2,
+            "2-year-old item should be < 0.2, got {weight}"
+        );
+        assert!(
+            weight > 0.05,
+            "2-year-old item should be > 0.05, got {weight}"
+        );
     }
 
     #[test]
@@ -282,7 +299,10 @@ mod tests {
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 5, 0, &config);
         // 5 supports → support_factor = min(1.0 + 0.1*5, 2.0) = 1.5
         let expected = 1.0 * 1.0 * 1.5 * 1.0; // base * age * support * contradiction
-        assert!((weight - expected).abs() < 0.01, "supported item: expected {expected}, got {weight}");
+        assert!(
+            (weight - expected).abs() < 0.01,
+            "supported item: expected {expected}, got {weight}"
+        );
     }
 
     #[test]
@@ -293,7 +313,10 @@ mod tests {
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 100, 0, &config);
         // 100 supports → support_factor capped at 2.0
         let expected = 1.0 * 1.0 * 2.0 * 1.0;
-        assert!((weight - expected).abs() < 0.01, "capped support: expected {expected}, got {weight}");
+        assert!(
+            (weight - expected).abs() < 0.01,
+            "capped support: expected {expected}, got {weight}"
+        );
     }
 
     #[test]
@@ -304,7 +327,10 @@ mod tests {
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 0, 3, &config);
         // 3 contradictions → contradiction_factor = max(0.1, 1.0 - 0.15*3) = max(0.1, 0.55) = 0.55
         let expected = 1.0 * 1.0 * 1.0 * 0.55;
-        assert!((weight - expected).abs() < 0.01, "contradicted item: expected {expected}, got {weight}");
+        assert!(
+            (weight - expected).abs() < 0.01,
+            "contradicted item: expected {expected}, got {weight}"
+        );
     }
 
     #[test]
@@ -315,19 +341,47 @@ mod tests {
         let weight = compute_temporal_weight(recorded_at, is_superseded, now, 0, 100, &config);
         // 100 contradictions → contradiction_factor = max(0.1, 1.0 - 0.15*100) = max(0.1, -14.0) = 0.1
         let expected = 1.0 * 1.0 * 1.0 * 0.1;
-        assert!((weight - expected).abs() < 0.01, "floor: expected {expected}, got {weight}");
+        assert!(
+            (weight - expected).abs() < 0.01,
+            "floor: expected {expected}, got {weight}"
+        );
     }
 
     #[test]
     fn test_temporal_well_detection() {
         let config = TemporalConfig::default();
-        let items = vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
+        let items = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
         let graph_edges = vec![
-            GraphEdgeRef { source: "a".into(), target: "b".into(), edge_type: "supports".into() },
-            GraphEdgeRef { source: "a".into(), target: "c".into(), edge_type: "supports".into() },
-            GraphEdgeRef { source: "a".into(), target: "d".into(), edge_type: "supports".into() },
-            GraphEdgeRef { source: "b".into(), target: "c".into(), edge_type: "supports".into() },
-            GraphEdgeRef { source: "b".into(), target: "d".into(), edge_type: "supports".into() },
+            GraphEdgeRef {
+                source: "a".into(),
+                target: "b".into(),
+                edge_type: "supports".into(),
+            },
+            GraphEdgeRef {
+                source: "a".into(),
+                target: "c".into(),
+                edge_type: "supports".into(),
+            },
+            GraphEdgeRef {
+                source: "a".into(),
+                target: "d".into(),
+                edge_type: "supports".into(),
+            },
+            GraphEdgeRef {
+                source: "b".into(),
+                target: "c".into(),
+                edge_type: "supports".into(),
+            },
+            GraphEdgeRef {
+                source: "b".into(),
+                target: "d".into(),
+                edge_type: "supports".into(),
+            },
         ];
         let mut episode_links = HashMap::new();
         episode_links.insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
@@ -335,10 +389,16 @@ mod tests {
         let wells = detect_temporal_wells(&items, &graph_edges, &episode_links, &config);
         // 'a' has 3 support neighbors + 2 episode links = 5 > threshold 3 → boost
         let a_boost = wells.get("a").copied().unwrap_or(1.0);
-        assert!(a_boost > 1.0, "item 'a' should be in a well, got boost {a_boost}");
+        assert!(
+            a_boost > 1.0,
+            "item 'a' should be in a well, got boost {a_boost}"
+        );
         // 'd' has 2 support neighbors + 0 episode links = 2 < threshold 3 → no boost
         let d_boost = wells.get("d").copied().unwrap_or(1.0);
-        assert!((d_boost - 1.0).abs() < 0.01, "item 'd' should NOT be in a well, got boost {d_boost}");
+        assert!(
+            (d_boost - 1.0).abs() < 0.01,
+            "item 'd' should NOT be in a well, got boost {d_boost}"
+        );
     }
 
     #[test]
@@ -349,7 +409,10 @@ mod tests {
         let episode_links = HashMap::new();
         let wells = detect_temporal_wells(&items, &graph_edges, &episode_links, &config);
         let x_boost = wells.get("x").copied().unwrap_or(1.0);
-        assert!((x_boost - 1.0).abs() < 0.01, "isolated item should have boost 1.0, got {x_boost}");
+        assert!(
+            (x_boost - 1.0).abs() < 0.01,
+            "isolated item should have boost 1.0, got {x_boost}"
+        );
     }
 
     #[test]

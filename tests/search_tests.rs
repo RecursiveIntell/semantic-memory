@@ -7,10 +7,7 @@ use semantic_memory::DerivedVectorBackendPolicy;
 use semantic_memory::ExactnessProfile;
 use semantic_memory::SearchSource;
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType};
-#[cfg(any(
-    feature = "testing",
-    feature = "turbo-quant-codec"
-))]
+#[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
 use semantic_memory::{ReceiptMode, SearchContext};
 use tempfile::TempDir;
 

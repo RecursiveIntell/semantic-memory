@@ -185,7 +185,9 @@ pub fn find_voids(edges: &[(String, String)]) -> Vec<TopologicalVoid> {
                 } else {
                     Vec::new()
                 }
-            } else if let Some(neighbor) = adjacency.get(node).and_then(|neighbors| neighbors.iter().next())
+            } else if let Some(neighbor) = adjacency
+                .get(node)
+                .and_then(|neighbors| neighbors.iter().next())
             {
                 vec![(node.clone(), neighbor.clone())]
             } else {
@@ -251,11 +253,7 @@ pub fn gap_report(voids: &[TopologicalVoid]) -> String {
         "Details:".to_string(),
     ];
     for void in voids {
-        lines.push(format!(
-            "- {:?}: {}",
-            void.void_type,
-            void.description
-        ));
+        lines.push(format!("- {:?}: {}", void.void_type, void.description));
     }
 
     lines.join("\n")
@@ -369,12 +367,9 @@ mod tests {
     #[test]
     fn find_voids_detects_missing_context_for_isolated_node() {
         let voids = find_voids(&[("isolated".to_string(), "isolated".to_string())]);
-        assert!(
-            voids.iter().any(|item| matches!(
-                item.void_type,
-                VoidType::MissingContext
-            ))
-        );
+        assert!(voids
+            .iter()
+            .any(|item| matches!(item.void_type, VoidType::MissingContext)));
     }
 
     #[test]

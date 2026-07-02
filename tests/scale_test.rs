@@ -5,14 +5,11 @@
 //!
 //! Run with: cargo test --all-features -- scale_test -- --ignored
 
-#![cfg(all(
-    feature = "usearch-backend",
-    feature = "candle-embedder"
-))]
+#![cfg(all(feature = "usearch-backend", feature = "candle-embedder"))]
+#![allow(clippy::expect_used)]
 
 use semantic_memory::{
-    EmbeddingConfig, MemoryConfig, MemoryStore, SearchConfig,
-    embedder::MockEmbedder,
+    embedder::MockEmbedder, EmbeddingConfig, MemoryConfig, MemoryStore, SearchConfig,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -30,8 +27,7 @@ fn open_store(tmp: &TempDir) -> MemoryStore {
         search: SearchConfig::default(),
         ..Default::default()
     };
-    let embedder: Box<dyn semantic_memory::embedder::Embedder> =
-        Box::new(MockEmbedder::new(768));
+    let embedder: Box<dyn semantic_memory::embedder::Embedder> = Box::new(MockEmbedder::new(768));
     MemoryStore::open_with_embedder(config, embedder).expect("open store")
 }
 
@@ -46,7 +42,11 @@ async fn bulk_ingestion_100_facts() {
     for i in 0..100 {
         let content = format!(
             "Fact number {} about topic {} with keywords alpha-{} beta-{} gamma-{}",
-            i, i % 10, i, i * 2, i * 3
+            i,
+            i % 10,
+            i,
+            i * 2,
+            i * 3
         );
         store
             .add_fact("scale_test", &content, None, None)
@@ -56,18 +56,27 @@ async fn bulk_ingestion_100_facts() {
 
     let elapsed = start.elapsed();
     println!("100 facts ingested in {:?}", elapsed);
-    println!("Throughput: {:.1} facts/second", 100.0 / elapsed.as_secs_f64());
+    println!(
+        "Throughput: {:.1} facts/second",
+        100.0 / elapsed.as_secs_f64()
+    );
 
     // Verify search still works
     let results = store
         .search("alpha keywords", Some(5), None, None)
         .await
         .expect("search");
-    assert!(!results.is_empty(), "search should return results after bulk ingestion");
+    assert!(
+        !results.is_empty(),
+        "search should return results after bulk ingestion"
+    );
 
     // Check stats
     let stats = store.stats().await.expect("stats");
-    println!("Stats: {} facts, {} chunks", stats.total_facts, stats.total_chunks);
+    println!(
+        "Stats: {} facts, {} chunks",
+        stats.total_facts, stats.total_chunks
+    );
     assert!(stats.total_facts >= 100, "should have at least 100 facts");
 }
 
@@ -127,7 +136,10 @@ async fn concurrent_search_and_add_4_threads() {
         total_errors += errors;
     }
 
-    assert_eq!(total_errors, 0, "no errors should occur during concurrent access");
+    assert_eq!(
+        total_errors, 0,
+        "no errors should occur during concurrent access"
+    );
 
     // Verify data integrity
     let stats = store.stats().await.expect("stats");
@@ -135,5 +147,8 @@ async fn concurrent_search_and_add_4_threads() {
         "After concurrent test: {} facts (expected >= 20 + 50 = 70)",
         stats.total_facts
     );
-    assert!(stats.total_facts >= 70, "should have at least 70 facts after concurrent adds");
+    assert!(
+        stats.total_facts >= 70,
+        "should have at least 70 facts after concurrent adds"
+    );
 }

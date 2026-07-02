@@ -1,7 +1,7 @@
-use semantic_memory::{MemoryStore, MemoryConfig, EmbeddingConfig, SearchConfig};
 use semantic_memory::embedder::MockEmbedder;
-use std::time::Instant;
+use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, SearchConfig};
 use std::collections::HashSet;
+use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::TempDir::new()?;
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Insert a real corpus: 500 facts across 10 namespaces
     let corpus = generate_corpus(500);
     let insert_start = Instant::now();
-    for (i, (text, ns)) in corpus.iter().enumerate() {
+    for (text, ns) in corpus.iter() {
         let emb = mock_embed(text, 384);
         rt.block_on(store.add_fact_with_embedding(ns, text, &emb, None, None))?;
     }
@@ -75,9 +75,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== REAL BENCHMARK (500 facts, 50 queries, brute-force backend) ===");
     println!();
     println!("SEARCH MODE             avg ms/query   avg results/query");
-    println!("Hybrid (BM25+vec+RRF):  {:.3}          {:.1}", avg_hybrid, avg_hybrid_n);
-    println!("FTS-only (BM25):        {:.3}          {:.1}", avg_fts, avg_fts_n);
-    println!("Vector-only (cosine):   {:.3}          {:.1}", avg_vec, avg_vec_n);
+    println!(
+        "Hybrid (BM25+vec+RRF):  {:.3}          {:.1}",
+        avg_hybrid, avg_hybrid_n
+    );
+    println!(
+        "FTS-only (BM25):        {:.3}          {:.1}",
+        avg_fts, avg_fts_n
+    );
+    println!(
+        "Vector-only (cosine):   {:.3}          {:.1}",
+        avg_vec, avg_vec_n
+    );
     println!();
 
     // Overlap analysis: how often do hybrid and vector-only agree on top-5?
@@ -93,16 +102,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let v_ids: HashSet<_> = vec_only.iter().map(|r| r.content.clone()).collect();
         let overlap = h_ids.intersection(&v_ids).count();
         total_overlap += overlap;
-        if overlap == 5 { full_agree += 1; }
-        else if overlap == 0 { zero_overlap += 1; }
-        else { partial_agree += 1; }
+        if overlap == 5 {
+            full_agree += 1;
+        } else if overlap == 0 {
+            zero_overlap += 1;
+        } else {
+            partial_agree += 1;
+        }
     }
 
     println!("=== TOP-5 OVERLAP ANALYSIS (hybrid vs vector-only) ===");
-    println!("Full agreement (5/5):    {}/50 ({:.0}%)", full_agree, full_agree as f64 / 50.0 * 100.0);
-    println!("Partial overlap (1-4):   {}/50 ({:.0}%)", partial_agree, partial_agree as f64 / 50.0 * 100.0);
-    println!("Zero overlap (0/5):      {}/50 ({:.0}%)", zero_overlap, zero_overlap as f64 / 50.0 * 100.0);
-    println!("Avg items in common:     {:.2}/5", total_overlap as f64 / 50.0);
+    println!(
+        "Full agreement (5/5):    {}/50 ({:.0}%)",
+        full_agree,
+        full_agree as f64 / 50.0 * 100.0
+    );
+    println!(
+        "Partial overlap (1-4):   {}/50 ({:.0}%)",
+        partial_agree,
+        partial_agree as f64 / 50.0 * 100.0
+    );
+    println!(
+        "Zero overlap (0/5):      {}/50 ({:.0}%)",
+        zero_overlap,
+        zero_overlap as f64 / 50.0 * 100.0
+    );
+    println!(
+        "Avg items in common:     {:.2}/5",
+        total_overlap as f64 / 50.0
+    );
     println!();
 
     // Score analysis: hybrid scores vs vector-only scores
@@ -114,9 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let vec_only = rt.block_on(store.search_vector_only(q, Some(5), None, None))?;
         let h_top = hybrid.first().map(|r| r.score).unwrap_or(0.0);
         let v_top = vec_only.first().map(|r| r.score).unwrap_or(0.0);
-        if (h_top - v_top).abs() < 0.001 { tied += 1; }
-        else if h_top > v_top { hybrid_better += 1; }
-        else { vec_better += 1; }
+        if (h_top - v_top).abs() < 0.001 {
+            tied += 1;
+        } else if h_top > v_top {
+            hybrid_better += 1;
+        } else {
+            vec_better += 1;
+        }
     }
     println!("=== TOP SCORE COMPARISON (hybrid top score vs vector-only top score) ===");
     println!("Hybrid scores higher:    {}/50", hybrid_better);
@@ -140,7 +172,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("=== FTS RECALL BONUS (items FTS finds that vector-only misses) ===");
     println!("FTS results:            {}", fts_total);
-    println!("FTS-unique (not in vec): {} ({:.1}% of FTS results)", fts_unique, if fts_total > 0 { fts_unique as f64 / fts_total as f64 * 100.0 } else { 0.0 });
+    println!(
+        "FTS-unique (not in vec): {} ({:.1}% of FTS results)",
+        fts_unique,
+        if fts_total > 0 {
+            fts_unique as f64 / fts_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!();
 
     println!("=== WHAT SEMANTIC-MEMORY DOES THAT QDRANT CANNOT ===");
@@ -195,12 +235,21 @@ fn generate_corpus(n: usize) -> Vec<(String, String)> {
         "decoder syndrome error correction belief propagation",
         "lawful subtraction forgetting invariant verification",
     ];
-    (0..n).map(|i| {
-        let topic = topics[i % topics.len()];
-        let ns = format!("ns_{}", i % 10);
-        let text = format!("{} fact #{}: {} details about {} in context {}", topic, i, topic, topic, i % 5);
-        (text, ns)
-    }).collect()
+    (0..n)
+        .map(|i| {
+            let topic = topics[i % topics.len()];
+            let ns = format!("ns_{}", i % 10);
+            let text = format!(
+                "{} fact #{}: {} details about {} in context {}",
+                topic,
+                i,
+                topic,
+                topic,
+                i % 5
+            );
+            (text, ns)
+        })
+        .collect()
 }
 
 fn generate_queries(n: usize) -> Vec<String> {
@@ -221,7 +270,9 @@ fn generate_queries(n: usize) -> Vec<String> {
         "latest developments in vector search",
         "source of the compression algorithm",
     ];
-    (0..n).map(|i| templates[i % templates.len()].to_string()).collect()
+    (0..n)
+        .map(|i| templates[i % templates.len()].to_string())
+        .collect()
 }
 
 fn mock_embed(text: &str, dims: usize) -> Vec<f32> {

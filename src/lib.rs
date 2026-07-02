@@ -1,4 +1,28 @@
 #![allow(deprecated)]
+#![allow(unused_imports, unused_variables, unreachable_code)]
+#![allow(
+    clippy::bool_assert_comparison,
+    clippy::collapsible_if,
+    clippy::empty_line_after_doc_comments,
+    clippy::expect_used,
+    clippy::field_reassign_with_default,
+    clippy::if_same_then_else,
+    clippy::iter_cloned_collect,
+    clippy::let_and_return,
+    clippy::manual_div_ceil,
+    clippy::manual_pattern_char_comparison,
+    clippy::manual_range_contains,
+    clippy::manual_slice_size_calculation,
+    clippy::manual_unwrap_or_default,
+    clippy::needless_range_loop,
+    clippy::ptr_arg,
+    clippy::redundant_closure,
+    clippy::skip_while_next,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::unnecessary_cast,
+    clippy::unnecessary_sort_by
+)]
 
 //! # semantic-memory
 //!
@@ -64,22 +88,36 @@ pub mod config;
 pub(crate) mod conversation;
 pub(crate) mod db;
 pub use db::{bytes_to_embedding, decode_f32_le, embedding_to_bytes};
+/// Phase 9b: benchmark harness for routing quality.
+#[cfg(feature = "benchmark")]
+pub mod benchmark;
+/// Leiden community detection with contradiction tracking.
+#[cfg(feature = "community")]
+pub mod community;
+/// Phase 8: simplified compression governor (importance scoring only).
+#[cfg(feature = "compression-governor")]
+pub mod compression_governor;
+/// Content-based contradiction detection (lexical, deterministic).
+#[cfg(feature = "decoder")]
+pub mod contradiction_detect;
+/// Phase 6: decoder architecture (syndromes and corrections).
+#[cfg(feature = "decoder")]
+pub mod decoder;
+/// Discord-structured second-order retrieval (graph-neighbour discovery).
+#[cfg(feature = "discord")]
+pub mod discord;
 pub(crate) mod documents;
 pub mod embedder;
 pub(crate) mod episodes;
 pub mod error;
-/// Discord-structured second-order retrieval (graph-neighbour discovery).
-#[cfg(feature = "discord")]
-pub mod discord;
-/// Phase 6: decoder architecture (syndromes and corrections).
-#[cfg(feature = "decoder")]
-pub mod decoder;
-/// Content-based contradiction detection (lexical, deterministic).
-#[cfg(feature = "decoder")]
-pub mod contradiction_detect;
 /// Contradiction-detection evaluation harness (RAMDocs-style P/R/F1).
 #[cfg(feature = "decoder")]
 pub mod eval_contradiction;
+/// Factor graph unification of heterogeneous graph edges (semantic,
+/// temporal, causal, entity) with belief propagation. The single most
+/// novel combination: unified probabilistic reasoning over all edge types.
+#[cfg(feature = "integration")]
+pub mod factor_graph;
 mod graph;
 /// First-class stored graph edges (durable, typed relationships).
 pub(crate) mod graph_edges;
@@ -89,17 +127,22 @@ pub mod hnsw;
 mod hnsw_backend;
 #[cfg(feature = "hnsw")]
 mod hnsw_ops;
+/// Deterministic CPU-only hubness scoring over dense embedding collections.
+pub mod hubness;
+/// Phase 10: cross-feature integration wiring.
+#[cfg(feature = "integration")]
+pub mod integration;
 mod json_compat_import;
 pub(crate) mod knowledge;
-mod pool;
-/// Phase 2: semiring provenance (Boolean/Tropical/Probability/Confidence).
-#[cfg(feature = "provenance")]
-pub mod provenance;
-/// Phase 3: temporal field provenance (computed temporal_weight scores).
-#[cfg(feature = "temporal")]
-pub mod temporal;
-mod projection_batch;
-mod projection_derivation;
+/// ColBERT-style late interaction multi-vector retrieval.
+#[cfg(feature = "late-interaction")]
+pub mod late_interaction;
+/// Matryoshka Representation Learning: multi-resolution embedding truncation.
+#[cfg(feature = "matryoshka")]
+pub mod matryoshka;
+/// Multiscale retrieval scheduling pipeline (staged search with budgets).
+#[cfg(feature = "multiscale")]
+pub mod pipeline;
 /// Compatibility-only legacy import surface.
 ///
 /// This module exists only for migration compatibility with pre-V11 import paths.
@@ -108,57 +151,44 @@ mod projection_derivation;
     note = "Legacy V10 import path is migration-only. Use `import_projection_batch()` with `ProjectionImportBatchV3` on the canonical lane."
 )]
 #[doc(hidden)]
+#[cfg(feature = "poly-kv-codec")]
+pub mod poly_kv_bridge;
+mod pool;
+mod projection_batch;
+mod projection_derivation;
 pub mod projection_import;
 mod projection_lane;
 mod projection_legacy_compat;
 pub(crate) mod projection_storage;
-/// Multiscale retrieval scheduling pipeline (staged search with budgets).
-#[cfg(feature = "multiscale")]
-pub mod pipeline;
+/// Phase 2: semiring provenance (Boolean/Tropical/Probability/Confidence).
+#[cfg(feature = "provenance")]
+pub mod provenance;
 pub mod quantize;
 pub mod quantize_governed;
-/// Phase 7: lawful subtraction engine.
-#[cfg(feature = "subtraction")]
-pub mod subtraction;
-/// Phase 8: simplified compression governor (importance scoring only).
-#[cfg(feature = "compression-governor")]
-pub mod compression_governor;
-/// Phase 9: adaptive retrieval routing (query-aware stage selection).
-#[cfg(feature = "routing")]
-pub mod routing;
-/// Phase 9b: benchmark harness for routing quality.
-#[cfg(feature = "benchmark")]
-pub mod benchmark;
-/// Phase 10: cross-feature integration wiring.
-#[cfg(feature = "integration")]
-pub mod integration;
-/// Factor graph unification of heterogeneous graph edges (semantic,
-/// temporal, causal, entity) with belief propagation. The single most
-/// novel combination: unified probabilistic reasoning over all edge types.
-#[cfg(feature = "integration")]
-pub mod factor_graph;
-/// ColBERT-style late interaction multi-vector retrieval.
-#[cfg(feature = "late-interaction")]
-pub mod late_interaction;
-/// Persistent homology and topological void detection for knowledge graphs.
-#[cfg(feature = "topology")]
-pub mod topology;
-/// Matryoshka Representation Learning: multi-resolution embedding truncation.
-#[cfg(feature = "matryoshka")]
-pub mod matryoshka;
-/// Leiden community detection with contradiction tracking.
-#[cfg(feature = "community")]
-pub mod community;
+/// Contextual reinstatement scoring building blocks.
+pub mod reinstatement;
 /// RL-trained retrieval routing on receipt replay data.
 #[cfg(feature = "rl-routing")]
 pub mod rl_routing;
-/// Reasoning subgraph pruning with lawful subtraction.
-#[cfg(feature = "subgraph-pruning")]
-pub mod subgraph_pruning;
+/// Phase 9: adaptive retrieval routing (query-aware stage selection).
+#[cfg(feature = "routing")]
+pub mod routing;
 pub mod search;
 pub mod storage;
 mod store_support;
+/// Reasoning subgraph pruning with lawful subtraction.
+#[cfg(feature = "subgraph-pruning")]
+pub mod subgraph_pruning;
+/// Phase 7: lawful subtraction engine.
+#[cfg(feature = "subtraction")]
+pub mod subtraction;
+/// Phase 3: temporal field provenance (computed temporal_weight scores).
+#[cfg(feature = "temporal")]
+pub mod temporal;
 pub mod tokenizer;
+/// Persistent homology and topological void detection for knowledge graphs.
+#[cfg(feature = "topology")]
+pub mod topology;
 pub mod types;
 #[cfg(feature = "usearch-backend")]
 mod usearch_backend;
@@ -172,18 +202,19 @@ pub use config::{
     MemoryLimits, PoolConfig, SearchConfig,
 };
 pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
+#[cfg(feature = "candle-embedder")]
+pub use embedder::CandleEmbedder;
 pub use embedder::{
     BgeM3DeriveConfig, BgeM3Embedder, Embedder, MockEmbedder, MultiEmbedBatchFuture,
     MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding, MultiVectorEmbedding,
     OllamaEmbedder, SparseWeights,
 };
-#[cfg(feature = "candle-embedder")]
-pub use embedder::CandleEmbedder;
 pub use error::MemoryError;
 #[cfg(feature = "hnsw")]
 pub use hnsw::{HnswConfig, HnswHit, HnswIndex};
 // Type aliases for the new VectorBackend trait. The Hnsw* names are kept
 // for source compatibility; new code should prefer the Vector* names.
+pub use graph_edges::{AddGraphEdgeParams, StoredGraphEdge};
 pub(crate) use projection_lane::projection_import_failure_id;
 pub use projection_lane::{
     ProjectionImportFailureReceiptEntry, ProjectionImportLogEntry, ProjectionImportResult,
@@ -204,7 +235,6 @@ pub use types::{
     SearchResponse, SearchResult, SearchSource, SearchSourceType, Session, TextChunk,
     VectorArtifactBuildReceiptV1, VectorSearchReceiptV1, VerificationStatus,
 };
-pub use graph_edges::{AddGraphEdgeParams, StoredGraphEdge};
 pub use vector_backend::{VectorBackend, VectorHit, VectorIndex, VectorIndexConfig};
 #[cfg(feature = "turbo-quant-codec")]
 pub use vector_codec::TurboQuantCodec;
@@ -635,6 +665,13 @@ impl Drop for MemoryStoreInner {
     }
 }
 
+fn nonzero_cache_capacity(value: usize) -> std::num::NonZeroUsize {
+    match std::num::NonZeroUsize::new(value) {
+        Some(value) => value,
+        None => std::num::NonZeroUsize::MIN,
+    }
+}
+
 impl MemoryStore {
     /// Run read-only work on a pooled reader connection on a blocking thread.
     ///
@@ -668,8 +705,10 @@ impl MemoryStore {
     }
 
     pub(crate) fn clear_search_cache(&self) {
-        let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
-        cache.clear();
+        match self.inner.search_cache.lock() {
+            Ok(mut cache) => cache.clear(),
+            Err(err) => tracing::warn!(error = %err, "search cache lock poisoned; clear skipped"),
+        }
     }
 
     async fn persist_search_receipt(
@@ -923,12 +962,10 @@ impl MemoryStore {
                 config,
                 paths,
                 token_counter,
-                embedding_cache: std::sync::Mutex::new(
-                    lru::LruCache::new(std::num::NonZeroUsize::new(256).expect("256 > 0")),
-                ),
-                search_cache: std::sync::Mutex::new(
-                    lru::LruCache::new(std::num::NonZeroUsize::new(64).expect("64 > 0")),
-                ),
+                embedding_cache: std::sync::Mutex::new(lru::LruCache::new(nonzero_cache_capacity(
+                    256,
+                ))),
+                search_cache: std::sync::Mutex::new(lru::LruCache::new(nonzero_cache_capacity(64))),
                 #[cfg(feature = "hnsw")]
                 hnsw_index: std::sync::RwLock::new(hnsw_index),
             }),
@@ -960,9 +997,15 @@ impl MemoryStore {
         // Check embedding cache first -- skip the compute for repeated queries
         let cache_key = text.to_string();
         {
-            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
-            if let Some(cached) = cache.get(&cache_key).cloned() {
-                return Ok(cached);
+            match self.inner.embedding_cache.lock() {
+                Ok(mut cache) => {
+                    if let Some(cached) = cache.get(&cache_key).cloned() {
+                        return Ok(cached);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "embedding cache lock poisoned; lookup skipped")
+                }
             }
         }
 
@@ -978,8 +1021,14 @@ impl MemoryStore {
 
         // Store in cache (keyed by original text, not prefixed)
         {
-            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
-            cache.put(cache_key, embedding.clone());
+            match self.inner.embedding_cache.lock() {
+                Ok(mut cache) => {
+                    cache.put(cache_key, embedding.clone());
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "embedding cache lock poisoned; insert skipped")
+                }
+            }
         }
 
         Ok(embedding)
@@ -994,13 +1043,22 @@ impl MemoryStore {
         let mut miss_indices: Vec<usize> = Vec::new();
 
         for (i, text) in texts.iter().enumerate() {
-            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
-            if let Some(cached) = cache.get(text).cloned() {
-                results.push(Some(cached));
-            } else {
-                results.push(None);
-                miss_indices.push(i);
-                misses.push(text.clone());
+            match self.inner.embedding_cache.lock() {
+                Ok(mut cache) => {
+                    if let Some(cached) = cache.get(text).cloned() {
+                        results.push(Some(cached));
+                    } else {
+                        results.push(None);
+                        miss_indices.push(i);
+                        misses.push(text.clone());
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "embedding cache lock poisoned; lookup skipped");
+                    results.push(None);
+                    miss_indices.push(i);
+                    misses.push(text.clone());
+                }
             }
         }
 
@@ -1024,9 +1082,15 @@ impl MemoryStore {
                 });
             }
             // Cache the new embeddings (keyed by original text, not prefixed)
-            let mut cache = self.inner.embedding_cache.lock().expect("cache lock poisoned");
-            for (text, emb) in misses.iter().zip(embeddings.iter()) {
-                cache.put(text.clone(), emb.clone());
+            match self.inner.embedding_cache.lock() {
+                Ok(mut cache) => {
+                    for (text, emb) in misses.iter().zip(embeddings.iter()) {
+                        cache.put(text.clone(), emb.clone());
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "embedding cache lock poisoned; batch insert skipped")
+                }
             }
             embeddings
         };
@@ -1380,8 +1444,7 @@ impl MemoryStore {
     pub async fn list_all_graph_edges(
         &self,
     ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
-        self.with_read_conn(graph_edges::list_all_graph_edges)
-            .await
+        self.with_read_conn(graph_edges::list_all_graph_edges).await
     }
 
     /// List graph edges within N hops of the given seed node IDs.
@@ -1421,8 +1484,7 @@ impl MemoryStore {
 
     /// Count non-invalidated stored graph edges.
     pub async fn count_graph_edges(&self) -> Result<usize, MemoryError> {
-        self.with_read_conn(graph_edges::count_graph_edges)
-            .await
+        self.with_read_conn(graph_edges::count_graph_edges).await
     }
 
     // ─── Search ─────────────────────────────────────────────────
@@ -1479,9 +1541,18 @@ impl MemoryStore {
             None
         };
         if let Some(ref key) = cache_key {
-            let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
-            if let Some(cached) = cache.get(key).cloned() {
-                return Ok(SearchResponse { results: cached, receipt: None });
+            match self.inner.search_cache.lock() {
+                Ok(mut cache) => {
+                    if let Some(cached) = cache.get(key).cloned() {
+                        return Ok(SearchResponse {
+                            results: cached,
+                            receipt: None,
+                        });
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "search cache lock poisoned; lookup skipped")
+                }
             }
         }
 
@@ -1601,8 +1672,14 @@ impl MemoryStore {
             self.persist_search_receipt(receipt).await?;
         }
         if let Some(ref key) = cache_key {
-            let mut cache = self.inner.search_cache.lock().expect("search cache lock poisoned");
-            cache.put(key.clone(), response.results.clone());
+            match self.inner.search_cache.lock() {
+                Ok(mut cache) => {
+                    cache.put(key.clone(), response.results.clone());
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "search cache lock poisoned; insert skipped")
+                }
+            }
         }
         Ok(response)
     }

@@ -154,12 +154,8 @@ pub fn compress_with_turbo_quant(
         None => return Ok(None), // F32 — no compression
     };
 
-    let codec = crate::vector_codec::TurboQuantCodec::new(
-        embedding.len(),
-        bits,
-        projections,
-        seed,
-    )?;
+    let codec =
+        crate::vector_codec::TurboQuantCodec::new(embedding.len(), bits, projections, seed)?;
     let artifact = crate::vector_codec::VectorCodec::encode(&codec, embedding)?;
     Ok(Some(artifact))
 }
@@ -259,19 +255,19 @@ mod tests {
         let scores = vec![
             ImportanceScore {
                 embedding_id: "e1".to_string(),
-                score: 0.9, // should be F32
+                score: 0.9,                    // should be F32
                 level: QuantizationLevel::SQ8, // wrong currently -> receipt
                 last_computed: "t".to_string(),
             },
             ImportanceScore {
                 embedding_id: "e2".to_string(),
-                score: 0.4, // should be SQ4
+                score: 0.4,                    // should be SQ4
                 level: QuantizationLevel::SQ4, // already correct -> no receipt
                 last_computed: "t".to_string(),
             },
             ImportanceScore {
                 embedding_id: "e3".to_string(),
-                score: 0.1, // should be SQ4Marked
+                score: 0.1,                    // should be SQ4Marked
                 level: QuantizationLevel::F32, // wrong -> receipt
                 last_computed: "t".to_string(),
             },
