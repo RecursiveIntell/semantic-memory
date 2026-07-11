@@ -278,6 +278,16 @@ pub struct VectorHit {
     pub provenance_confidence: Option<f64>,
 }
 
+/// A genuine sparse dot-product search hit.
+#[derive(Debug, Clone)]
+struct SparseHit {
+    content: String,
+    source: SearchSource,
+    score: f64,
+    updated_at: Option<String>,
+    representation: String,
+}
+
 #[allow(dead_code)]
 struct VectorRow {
     id: String,
@@ -301,6 +311,8 @@ struct RrfCandidate {
     vector_source_rank: Option<usize>,
     vector_source_score: Option<f64>,
     vector_reranked_from_f32: bool,
+    sparse_score: Option<f64>,
+    sparse_rank: Option<usize>,
     /// Late interaction (ColBERT MaxSim) rank — 3rd RRF signal.
     late_interaction_rank: Option<usize>,
     /// Late interaction raw score. Populated only with the `late-interaction` feature.
@@ -320,21 +332,24 @@ impl RrfCandidate {
         let vector_contribution = self
             .vector_rank
             .map(|rank| config.vector_weight / (config.rrf_k + rank as f64));
+        let sparse_contribution = self
+            .sparse_rank
+            .map(|rank| config.sparse_weight / (config.rrf_k + rank as f64));
         // Late interaction contribution: uses same RRF formula with late_interaction_weight.
         // Defaults to 0.0 weight when not configured (backward compatible).
         let late_interaction_weight = config.late_interaction_weight;
         let late_interaction_contribution = self
             .late_interaction_rank
             .map(|rank| late_interaction_weight / (config.rrf_k + rank as f64));
-        let best_rank = match (self.bm25_rank, self.vector_rank) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => None,
-        };
+        let best_rank = [self.bm25_rank, self.vector_rank, self.sparse_rank]
+            .into_iter()
+            .flatten()
+            .min();
         let recency_score =
             recency_contribution(config, context, self.updated_at.as_deref(), best_rank);
         let base_score = bm25_contribution.unwrap_or(0.0)
             + vector_contribution.unwrap_or(0.0)
+            + sparse_contribution.unwrap_or(0.0)
             + late_interaction_contribution.unwrap_or(0.0)
             + recency_score.unwrap_or(0.0);
         // Apply temporal weight: stale facts (weight < 1.0) get downranked.
@@ -357,16 +372,20 @@ impl RrfCandidate {
             rrf_score,
             bm25_score: self.bm25_score,
             vector_score: self.vector_score,
+            sparse_score: self.sparse_score,
             recency_score,
             bm25_rank: self.bm25_rank,
             vector_rank: self.vector_rank,
+            sparse_rank: self.sparse_rank,
             vector_source_rank: self.vector_source_rank,
             vector_source_score: self.vector_source_score,
             bm25_contribution,
             vector_contribution,
+            sparse_contribution,
             vector_reranked_from_f32: self.vector_reranked_from_f32,
             bm25_weight: config.bm25_weight,
             vector_weight: config.vector_weight,
+            sparse_weight: config.sparse_weight,
             recency_weight: config.recency_half_life_days.map(|_| config.recency_weight),
             rrf_k: config.rrf_k,
         };
@@ -1392,7 +1411,6 @@ impl Ord for ApproxCandidate {
     }
 }
 
-#[cfg(feature = "turbo-quant-codec")]
 fn vector_row_matches_filters(
     row: &VectorRow,
     namespaces: Option<&[&str]>,
@@ -1436,7 +1454,6 @@ fn authoritative_vector_row_count(conn: &Connection) -> Result<usize, MemoryErro
         .map_err(|err| MemoryError::Other(format!("authoritative vector count overflow: {err}")))
 }
 
-#[cfg(feature = "turbo-quant-codec")]
 fn load_vector_row_by_item_key(
     conn: &Connection,
     item_key: &str,
@@ -1578,6 +1595,52 @@ fn load_vector_row_by_item_key(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn sparse_search(
+    conn: &Connection,
+    query: &crate::SparseWeights,
+    config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<Vec<SparseHit>, MemoryError> {
+    if config.sparse_weight == 0.0 || query.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Oversampling is bounded and allows post-score namespace/source/session
+    // filtering without admitting an unbounded candidate set to fusion.
+    let scan_limit = config
+        .sparse_top_k
+        .saturating_mul(8)
+        .max(config.sparse_top_k);
+    let rows = crate::db::search_sparse_vectors(conn, query, scan_limit, config.sparse_min_score)?;
+    let mut hits = Vec::with_capacity(config.sparse_top_k.min(rows.len()));
+    for (sparse_row, sql_score) in rows {
+        let Some(source_row) = load_vector_row_by_item_key(conn, &sparse_row.item_key)? else {
+            continue;
+        };
+        if !vector_row_matches_filters(&source_row, namespaces, source_types, session_ids) {
+            continue;
+        }
+        let score = f64::from(sparse_row.weights.dot(query));
+        if !score.is_finite() || score < config.sparse_min_score {
+            continue;
+        }
+        debug_assert!((score - sql_score).abs() < 1e-4);
+        hits.push(SparseHit {
+            content: source_row.content,
+            source: source_row.source,
+            score,
+            updated_at: source_row.updated_at,
+            representation: sparse_row.representation,
+        });
+        if hits.len() == config.sparse_top_k {
+            break;
+        }
+    }
+    Ok(hits)
+}
+
 fn vector_scan_warn_exceeded(count: usize) -> bool {
     let limit = VECTOR_SCAN_WARN_LIMIT.load(Ordering::Relaxed);
     limit > 0 && count > limit
@@ -1607,6 +1670,10 @@ struct VectorReceiptMetadata {
     vector_artifact_stale_count: Option<usize>,
     exact_rerank_count: Option<usize>,
     approximate_candidate_count: Option<usize>,
+    sparse_weight: Option<f64>,
+    sparse_query_nonzero_count: Option<usize>,
+    sparse_candidate_count: Option<usize>,
+    sparse_representations: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1622,9 +1689,10 @@ struct VectorSearchOutcome {
     receipt_metadata: VectorReceiptMetadata,
 }
 
-fn rrf_fuse_detailed_with_context(
+fn rrf_fuse_three_detailed_with_context(
     bm25_hits: &[Bm25Hit],
     vector_hits: &[VectorHit],
+    sparse_hits: &[SparseHit],
     config: &SearchConfig,
     context: &SearchContext,
     top_k: usize,
@@ -1655,6 +1723,8 @@ fn rrf_fuse_detailed_with_context(
                 vector_source_rank: None,
                 vector_source_score: None,
                 vector_reranked_from_f32: false,
+                sparse_score: None,
+                sparse_rank: None,
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: hit.temporal_weight,
@@ -1688,6 +1758,40 @@ fn rrf_fuse_detailed_with_context(
                 vector_source_rank: hit.source_rank.or(Some(rank)),
                 vector_source_score: hit.source_similarity.or(Some(hit.similarity)),
                 vector_reranked_from_f32: hit.reranked_from_f32,
+                sparse_score: None,
+                sparse_rank: None,
+                late_interaction_rank: None,
+                late_interaction_score: None,
+                temporal_weight: None,
+                provenance_confidence: None,
+            });
+    }
+
+    for (rank_0, hit) in sparse_hits.iter().enumerate() {
+        let key = source_dedup_key(&hit.source);
+        let rank = rank_0 + 1;
+        candidates
+            .entry(key)
+            .and_modify(|candidate| {
+                candidate.sparse_rank = Some(rank);
+                candidate.sparse_score = Some(hit.score);
+                if candidate.updated_at.is_none() {
+                    candidate.updated_at = hit.updated_at.clone();
+                }
+            })
+            .or_insert_with(|| RrfCandidate {
+                content: hit.content.clone(),
+                source: hit.source.clone(),
+                updated_at: hit.updated_at.clone(),
+                bm25_score: None,
+                bm25_rank: None,
+                vector_score: None,
+                vector_rank: None,
+                vector_source_rank: None,
+                vector_source_score: None,
+                vector_reranked_from_f32: false,
+                sparse_score: Some(hit.score),
+                sparse_rank: Some(rank),
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: None,
@@ -1711,6 +1815,16 @@ fn rrf_fuse_detailed_with_context(
     });
     explained.truncate(top_k);
     explained
+}
+
+fn rrf_fuse_detailed_with_context(
+    bm25_hits: &[Bm25Hit],
+    vector_hits: &[VectorHit],
+    config: &SearchConfig,
+    context: &SearchContext,
+    top_k: usize,
+) -> Vec<ExplainedResult> {
+    rrf_fuse_three_detailed_with_context(bm25_hits, vector_hits, &[], config, context, top_k)
 }
 
 fn rrf_fuse_detailed(
@@ -1790,6 +1904,8 @@ pub fn rrf_fuse_with_late_interaction(
                 vector_source_rank: None,
                 vector_source_score: None,
                 vector_reranked_from_f32: false,
+                sparse_score: None,
+                sparse_rank: None,
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: hit.temporal_weight,
@@ -1824,6 +1940,8 @@ pub fn rrf_fuse_with_late_interaction(
                 vector_source_rank: hit.source_rank.or(Some(rank)),
                 vector_source_score: hit.source_similarity.or(Some(hit.similarity)),
                 vector_reranked_from_f32: hit.reranked_from_f32,
+                sparse_score: None,
+                sparse_rank: None,
                 late_interaction_rank: None,
                 late_interaction_score: None,
                 temporal_weight: None,
@@ -2013,6 +2131,23 @@ fn build_receipt_with_metadata(
         requested_candidates,
         returned_candidates,
         post_filter_candidates,
+        sparse_enabled: metadata.sparse_candidate_count.is_some(),
+        sparse_weight: metadata.sparse_weight,
+        sparse_query_nonzero_count: metadata.sparse_query_nonzero_count,
+        sparse_candidate_count: metadata.sparse_candidate_count,
+        sparse_representations: metadata.sparse_representations,
+        sparse_result_ranks: results
+            .iter()
+            .filter_map(|result| {
+                result
+                    .breakdown
+                    .sparse_rank
+                    .map(|rank| crate::types::SparseRankReceiptV1 {
+                        result_id: search_result_id(&result.result.source),
+                        rank,
+                    })
+            })
+            .collect(),
         fallback_reason: fallback.clone(),
         derived_candidate: if candidate_backend == "provekv_pool_candidate_then_exact_f32" {
             Some(crate::types::DerivedCandidateReceiptV1 {
@@ -2117,6 +2252,7 @@ pub(crate) fn hybrid_search_detailed_with_context(
     conn: &Connection,
     query: &str,
     query_embedding: &[f32],
+    query_sparse: Option<&crate::SparseWeights>,
     config: &SearchConfig,
     context: &SearchContext,
     top_k: usize,
@@ -2225,7 +2361,30 @@ pub(crate) fn hybrid_search_detailed_with_context(
         }
     }
 
-    let results = if config.late_interaction_weight > 0.0 {
+    let sparse_hits =
+        if let Some(query_sparse) = query_sparse.filter(|_| config.sparse_weight > 0.0) {
+            sparse_search(
+                conn,
+                query_sparse,
+                config,
+                namespaces,
+                source_types,
+                session_ids,
+            )?
+        } else {
+            Vec::new()
+        };
+
+    let results = if config.sparse_weight > 0.0 {
+        rrf_fuse_three_detailed_with_context(
+            &bm25_hits,
+            &vector_outcome.hits,
+            &sparse_hits,
+            config,
+            context,
+            top_k,
+        )
+    } else if config.late_interaction_weight > 0.0 {
         // Late interaction 3rd RRF signal: compute proxy MaxSim scores by
         // splitting the query embedding into segments and comparing against
         // document embeddings. This is an approximation of ColBERT late
@@ -2251,6 +2410,26 @@ pub(crate) fn hybrid_search_detailed_with_context(
     } else {
         rrf_fuse_detailed_with_context(&bm25_hits, &vector_outcome.hits, config, context, top_k)
     };
+    let mut receipt_metadata = vector_outcome.receipt_metadata;
+    if config.sparse_weight > 0.0 {
+        receipt_metadata.sparse_weight = Some(config.sparse_weight);
+        if let Some(query_sparse) = query_sparse {
+            receipt_metadata.sparse_query_nonzero_count = Some(query_sparse.len());
+            receipt_metadata.sparse_candidate_count = Some(sparse_hits.len());
+            let mut representations: Vec<String> = sparse_hits
+                .iter()
+                .map(|hit| hit.representation.clone())
+                .collect();
+            representations.sort();
+            representations.dedup();
+            receipt_metadata.sparse_representations = representations;
+        } else {
+            vector_outcome.degradations.push(
+                "sparse retrieval was requested but the active embedder produced no sparse query representation"
+                    .to_string(),
+            );
+        }
+    }
     let receipt = build_receipt_with_metadata(
         context,
         query_embedding,
@@ -2263,7 +2442,7 @@ pub(crate) fn hybrid_search_detailed_with_context(
         vector_outcome.exact_rerank,
         &results,
         vector_outcome.degradations,
-        vector_outcome.receipt_metadata,
+        receipt_metadata,
     );
     Ok(SearchExecution { results, receipt })
 }
@@ -2284,6 +2463,7 @@ pub(crate) fn hybrid_search_detailed(
         conn,
         query,
         query_embedding,
+        None,
         config,
         &context,
         top_k,
@@ -2871,6 +3051,7 @@ pub(crate) fn hybrid_search_with_hnsw_detailed_with_context(
     conn: &Connection,
     query: &str,
     query_embedding: &[f32],
+    query_sparse: Option<&crate::SparseWeights>,
     config: &SearchConfig,
     context: &SearchContext,
     top_k: usize,
@@ -2928,8 +3109,51 @@ pub(crate) fn hybrid_search_with_hnsw_detailed_with_context(
         exact_rerank = true;
     }
 
-    let results = rrf_fuse_detailed_with_context(&bm25_hits, &vector_hits, config, context, top_k);
-    let receipt = build_receipt(
+    let sparse_hits =
+        if let Some(query_sparse) = query_sparse.filter(|_| config.sparse_weight > 0.0) {
+            sparse_search(
+                conn,
+                query_sparse,
+                config,
+                namespaces,
+                source_types,
+                session_ids,
+            )?
+        } else {
+            Vec::new()
+        };
+    let results = if config.sparse_weight > 0.0 {
+        rrf_fuse_three_detailed_with_context(
+            &bm25_hits,
+            &vector_hits,
+            &sparse_hits,
+            config,
+            context,
+            top_k,
+        )
+    } else {
+        rrf_fuse_detailed_with_context(&bm25_hits, &vector_hits, config, context, top_k)
+    };
+    let mut metadata = VectorReceiptMetadata::default();
+    if config.sparse_weight > 0.0 {
+        metadata.sparse_weight = Some(config.sparse_weight);
+        if let Some(query_sparse) = query_sparse {
+            metadata.sparse_query_nonzero_count = Some(query_sparse.len());
+            metadata.sparse_candidate_count = Some(sparse_hits.len());
+            metadata.sparse_representations = sparse_hits
+                .iter()
+                .map(|hit| hit.representation.clone())
+                .collect();
+            metadata.sparse_representations.sort();
+            metadata.sparse_representations.dedup();
+        } else {
+            degradations.push(
+                "sparse retrieval was requested but the active embedder produced no sparse query representation"
+                    .to_string(),
+            );
+        }
+    }
+    let receipt = build_receipt_with_metadata(
         context,
         query_embedding,
         "hybrid",
@@ -2941,6 +3165,7 @@ pub(crate) fn hybrid_search_with_hnsw_detailed_with_context(
         exact_rerank,
         &results,
         degradations,
+        metadata,
     );
 
     Ok(SearchExecution { results, receipt })
@@ -2964,6 +3189,7 @@ pub(crate) fn hybrid_search_with_hnsw_detailed(
         conn,
         query,
         query_embedding,
+        None,
         config,
         &context,
         top_k,

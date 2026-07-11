@@ -10,6 +10,15 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 
+/// Boxed future type alias for an embedder's optional multi-function output.
+pub type OptionalMultiEmbedFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<MultiFunctionEmbedding>, MemoryError>> + Send + 'a>>;
+
+/// Boxed future type alias for optional batched multi-function output.
+pub type OptionalMultiEmbedBatchFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<Option<Vec<MultiFunctionEmbedding>>, MemoryError>> + Send + 'a>,
+>;
+
 /// Boxed future type alias for single embedding results.
 pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<f32>, MemoryError>> + Send + 'a>>;
 
@@ -34,6 +43,32 @@ pub trait Embedder: Send + Sync {
 
     /// Expected embedding dimensions.
     fn dimensions(&self) -> usize;
+
+    /// Optionally produce dense and sparse representations in one model call.
+    ///
+    /// Existing dense-only embedders remain source-compatible and report no
+    /// sparse capability. Callers may derive a generic sparse vector from the
+    /// dense output only when explicitly configured to do so.
+    fn embed_multi_optional<'a>(&'a self, _text: &'a str) -> OptionalMultiEmbedFuture<'a> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Optionally produce batched dense and sparse representations.
+    fn embed_batch_multi_optional<'a>(
+        &'a self,
+        texts: Vec<String>,
+    ) -> OptionalMultiEmbedBatchFuture<'a> {
+        Box::pin(async move {
+            let mut output = Vec::with_capacity(texts.len());
+            for text in &texts {
+                let Some(multi) = self.embed_multi_optional(text).await? else {
+                    return Ok(None);
+                };
+                output.push(multi);
+            }
+            Ok(Some(output))
+        })
+    }
 }
 
 // ─── OllamaEmbedder ─────────────────────────────────────────────
@@ -287,11 +322,11 @@ pub type MultiEmbedFuture<'a> =
 pub type MultiEmbedBatchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<MultiFunctionEmbedding>, MemoryError>> + Send + 'a>>;
 
-/// Sparse lexical weight representation (SPLADE-like).
+/// Sparse weight representation for generic or model-native sparse retrieval.
 ///
 /// Stores non-zero (dimension_index, weight) pairs, sorted by descending
-/// absolute weight. Used for sparse retrieval ranking.
-#[derive(Debug, Clone, PartialEq)]
+/// absolute weight. This type does not imply that its values came from SPLADE.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SparseWeights {
     /// (index, weight) pairs, sorted by descending absolute weight.
     pub entries: Vec<(usize, f32)>,
@@ -302,7 +337,7 @@ impl SparseWeights {
     /// dimensions with the largest absolute values, filtered by a minimum threshold.
     ///
     /// This is a pragmatic derivation from the dense embedding. When a native
-    /// SPLADE-style sparse output is available from the model, use
+    /// model-native sparse output is available, use
     /// [`SparseWeights::from_entries`] instead.
     #[must_use]
     pub fn from_dense(vec: &[f32], top_k: usize, min_weight: f32) -> Self {
@@ -417,7 +452,7 @@ impl MultiVectorEmbedding {
 pub struct MultiFunctionEmbedding {
     /// Dense vector (standard embedding for dense retrieval).
     pub dense: Vec<f32>,
-    /// Sparse lexical weights (SPLADE-like for sparse retrieval).
+    /// Sparse weights for BGE-M3/native or explicitly derived generic retrieval.
     pub sparse: SparseWeights,
     /// ColBERT-style multi-vector (per-token embeddings for late interaction).
     pub multi_vec: MultiVectorEmbedding,
@@ -471,18 +506,18 @@ impl Default for BgeM3DeriveConfig {
 ///
 /// Produces three representations from a single Ollama model call:
 /// 1. **Dense vector** — direct from Ollama's `/api/embed` endpoint.
-/// 2. **Sparse lexical weights** — derived from the dense vector via top-k
-///    thresholding (mimicking SPLADE-style sparse activation).
+/// 2. **Sparse weights** — derived from the BGE-M3 dense vector via explicit
+///    top-k thresholding because Ollama does not expose native sparse output.
 /// 3. **ColBERT-style multi-vector** — dense vector chunked into pseudo
 ///    per-token embeddings for late interaction scoring.
 ///
 /// # Current Limitations
 ///
 /// Ollama's embedding API (`/api/embed`) currently returns only dense vectors.
-/// The sparse and multi-vec representations are derived from the dense output
-/// as a pragmatic approximation. When Ollama (or another backend) exposes
-/// native BGE-M3 sparse and per-token outputs, this implementation can be
-/// updated to use them directly by replacing the derivation methods.
+/// The sparse and multi-vec representations are derived from the dense output.
+/// They are not SPLADE outputs. When Ollama (or another backend) exposes native
+/// BGE-M3 sparse and per-token outputs, this implementation can use those
+/// representations directly without changing the retrieval interface.
 ///
 /// The model `bge-m3` produces 1024-dimensional dense embeddings.
 pub struct BgeM3Embedder {
@@ -699,6 +734,25 @@ impl Embedder for BgeM3Embedder {
 
     fn dimensions(&self) -> usize {
         self.dimensions
+    }
+
+    fn embed_multi_optional<'a>(&'a self, text: &'a str) -> OptionalMultiEmbedFuture<'a> {
+        Box::pin(async move {
+            MultiFunctionEmbedder::embed_multi(self, text)
+                .await
+                .map(Some)
+        })
+    }
+
+    fn embed_batch_multi_optional<'a>(
+        &'a self,
+        texts: Vec<String>,
+    ) -> OptionalMultiEmbedBatchFuture<'a> {
+        Box::pin(async move {
+            MultiFunctionEmbedder::embed_batch_multi(self, texts)
+                .await
+                .map(Some)
+        })
     }
 }
 

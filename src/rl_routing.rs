@@ -29,6 +29,9 @@ pub struct RoutingPolicy {
     pub baseline: f64,
     /// Number of training examples seen.
     pub trained_examples: usize,
+    /// RFC 3339 timestamp of the most recent training update.
+    #[serde(default)]
+    pub last_updated: Option<String>,
 }
 
 impl Default for RoutingPolicy {
@@ -45,6 +48,7 @@ impl Default for RoutingPolicy {
             learning_rate: 0.01,
             baseline: 0.5,
             trained_examples: 0,
+            last_updated: None,
         }
     }
 }
@@ -118,16 +122,12 @@ pub fn update_policy(policy: &mut RoutingPolicy, examples: &[TrainingExample]) {
 
 // ─── Routing with RL ────────────────────────────────────────────────────
 
-/// Route a query using the learned policy.
+/// Route a query using learned policy weights.
 ///
-/// Falls back to heuristic routing if the policy is untrained
-/// (trained_examples == 0).
-pub fn route_with_rl(policy: &RoutingPolicy, profile: &QueryProfile) -> RoutingDecision {
-    if policy.trained_examples == 0 {
-        let router = RetrievalRouter::default();
-        return router.route(profile);
-    }
-
+/// Callers should use [`is_trained`] before selecting this production path.
+/// Heuristic fallback belongs at the routing dispatch boundary, where the
+/// caller's configured [`RetrievalRouter`] is available.
+pub fn route_with_policy(policy: &RoutingPolicy, profile: &QueryProfile) -> RoutingDecision {
     // Compute stage scores from learned weights.
     let bm25_w = *policy.weights.get("bm25_coarse").unwrap_or(&1.0);
     let vector_w = *policy.weights.get("vector_medium").unwrap_or(&1.0);
@@ -161,9 +161,21 @@ pub fn route_with_rl(policy: &RoutingPolicy, profile: &QueryProfile) -> RoutingD
     }
 }
 
+/// Backward-compatible RL routing entry point.
+///
+/// New production dispatchers should explicitly select [`route_with_policy`]
+/// only for a trained persisted policy and otherwise use their configured
+/// heuristic router.
+pub fn route_with_rl(policy: &RoutingPolicy, profile: &QueryProfile) -> RoutingDecision {
+    if policy.trained_examples == 0 {
+        return RetrievalRouter::default().route(profile);
+    }
+    route_with_policy(policy, profile)
+}
+
 /// Check if the policy has been trained enough to use.
 pub fn is_trained(policy: &RoutingPolicy) -> bool {
-    policy.trained_examples > 10
+    policy.trained_examples >= 10
 }
 
 // ─── Receipt-driven RL routing feedback ─────────────────────────────────
@@ -213,6 +225,7 @@ pub fn record_routing_outcome(
     let score = outcome.to_score();
     let example = extract_training_example(profile, decision, score);
     update_policy(policy, &[example]);
+    policy.last_updated = Some(chrono::Utc::now().to_rfc3339());
     policy.clone()
 }
 
@@ -383,12 +396,30 @@ mod tests {
 
         // Now route a similar query — decoder should be enabled.
         let test_profile = QueryProfile::from_query("compare go vs rust differences");
-        let rl_decision = route_with_rl(&policy, &test_profile);
+        let rl_decision = route_with_policy(&policy, &test_profile);
         assert!(
             rl_decision.decoder,
             "trained policy should enable decoder for contradiction queries (decoder weight: {})",
             policy.weights.get("decoder").unwrap_or(&0.0)
         );
+    }
+
+    #[test]
+    fn trained_policy_differs_from_heuristic_routing() {
+        let profile = QueryProfile::from_query("compare rust vs python performance");
+        let heuristic = RetrievalRouter::default().route(&profile);
+        assert!(heuristic.rerank_fine);
+
+        let mut policy = RoutingPolicy::default();
+        let decision = heuristic.clone();
+        for _ in 0..11 {
+            record_routing_outcome(&mut policy, &profile, &decision, RoutingOutcome::Bad);
+        }
+
+        assert!(is_trained(&policy));
+        let learned = route_with_policy(&policy, &profile);
+        assert_ne!(learned.rerank_fine, heuristic.rerank_fine);
+        assert!(learned.reasoning.starts_with("RL policy"));
     }
 
     #[test]

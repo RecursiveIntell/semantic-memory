@@ -155,7 +155,8 @@ impl MemoryAuthority {
         validate_authority_request(&permit, &caller_idempotency_key, kind)?;
         let prepared = match candidate_content_for_embedding(&candidate) {
             Some(content) => {
-                let embedding = self.store.embed_text_internal(content).await?;
+                let (embedding, sparse, sparse_representation) =
+                    self.store.embed_text_with_sparse_internal(content).await?;
                 self.store.validate_embedding_dimensions(&embedding)?;
                 let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
                 let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
@@ -165,6 +166,8 @@ impl MemoryAuthority {
                 Some(FactEmbedding {
                     embedding: embedding_bytes,
                     q8: q8_bytes,
+                    sparse,
+                    sparse_representation,
                 })
             }
             None => None,
@@ -597,7 +600,8 @@ impl MemoryAuthority {
 
         let prepared = match mutation.content_for_embedding() {
             Some(content) => {
-                let embedding = self.store.embed_text_internal(content).await?;
+                let (embedding, sparse, sparse_representation) =
+                    self.store.embed_text_with_sparse_internal(content).await?;
                 self.store.validate_embedding_dimensions(&embedding)?;
                 let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
                 let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
@@ -608,6 +612,8 @@ impl MemoryAuthority {
                 Some(FactEmbedding {
                     embedding: embedding_bytes,
                     q8: q8_bytes,
+                    sparse,
+                    sparse_representation,
                 })
             }
             None => None,
@@ -1242,6 +1248,18 @@ fn append_fact(
                 source,
                 Some(&metadata),
             )?;
+            if let Some((weights, representation)) = prepared
+                .sparse
+                .as_ref()
+                .zip(prepared.sparse_representation.as_deref())
+            {
+                crate::db::store_sparse_vector(
+                    tx,
+                    &format!("fact:{fact_id}"),
+                    weights,
+                    representation,
+                )?;
+            }
         }
         AuthorityOperationKind::Redact => {
             let metadata = serde_json::json!({
@@ -1275,6 +1293,8 @@ fn append_fact(
 struct FactEmbedding {
     embedding: Vec<u8>,
     q8: Option<Vec<u8>>,
+    sparse: Option<crate::SparseWeights>,
+    sparse_representation: Option<String>,
 }
 
 fn apply_lineage_transition(
@@ -1326,6 +1346,7 @@ fn apply_lineage_transition(
             "UPDATE authority_versions SET is_active = 0 WHERE fact_id = ?1 AND is_active = 1",
             params![target_fact_id(target)],
         )?;
+        crate::db::delete_sparse_vector(tx, &format!("fact:{}", target_fact_id(target)))?;
         tx.execute(
             "INSERT INTO authority_versions
              (fact_id, lineage_id, version, operation_kind, is_active, is_redacted, content_digest)

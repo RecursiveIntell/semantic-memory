@@ -102,6 +102,7 @@ candle-embedder = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 lru = "0.16.3"
 bytemuck = { version = "1", features = ["derive"] }
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 rusqlite = { workspace = true, features = ["bundled", "blob"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { workspace = true, features = ["derive"] }

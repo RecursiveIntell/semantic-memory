@@ -1,14 +1,15 @@
 //! Database initialization, migrations, integrity checks, and durable sidecar state.
 
 use crate::config::{EmbeddingConfig, MemoryLimits, PoolConfig};
+use crate::embedder::SparseWeights;
 use crate::error::MemoryError;
 use crate::quantize::unpack_quantized;
 #[cfg(feature = "turbo-quant-codec")]
 use crate::types::{DerivedVectorArtifactGenerationV1, VectorArtifactBuildReceiptV1};
 use crate::types::{
     EpisodeOutcome, ProveKvPoolArtifactStatusV1, ProveKvPoolGenerationStatus,
-    ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1, Role, VectorSearchReceiptV1,
-    VerificationStatus,
+    ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1, Role, SearchSourceType,
+    SparseRankReceiptV1, VectorSearchReceiptV1, VerificationStatus,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -846,6 +847,47 @@ BEFORE DELETE ON procedural_memory_receipts BEGIN
 END;
 "#;
 
+/// V35 migration: opt-in, privacy-sensitive inputs for complete search replay.
+const MIGRATION_V35: &str = r#"
+CREATE TABLE IF NOT EXISTS replay_inputs (
+    receipt_id TEXT PRIMARY KEY,
+    query_text TEXT NOT NULL,
+    namespaces_json TEXT,
+    source_types_json TEXT,
+    stored_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
+/// V36 migration: durable sparse vectors keyed by canonical search item ID.
+const MIGRATION_V36: &str = r#"
+CREATE TABLE IF NOT EXISTS sparse_vectors (
+    item_key TEXT PRIMARY KEY,
+    entries_json TEXT NOT NULL,
+    representation TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_fact
+AFTER DELETE ON facts BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'fact:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_chunk
+AFTER DELETE ON chunks BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'chunk:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_message
+AFTER DELETE ON messages BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'msg:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_episode
+AFTER DELETE ON episodes BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'episode:' || OLD.episode_id;
+END;
+"#;
+
 /// Ordered list of migrations.
 #[allow(deprecated)]
 const MIGRATIONS: &[(u32, &str)] = &[
@@ -883,10 +925,12 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (32, MIGRATION_V32),
     (33, MIGRATION_V33),
     (34, MIGRATION_V34),
+    (35, MIGRATION_V35),
+    (36, MIGRATION_V36),
 ];
 
 /// Maximum schema version this build supports.
-pub const MAX_SCHEMA_VERSION: u32 = 34;
+pub const MAX_SCHEMA_VERSION: u32 = 36;
 
 /// Procedural migration for V9: rebuild episodes table with episode_id PK.
 fn run_migration_v9(conn: &Connection) -> Result<(), MemoryError> {
@@ -1501,6 +1545,18 @@ struct StoredVectorSearchReceiptV1 {
     requested_candidates: u64,
     returned_candidates: u64,
     post_filter_candidates: u64,
+    #[serde(default)]
+    sparse_enabled: bool,
+    #[serde(default)]
+    sparse_weight: Option<f64>,
+    #[serde(default)]
+    sparse_query_nonzero_count: Option<u64>,
+    #[serde(default)]
+    sparse_candidate_count: Option<u64>,
+    #[serde(default)]
+    sparse_representations: Vec<String>,
+    #[serde(default)]
+    sparse_result_ranks: Vec<SparseRankReceiptV1>,
     fallback: Option<String>,
     exact_rerank: bool,
     result_ids: Vec<String>,
@@ -2172,6 +2228,18 @@ fn stored_search_receipt(
             receipt.post_filter_candidates,
             "post_filter_candidates",
         )?,
+        sparse_enabled: receipt.sparse_enabled,
+        sparse_weight: receipt.sparse_weight,
+        sparse_query_nonzero_count: receipt
+            .sparse_query_nonzero_count
+            .map(|value| receipt_count_to_u64(value, "sparse_query_nonzero_count"))
+            .transpose()?,
+        sparse_candidate_count: receipt
+            .sparse_candidate_count
+            .map(|value| receipt_count_to_u64(value, "sparse_candidate_count"))
+            .transpose()?,
+        sparse_representations: receipt.sparse_representations.clone(),
+        sparse_result_ranks: receipt.sparse_result_ranks.clone(),
         fallback: receipt.fallback.clone(),
         exact_rerank: receipt.exact_rerank,
         result_ids: receipt.result_ids.clone(),
@@ -2293,6 +2361,22 @@ fn search_receipt_from_stored(
             &stored.receipt_id,
             "post_filter_candidates",
         )?,
+        sparse_enabled: stored.sparse_enabled,
+        sparse_weight: stored.sparse_weight,
+        sparse_query_nonzero_count: stored
+            .sparse_query_nonzero_count
+            .map(|value| {
+                receipt_count_to_usize(value, &stored.receipt_id, "sparse_query_nonzero_count")
+            })
+            .transpose()?,
+        sparse_candidate_count: stored
+            .sparse_candidate_count
+            .map(|value| {
+                receipt_count_to_usize(value, &stored.receipt_id, "sparse_candidate_count")
+            })
+            .transpose()?,
+        sparse_representations: stored.sparse_representations,
+        sparse_result_ranks: stored.sparse_result_ranks,
         fallback: stored.fallback,
         exact_rerank: stored.exact_rerank,
         result_ids: stored.result_ids,
@@ -2408,6 +2492,102 @@ pub fn get_search_receipt(
     Ok(Some(receipt))
 }
 
+/// Privacy-sensitive inputs retained by explicit replay opt-in.
+pub(crate) struct ReplayInputs {
+    pub query_text: String,
+    pub namespaces: Option<Vec<String>>,
+    pub source_types: Option<Vec<SearchSourceType>>,
+}
+
+/// Persist the inputs needed to replay a durable search receipt.
+pub(crate) fn store_replay_inputs(
+    conn: &Connection,
+    receipt_id: &str,
+    query_text: &str,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+) -> Result<(), MemoryError> {
+    let namespaces_json = namespaces
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            MemoryError::Other(format!("failed to serialize replay namespaces: {error}"))
+        })?;
+    let source_types_json = source_types
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            MemoryError::Other(format!("failed to serialize replay source types: {error}"))
+        })?;
+
+    let existing: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT query_text, namespaces_json, source_types_json
+             FROM replay_inputs WHERE receipt_id = ?1",
+            params![receipt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing.0 == query_text
+            && existing.1.as_ref() == namespaces_json.as_ref()
+            && existing.2.as_ref() == source_types_json.as_ref()
+        {
+            return Ok(());
+        }
+        return Err(MemoryError::SearchReceiptConflict {
+            receipt_id: receipt_id.to_string(),
+        });
+    }
+
+    conn.execute(
+        "INSERT INTO replay_inputs
+            (receipt_id, query_text, namespaces_json, source_types_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![receipt_id, query_text, namespaces_json, source_types_json],
+    )?;
+    Ok(())
+}
+
+/// Load opt-in inputs for complete replay, if present.
+pub(crate) fn get_replay_inputs(
+    conn: &Connection,
+    receipt_id: &str,
+) -> Result<Option<ReplayInputs>, MemoryError> {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT query_text, namespaces_json, source_types_json
+             FROM replay_inputs WHERE receipt_id = ?1",
+            params![receipt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((query_text, namespaces_json, source_types_json)) = row else {
+        return Ok(None);
+    };
+    let namespaces = namespaces_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| MemoryError::CorruptData {
+            table: "replay_inputs",
+            row_id: receipt_id.to_string(),
+            detail: format!("invalid namespaces JSON: {error}"),
+        })?;
+    let source_types = source_types_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| MemoryError::CorruptData {
+            table: "replay_inputs",
+            row_id: receipt_id.to_string(),
+            detail: format!("invalid source types JSON: {error}"),
+        })?;
+    Ok(Some(ReplayInputs {
+        query_text,
+        namespaces,
+        source_types,
+    }))
+}
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -2481,6 +2661,133 @@ pub fn check_embedding_metadata(
 /// Encode an f32 slice as bytes for SQLite BLOB storage.
 pub fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
     encode_f32_le(embedding)
+}
+
+/// One durable sparse-vector row used by the sparse retrieval lane.
+#[derive(Debug, Clone)]
+pub(crate) struct SparseVectorRow {
+    pub item_key: String,
+    pub weights: SparseWeights,
+    pub representation: String,
+}
+
+/// Insert or replace the sparse representation for a canonical search item.
+pub(crate) fn store_sparse_vector(
+    conn: &Connection,
+    item_key: &str,
+    weights: &SparseWeights,
+    representation: &str,
+) -> Result<(), MemoryError> {
+    if item_key.split_once(':').is_none() || representation.trim().is_empty() {
+        return Err(MemoryError::InvalidConfig {
+            field: "sparse_vector",
+            reason: "item_key must be canonical and representation must not be empty".to_string(),
+        });
+    }
+    if weights
+        .entries
+        .iter()
+        .any(|(_, weight)| !weight.is_finite())
+    {
+        return Err(MemoryError::InvalidConfig {
+            field: "sparse_vector.entries",
+            reason: "sparse weights must be finite".to_string(),
+        });
+    }
+    let entries_json = serde_json::to_string(&weights.entries)
+        .map_err(|error| MemoryError::Other(format!("serialize sparse weights: {error}")))?;
+    conn.execute(
+        "INSERT INTO sparse_vectors (item_key, entries_json, representation, updated_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(item_key) DO UPDATE SET
+             entries_json = excluded.entries_json,
+             representation = excluded.representation,
+             updated_at = excluded.updated_at",
+        params![item_key, entries_json, representation],
+    )?;
+    Ok(())
+}
+
+/// Load a bounded set of durable sparse rows selected by sparse dot product.
+pub(crate) fn search_sparse_vectors(
+    conn: &Connection,
+    query: &SparseWeights,
+    candidate_limit: usize,
+    min_score: f64,
+) -> Result<Vec<(SparseVectorRow, f64)>, MemoryError> {
+    if query.is_empty() || candidate_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut sql = String::from("WITH query_sparse(dimension, weight) AS (VALUES ");
+    for index in 0..query.entries.len() {
+        if index > 0 {
+            sql.push(',');
+        }
+        let dimension_param = index * 2 + 1;
+        let weight_param = dimension_param + 1;
+        sql.push_str(&format!("(?{dimension_param}, ?{weight_param})"));
+    }
+    let min_score_param = query.entries.len() * 2 + 1;
+    let limit_param = min_score_param + 1;
+    sql.push_str(&format!(
+        ") SELECT sv.item_key, sv.entries_json, sv.representation,
+                  SUM(CAST(json_extract(entry.value, '$[1]') AS REAL) * query_sparse.weight) AS sparse_score
+           FROM sparse_vectors sv
+           JOIN json_each(sv.entries_json) AS entry
+           JOIN query_sparse
+             ON CAST(json_extract(entry.value, '$[0]') AS INTEGER) = query_sparse.dimension
+           GROUP BY sv.item_key
+           HAVING sparse_score >= ?{min_score_param}
+           ORDER BY sparse_score DESC, sv.item_key ASC
+           LIMIT ?{limit_param}"
+    ));
+
+    let mut values: Vec<rusqlite::types::Value> = Vec::with_capacity(query.entries.len() * 2 + 2);
+    for (dimension, weight) in &query.entries {
+        values.push((*dimension as i64).into());
+        values.push(f64::from(*weight).into());
+    }
+    values.push(min_score.into());
+    values.push((candidate_limit as i64).into());
+
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        let (item_key, entries_json, representation, score) = row?;
+        let entries: Vec<(usize, f32)> =
+            serde_json::from_str(&entries_json).map_err(|error| MemoryError::CorruptData {
+                table: "sparse_vectors",
+                row_id: item_key.clone(),
+                detail: format!("invalid sparse entries JSON: {error}"),
+            })?;
+        results.push((
+            SparseVectorRow {
+                item_key,
+                weights: SparseWeights::from_entries(entries),
+                representation,
+            },
+            score,
+        ));
+    }
+    Ok(results)
+}
+
+/// Remove a sparse vector explicitly (used for supersession cleanup).
+pub(crate) fn delete_sparse_vector(conn: &Connection, item_key: &str) -> Result<(), MemoryError> {
+    conn.execute(
+        "DELETE FROM sparse_vectors WHERE item_key = ?1",
+        params![item_key],
+    )?;
+    Ok(())
 }
 
 /// Encode f32 values as a stable little-endian persisted representation.

@@ -676,7 +676,8 @@ impl MemoryStore {
             .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
             .await?;
         let search_text = build_episode_search_text(&document_title, &document_context, &meta);
-        let embedding = self.embed_text_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(&search_text).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -689,7 +690,7 @@ impl MemoryStore {
         let doc_id = document_id.to_string();
         let episode_id = self
             .with_write_conn(move |conn| {
-                upsert_episode(
+                let episode_id = upsert_episode(
                     conn,
                     &doc_id,
                     &meta,
@@ -697,7 +698,18 @@ impl MemoryStore {
                     &embedding_bytes,
                     q8_bytes.as_deref(),
                     trace_id_owned.as_deref(),
-                )
+                )?;
+                if let Some((weights, representation)) =
+                    sparse.as_ref().zip(sparse_representation.as_deref())
+                {
+                    db::store_sparse_vector(
+                        conn,
+                        &episode_item_key(&episode_id),
+                        weights,
+                        representation,
+                    )?;
+                }
+                Ok(episode_id)
             })
             .await?;
 
@@ -735,7 +747,8 @@ impl MemoryStore {
             .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
             .await?;
         let search_text = build_episode_search_text(&document_title, &document_context, &meta);
-        let embedding = self.embed_text_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(&search_text).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -749,7 +762,7 @@ impl MemoryStore {
         let doc_id = document_id.to_string();
         let created_ep_id = self
             .with_write_conn(move |conn| {
-                crate::episodes::create_episode(
+                let created_id = crate::episodes::create_episode(
                     conn,
                     &ep_id,
                     &doc_id,
@@ -758,7 +771,18 @@ impl MemoryStore {
                     &embedding_bytes,
                     q8_bytes.as_deref(),
                     trace_id_owned.as_deref(),
-                )
+                )?;
+                if let Some((weights, representation)) =
+                    sparse.as_ref().zip(sparse_representation.as_deref())
+                {
+                    db::store_sparse_vector(
+                        conn,
+                        &episode_item_key(&created_id),
+                        weights,
+                        representation,
+                    )?;
+                }
+                Ok(created_id)
             })
             .await?;
 
@@ -816,7 +840,8 @@ impl MemoryStore {
             .await?;
         let search_text =
             build_episode_search_text(&document_title, &document_context, &updated_meta);
-        let embedding = self.embed_text_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(&search_text).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -836,7 +861,13 @@ impl MemoryStore {
                 &search_text,
                 &embedding_bytes,
                 q8_bytes.as_deref(),
-            )
+            )?;
+            if let Some((weights, representation)) =
+                sparse.as_ref().zip(sparse_representation.as_deref())
+            {
+                db::store_sparse_vector(conn, &episode_item_key(&ep_id), weights, representation)?;
+            }
+            Ok(())
         })
         .await?;
 
@@ -882,7 +913,8 @@ impl MemoryStore {
             .await?;
         let search_text =
             build_episode_search_text(&document_title, &document_context, &updated_meta);
-        let embedding = self.embed_text_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(&search_text).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -903,7 +935,23 @@ impl MemoryStore {
                 &search_text,
                 &embedding_bytes,
                 q8_bytes.as_deref(),
-            )
+            )?;
+            if let Some((weights, representation)) =
+                sparse.as_ref().zip(sparse_representation.as_deref())
+            {
+                let episode_id: String = conn.query_row(
+                    "SELECT episode_id FROM episodes WHERE document_id = ?1",
+                    rusqlite::params![&doc_id],
+                    |row| row.get(0),
+                )?;
+                db::store_sparse_vector(
+                    conn,
+                    &episode_item_key(&episode_id),
+                    weights,
+                    representation,
+                )?;
+            }
+            Ok(())
         })
         .await?;
 

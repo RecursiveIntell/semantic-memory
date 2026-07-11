@@ -27,6 +27,7 @@
 //!
 //! Behind `#[cfg(feature = "decoder")]` (the contradiction cluster).
 
+use crate::search::cosine_similarity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -43,6 +44,9 @@ pub enum ContradictionSignal {
     NegationPolarity,
     /// Same wording differing by a known antonym pair.
     Antonym,
+    /// High embedding similarity (same neighborhood) but a negation/antonym
+    /// signal fired — paraphrased contradiction that lexical overlap misses.
+    EmbeddingAntipode,
 }
 
 /// A proposed contradiction between two items, with the evidence for it.
@@ -68,6 +72,13 @@ pub struct DetectorConfig {
     pub min_overlap: f64,
     /// Minimum subject overlap for the value-disagreement signal.
     pub min_subject_overlap: f64,
+    /// Minimum cosine similarity for the embedding-based contradiction gate.
+    /// Pairs above this threshold are checked for negation/antonym signals
+    /// even when lexical overlap is below `min_overlap`.
+    pub embedding_similarity_threshold: f64,
+    /// When true, use embeddings (if available) as the proximity gate instead
+    /// of lexical Jaccard overlap.
+    pub use_embeddings: bool,
 }
 
 impl Default for DetectorConfig {
@@ -75,6 +86,8 @@ impl Default for DetectorConfig {
         Self {
             min_overlap: 0.6,
             min_subject_overlap: 0.6,
+            embedding_similarity_threshold: 0.75,
+            use_embeddings: false,
         }
     }
 }
@@ -199,23 +212,35 @@ fn clamp01(x: f64) -> f64 {
 }
 
 /// Evaluate one ordered pair of items; return a [`DetectedPair`] if any signal
-/// fires. `(a_id, a_text)` and `(b_id, b_text)`.
+/// fires. `(a_id, a_text)` and `(b_id, b_text)`. When `embeddings` are provided,
+/// uses cosine similarity as the proximity gate instead of lexical Jaccard.
 fn evaluate_pair(
     a_id: &str,
     a_text: &str,
     b_id: &str,
     b_text: &str,
     cfg: &DetectorConfig,
+    a_emb: Option<&[f32]>,
+    b_emb: Option<&[f32]>,
 ) -> Option<DetectedPair> {
     let a_words = content_words(a_text);
     let b_words = content_words(b_text);
     let overlap = jaccard(&a_words, &b_words);
 
+    // Determine proximity: embedding cosine similarity if available, else lexical.
+    let (proximal, embedding_sim) = match (a_emb, b_emb) {
+        (Some(ae), Some(be)) if ae.len() == be.len() => {
+            let sim = cosine_similarity(ae, be).unwrap_or(0.0) as f64;
+            (sim >= cfg.embedding_similarity_threshold, Some(sim))
+        }
+        _ => (overlap >= cfg.min_overlap, None),
+    };
+
     let mut signals = Vec::new();
     let mut reasons = Vec::new();
 
     // 1. Numeric disagreement: same wording (sans numbers), different numbers.
-    if overlap >= cfg.min_overlap {
+    if proximal {
         let (na, nb) = (numbers(a_text), numbers(b_text));
         if !na.is_empty() && !nb.is_empty() && na.is_disjoint(&nb) {
             signals.push(ContradictionSignal::NumericDisagreement);
@@ -236,25 +261,44 @@ fn evaluate_pair(
         }
     }
 
-    // 3 & 4. Negation polarity / antonym: require strong topical overlap.
-    if overlap >= cfg.min_overlap {
+    // 3 & 4. Negation polarity / antonym: require proximity (embedding or lexical).
+    if proximal {
         if has_negation(a_text) != has_negation(b_text) {
-            signals.push(ContradictionSignal::NegationPolarity);
-            reasons.push(format!(
-                "same wording (overlap {overlap:.2}) but opposite negation"
-            ));
+            if embedding_sim.is_some() && overlap < cfg.min_overlap {
+                // Flagged via embedding proximity, not lexical overlap — this is
+                // a paraphrased contradiction that the lexical gate would miss.
+                signals.push(ContradictionSignal::EmbeddingAntipode);
+                reasons.push(format!(
+                    "embedding similarity {:.2} but opposite negation (paraphrased contradiction)",
+                    embedding_sim.unwrap()
+                ));
+            } else {
+                signals.push(ContradictionSignal::NegationPolarity);
+                reasons.push(format!(
+                    "same wording (overlap {overlap:.2}) but opposite negation"
+                ));
+            }
         }
         if antonym_hit(&a_words, &b_words) {
-            signals.push(ContradictionSignal::Antonym);
-            reasons.push("antonym pair across otherwise-similar items".to_string());
+            if embedding_sim.is_some() && overlap < cfg.min_overlap {
+                signals.push(ContradictionSignal::EmbeddingAntipode);
+                reasons.push(format!(
+                    "embedding similarity {:.2} but antonym pair (paraphrased contradiction)",
+                    embedding_sim.unwrap()
+                ));
+            } else {
+                signals.push(ContradictionSignal::Antonym);
+                reasons.push("antonym pair across otherwise-similar items".to_string());
+            }
         }
     }
 
     if signals.is_empty() {
         return None;
     }
-    // Score: overlap blended with how many signals fired.
-    let score = clamp01(0.4 + 0.2 * signals.len() as f64 + 0.3 * overlap);
+    // Score: proximity blended with how many signals fired.
+    let proximity_score = embedding_sim.unwrap_or(overlap);
+    let score = clamp01(0.4 + 0.2 * signals.len() as f64 + 0.3 * proximity_score);
     Some(DetectedPair {
         a: a_id.to_string(),
         b: b_id.to_string(),
@@ -266,7 +310,8 @@ fn evaluate_pair(
 
 /// Propose candidate contradictions across a set of items. `items` is
 /// `(id, content)`. O(n²) over the set — intended for a retrieved working set
-/// (tens of items), not the whole corpus.
+/// (tens of items), not the whole corpus. Uses lexical Jaccard overlap as the
+/// proximity gate.
 pub fn detect_contradictions(
     items: &[(String, String)],
     cfg: &DetectorConfig,
@@ -274,9 +319,42 @@ pub fn detect_contradictions(
     let mut out = Vec::new();
     for i in 0..items.len() {
         for j in (i + 1)..items.len() {
-            if let Some(pair) =
-                evaluate_pair(&items[i].0, &items[i].1, &items[j].0, &items[j].1, cfg)
-            {
+            if let Some(pair) = evaluate_pair(
+                &items[i].0,
+                &items[i].1,
+                &items[j].0,
+                &items[j].1,
+                cfg,
+                None,
+                None,
+            ) {
+                out.push(pair);
+            }
+        }
+    }
+    out
+}
+
+/// Propose candidate contradictions using embeddings as the proximity gate.
+/// `items` is `(id, content, embedding)`. Pairs with cosine similarity above
+/// `cfg.embedding_similarity_threshold` are checked for negation/antonym
+/// signals. Catches paraphrased contradictions that lexical overlap misses.
+pub fn detect_contradictions_semantic(
+    items: &[(String, String, Vec<f32>)],
+    cfg: &DetectorConfig,
+) -> Vec<DetectedPair> {
+    let mut out = Vec::new();
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            if let Some(pair) = evaluate_pair(
+                &items[i].0,
+                &items[i].1,
+                &items[j].0,
+                &items[j].1,
+                cfg,
+                Some(&items[i].2),
+                Some(&items[j].2),
+            ) {
                 out.push(pair);
             }
         }
@@ -438,6 +516,60 @@ mod tests {
         assert!(
             found.is_empty(),
             "lowercase predicate values must not compete"
+        );
+    }
+
+    #[test]
+    fn semantic_detects_paraphrased_contradiction() {
+        // "the server is up" vs "the service is down" — semantically similar
+        // but lexically different. Lexical detector misses this; embedding
+        // detector catches it via EmbeddingAntipode (negation flip in
+        // embedding space). We simulate embeddings with high cosine similarity
+        // but opposite negation polarity.
+        let emb_a = vec![0.8, 0.1, 0.1, 0.0, 0.0];
+        let emb_b = vec![0.79, 0.1, 0.1, 0.0, 0.0]; // very similar embedding
+        let items = vec![
+            ("a".to_string(), "The server is up.".to_string(), emb_a),
+            ("b".to_string(), "The service is not up.".to_string(), emb_b),
+        ];
+        let cfg = DetectorConfig {
+            use_embeddings: true,
+            ..DetectorConfig::default()
+        };
+        let found = detect_contradictions_semantic(&items, &cfg);
+        assert!(
+            !found.is_empty(),
+            "semantic detector should catch paraphrased negation contradiction"
+        );
+        assert!(
+            found[0]
+                .signals
+                .contains(&ContradictionSignal::EmbeddingAntipode),
+            "expected EmbeddingAntipode signal for paraphrased contradiction"
+        );
+    }
+
+    #[test]
+    fn semantic_does_not_flag_similar_non_contradictory() {
+        // High embedding similarity but no negation/antonym signal → no contradiction.
+        let emb_a = vec![0.8, 0.1, 0.1];
+        let emb_b = vec![0.79, 0.1, 0.1];
+        let items = vec![
+            ("a".to_string(), "The server is fast.".to_string(), emb_a),
+            (
+                "b".to_string(),
+                "The server is reliable.".to_string(),
+                emb_b,
+            ),
+        ];
+        let cfg = DetectorConfig {
+            use_embeddings: true,
+            ..DetectorConfig::default()
+        };
+        let found = detect_contradictions_semantic(&items, &cfg);
+        assert!(
+            found.is_empty(),
+            "similar but non-contradictory items must not be flagged"
         );
     }
 }

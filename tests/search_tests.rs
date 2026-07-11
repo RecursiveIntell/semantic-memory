@@ -11,7 +11,7 @@ use semantic_memory::{
     StateView,
 };
 #[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
-use semantic_memory::{ReceiptMode, SearchContext};
+use semantic_memory::{ReceiptMode, ReplayMode, SearchContext};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -1421,6 +1421,62 @@ async fn durable_receipt_replay_matches_original_inputs() {
         durable_replay.is_some(),
         "replay attempt should leave its own receipt"
     );
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
+async fn stored_replay_inputs_produce_equivalent_results() {
+    let (store, _tmp) = test_store_with_recency(None, 0.0);
+    let fact_id = store
+        .add_fact(
+            "replay-opt-in",
+            "Stored replay inputs preserve filters and results",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut context = SearchContext::at(
+        chrono::DateTime::parse_from_rfc3339("2026-02-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    context.receipt_mode = ReceiptMode::ReturnReceipt;
+    context.replay_mode = ReplayMode::StoreInputs;
+    context.exactness_profile = ExactnessProfile::PreferExact;
+    context.request_id = Some("stored-replay-inputs".to_string());
+
+    let response = store
+        .search_with_context(
+            "Stored replay inputs preserve filters",
+            Some(1),
+            Some(&["replay-opt-in"]),
+            Some(&[SearchSourceType::Facts]),
+            context,
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .search_replay_inputs_available("stored-replay-inputs")
+        .await
+        .unwrap());
+
+    let report = store
+        .replay_search_from_stored_inputs("stored-replay-inputs")
+        .await
+        .unwrap();
+
+    assert!(report.query_embedding_digest_matches);
+    assert!(report.result_ids_match);
+    assert_eq!(
+        response.receipt.unwrap().result_ids,
+        report.replay_receipt.result_ids
+    );
+    assert!(report
+        .replay_receipt
+        .result_ids
+        .contains(&format!("fact:{fact_id}")));
 }
 
 #[cfg(feature = "testing")]

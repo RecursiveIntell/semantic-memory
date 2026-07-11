@@ -35,6 +35,7 @@ pub fn insert_fact_with_fts(
         None,
         source,
         metadata,
+        None,
     )
 }
 
@@ -49,6 +50,7 @@ pub fn insert_fact_with_fts_q8(
     q8_bytes: Option<&[u8]>,
     source: Option<&str>,
     metadata: Option<&serde_json::Value>,
+    sparse: Option<(&crate::SparseWeights, &str)>,
 ) -> Result<(), MemoryError> {
     let metadata_str = metadata.map(|m| m.to_string());
     with_transaction(conn, |tx| {
@@ -85,6 +87,9 @@ pub fn insert_fact_with_fts_q8(
             PendingIndexOpKind::Upsert,
         )?;
         db::invalidate_derived_vector_artifact(tx, &format!("fact:{fact_id}"))?;
+        if let Some((weights, representation)) = sparse {
+            db::store_sparse_vector(tx, &format!("fact:{fact_id}"), weights, representation)?;
+        }
 
         Ok(())
     })
@@ -911,7 +916,8 @@ impl MemoryStore {
             return Ok(id);
         }
 
-        let embedding = self.embed_text_internal(content).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(content).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         let fact_id = uuid::Uuid::new_v4().to_string();
@@ -951,6 +957,7 @@ impl MemoryStore {
                 q8_bytes.as_deref(),
                 src.as_deref(),
                 meta.as_ref(),
+                sparse.as_ref().zip(sparse_representation.as_deref()),
             )
         })
         .await?;
@@ -991,6 +998,13 @@ impl MemoryStore {
         self.validate_content("fact.content", content)?;
         self.validate_embedding_dimensions(embedding)?;
         let embedding_bytes = db::embedding_to_bytes(embedding);
+        let sparse = self.inner.config.search.derive_sparse_from_dense.then(|| {
+            crate::SparseWeights::from_dense(
+                embedding,
+                self.inner.config.search.sparse_derive_top_k,
+                self.inner.config.search.sparse_derive_min_weight,
+            )
+        });
         let fact_id = uuid::Uuid::new_v4().to_string();
         let max_facts_per_namespace = self.inner.config.limits.max_facts_per_namespace;
 
@@ -1028,6 +1042,9 @@ impl MemoryStore {
                 q8_bytes.as_deref(),
                 src.as_deref(),
                 meta.as_ref(),
+                sparse
+                    .as_ref()
+                    .map(|weights| (weights, "generic_dense_derived_sparse")),
             )
         })
         .await?;
@@ -1048,7 +1065,8 @@ impl MemoryStore {
     #[cfg(feature = "admin-ops")]
     pub async fn update_fact(&self, fact_id: &str, content: &str) -> Result<(), MemoryError> {
         self.validate_content("fact.content", content)?;
-        let embedding = self.embed_text_internal(content).await?;
+        let (embedding, sparse, sparse_representation) =
+            self.embed_text_with_sparse_internal(content).await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -1060,7 +1078,16 @@ impl MemoryStore {
         let fid = fact_id.to_string();
         let ct = content.to_string();
         self.with_write_conn(move |conn| {
-            update_fact_with_fts(conn, &fid, &ct, &embedding_bytes, q8_bytes.as_deref())
+            update_fact_with_fts(conn, &fid, &ct, &embedding_bytes, q8_bytes.as_deref())?;
+            let item_key = format!("fact:{fid}");
+            if let Some((weights, representation)) =
+                sparse.as_ref().zip(sparse_representation.as_deref())
+            {
+                db::store_sparse_vector(conn, &item_key, weights, representation)?;
+            } else {
+                db::delete_sparse_vector(conn, &item_key)?;
+            }
+            Ok(())
         })
         .await?;
 
