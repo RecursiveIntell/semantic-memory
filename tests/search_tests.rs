@@ -6,7 +6,10 @@ use semantic_memory::DerivedVectorBackendPolicy;
 #[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
 use semantic_memory::ExactnessProfile;
 use semantic_memory::SearchSource;
-use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType};
+use semantic_memory::{
+    GraphEdgeType, MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType,
+    StateView,
+};
 #[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
 use semantic_memory::{ReceiptMode, SearchContext};
 use tempfile::TempDir;
@@ -20,6 +23,58 @@ fn test_store() -> (MemoryStore, TempDir) {
     let embedder = Box::new(MockEmbedder::new(768));
     let store = MemoryStore::open_with_embedder(config, embedder).unwrap();
     (store, tmp)
+}
+
+#[tokio::test]
+async fn ordinary_search_is_current_and_historical_search_reconstructs_old_head() {
+    let (store, _tmp) = test_store();
+    let old = store
+        .add_fact("state", "deployment channel is cobalt", None, None)
+        .await
+        .unwrap();
+    let primed = store
+        .search("deployment channel", Some(10), None, None)
+        .await
+        .unwrap();
+    assert!(primed.iter().any(|r| r.content.contains("cobalt")));
+    let historical_at = chrono::Utc::now().to_rfc3339();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let new = store
+        .add_fact("state", "deployment channel is amber", None, None)
+        .await
+        .unwrap();
+    store
+        .add_graph_edge(
+            &format!("fact:{new}"),
+            &format!("fact:{old}"),
+            GraphEdgeType::Entity {
+                relation: "supersedes".into(),
+            },
+            1.0,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let current = store
+        .search("deployment channel", Some(10), Some(&["state"]), None)
+        .await
+        .unwrap();
+    assert!(current.iter().any(|r| r.content.contains("amber")));
+    assert!(!current.iter().any(|r| r.content.contains("cobalt")));
+
+    let historical = store
+        .search_with_view(
+            "deployment channel",
+            Some(10),
+            Some(&["state"]),
+            None,
+            StateView::HistoricalAt(historical_at),
+        )
+        .await
+        .unwrap();
+    assert!(historical.iter().any(|r| r.content.contains("cobalt")));
+    assert!(!historical.iter().any(|r| r.content.contains("amber")));
 }
 
 #[cfg(feature = "turbo-quant-codec")]

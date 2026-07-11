@@ -145,6 +145,31 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = { workspace = true }
 semantic-memory-forge = { version = "0.1.1", path = "../semantic-memory-forge" }
 
+[[test]]
+name = "authority_transactions"
+path = "tests/authority_transactions.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "transition_compiler"
+path = "tests/transition_compiler.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "forgetting_closure"
+path = "tests/forgetting_closure.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "shadow_policy"
+path = "tests/shadow_policy.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "procedural_memory"
+path = "tests/procedural_memory.rs"
+required-features = ["testing"]
+
 # LIB-005: inherit workspace lint policy
 [lints]
 workspace = true

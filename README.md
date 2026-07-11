@@ -324,9 +324,34 @@ let edge = store
     )
     .await?;
 
-// List edges for a node.
+// Add a historical edge with explicit bitemporal timestamps.
+let historical = store
+    .add_graph_edge_at(
+        "fact:abc123-...",
+        "fact:def456-...",
+        GraphEdgeType::Causal {
+            confidence: 0.70,
+            evidence_ids: vec!["fact:ev-old".to_string()],
+        },
+        1.0,
+        None,
+        "2026-01-01 00:00:00.000000", // valid/domain time
+        "2026-01-15 00:00:00.000000", // recorded/system time
+    )
+    .await?;
+
+// List current edges for a node.
 let edges = store
     .list_graph_edges_for_node("fact:abc123-...")
+    .await?;
+
+// Reconstruct the graph as of domain time + recorded/system time.
+let as_of_edges = store
+    .list_graph_edges_for_node_as_of(
+        "fact:abc123-...",
+        "2026-02-01 00:00:00.000000",
+        "2026-02-01 00:00:00.000000",
+    )
     .await?;
 
 // Find the shortest path between two items.
@@ -437,7 +462,8 @@ semantic-memory = { version = "0.5", default-features = false, features = ["brut
   `recorded_time` via the [bitemporal-runtime](https://crates.io/crates/bitemporal-runtime)
   foundation.
 - **Typed graph edges** — durable, append-only edges with
-  invalidation. Four edge types: semantic, temporal, causal,
+  invalidation and bitemporal `valid_time` / `recorded_time`
+  reconstruction. Four edge types: semantic, temporal, causal,
   entity. Stored in the `graph_edges` SQLite table.
 
 ### Search
@@ -468,9 +494,16 @@ semantic-memory = { version = "0.5", default-features = false, features = ["brut
   namespaces, facts, documents, chunks, sessions, messages,
   episodes, and semantic/temporal/causal/entity edges derived
   from SQLite state.
-- **`add_graph_edge()`** — add typed edges with per-type
-  metadata (cosine_similarity, delta_secs, confidence,
-  relation). Idempotent insertion.
+- **`add_graph_edge()` / `add_graph_edge_at()`** — add typed
+  edges with per-type metadata (cosine_similarity, delta_secs,
+  confidence, relation). Normal insertion defaults bitemporal
+  fields to the insertion timestamp; `add_graph_edge_at()` imports
+  historical relationships with explicit valid/recorded timestamps.
+  Insertion remains idempotent.
+- **`list_graph_edges_for_node_as_of()`** — reconstruct a node's
+  relationship set at explicit domain/recorded-time cutoffs,
+  including edges that were invalidated after the as-of recorded
+  time.
 - **`list_graph_edges()` / `invalidate_graph_edge()`** —
   append-only edge lifecycle. Edges are never deleted, only
   invalidated with a reason.

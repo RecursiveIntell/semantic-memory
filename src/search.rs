@@ -2195,17 +2195,29 @@ pub(crate) fn hybrid_search_detailed_with_context(
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
                         reranked.truncate(config.candidate_pool_size);
-                        let new_receipt_metadata = coarse_outcome.receipt_metadata.clone();
-                        vector_outcome = VectorSearchOutcome {
-                            hits: reranked,
-                            candidate_backend: format!(
-                                "matryoshka_2stage_{}d_to_{}d",
+                        if reranked.is_empty() {
+                            // Coarse stage produced no usable candidates (e.g. dimension
+                            // mismatch because stored embeddings are not truncated to the
+                            // matryoshka candidate dimension). Keep the original full-dimension
+                            // outcome rather than silently discarding vector evidence.
+                            vector_outcome.degradations.push(format!(
+                                "matryoshka {}d coarse stage returned no candidates above threshold; kept full {}d outcome",
                                 candidate_dim,
                                 query_embedding.len()
-                            ),
-                            receipt_metadata: new_receipt_metadata,
-                            ..coarse_outcome
-                        };
+                            ));
+                        } else {
+                            let new_receipt_metadata = coarse_outcome.receipt_metadata.clone();
+                            vector_outcome = VectorSearchOutcome {
+                                hits: reranked,
+                                candidate_backend: format!(
+                                    "matryoshka_2stage_{}d_to_{}d",
+                                    candidate_dim,
+                                    query_embedding.len()
+                                ),
+                                receipt_metadata: new_receipt_metadata,
+                                ..coarse_outcome
+                            };
+                        }
                     }
                     Err(_) => { /* keep original vector_outcome */ }
                 }
