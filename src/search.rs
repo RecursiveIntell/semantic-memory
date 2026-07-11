@@ -3026,6 +3026,46 @@ pub(crate) fn fts_only_search_detailed(
     Ok(rrf_fuse_detailed(&bm25_hits, &[], config, top_k))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fts_only_search_detailed_with_context(
+    conn: &Connection,
+    query: &str,
+    config: &SearchConfig,
+    context: &SearchContext,
+    top_k: usize,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<SearchExecution, MemoryError> {
+    let results = fts_only_search_detailed(
+        conn,
+        query,
+        config,
+        top_k,
+        namespaces,
+        source_types,
+        session_ids,
+    )?;
+    let count = results.len();
+    let mut receipt = build_receipt(
+        context,
+        &[],
+        "fts_only",
+        "sqlite_fts5_bm25",
+        top_k,
+        count,
+        count,
+        None,
+        false,
+        &results,
+        Vec::new(),
+    );
+    if let Some(receipt) = receipt.as_mut() {
+        receipt.query_embedding_digest = None;
+    }
+    Ok(SearchExecution { results, receipt })
+}
+
 /// Full-text search only (no embeddings needed). Synchronous.
 pub fn fts_only_search(
     conn: &Connection,

@@ -1991,6 +1991,55 @@ impl MemoryStore {
             .await
     }
 
+    /// Full-text-only search with an explicit deterministic context and optional receipt.
+    pub async fn search_fts_only_with_context(
+        &self,
+        query: &str,
+        top_k: Option<usize>,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+        context: SearchContext,
+    ) -> Result<SearchResponse, MemoryError> {
+        let k = top_k
+            .unwrap_or(self.inner.config.search.default_top_k)
+            .min(MAX_TOP_K);
+        let q = query.to_string();
+        let config = self.inner.config.search.clone();
+        let ns_owned = to_owned_string_vec(namespaces);
+        let st_owned: Option<Vec<SearchSourceType>> = source_types.map(|s| s.to_vec());
+        let context_owned = context.clone();
+        let mut response = self
+            .with_read_conn(move |conn| {
+                let ns_refs = as_str_slice(&ns_owned);
+                let execution = search::fts_only_search_detailed_with_context(
+                    conn,
+                    &q,
+                    &config,
+                    &context_owned,
+                    k,
+                    ns_refs.as_deref(),
+                    st_owned.as_deref(),
+                    None,
+                )?;
+                Ok(SearchResponse {
+                    results: execution
+                        .results
+                        .into_iter()
+                        .map(|result| result.result)
+                        .collect(),
+                    receipt: execution.receipt,
+                })
+            })
+            .await?;
+        response.results = self
+            .filter_search_results(response.results, StateView::Current)
+            .await?;
+        if let Some(receipt) = &response.receipt {
+            self.persist_search_receipt(receipt).await?;
+        }
+        Ok(response)
+    }
+
     /// Vector similarity search only (no FTS).
     pub async fn search_vector_only(
         &self,
