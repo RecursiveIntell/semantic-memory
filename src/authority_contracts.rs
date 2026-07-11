@@ -95,6 +95,13 @@ pub struct RetrievalWitnessV1 {
     pub cached_witness_parent: Option<String>,
 }
 
+/// Snapshot metadata used by governing systems for cache validation and replay integrity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityStateV1 {
+    pub snapshot_id: AuthoritySnapshotId,
+    pub retrieval_epoch: RetrievalEpoch,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetrievalResponseV1<T> {
     pub schema_version: String,

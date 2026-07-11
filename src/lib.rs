@@ -156,9 +156,10 @@ pub mod origin_authority;
 pub use authority::MemoryAuthority;
 pub use authority_contracts::{
     AuthorityAdmission, AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit,
-    AuthorityReceiptV1, AuthoritySnapshotId, CapabilityManifestV1, Confidence, CosineSimilarity,
-    InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1, NonNegativeWeight, Probability,
-    RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1, StageOutcomeV1, SupersessionReceiptV1,
+    AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, CapabilityManifestV1, Confidence,
+    CosineSimilarity, InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1,
+    NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1,
+    StageOutcomeV1, SupersessionReceiptV1,
 };
 pub use forgetting::{
     ForgettingClosureReceiptV1, ForgettingClosureRequestV1, ForgettingDispositionV1,
@@ -682,11 +683,17 @@ struct MemoryStoreInner {
     embedding_cache: std::sync::Mutex<lru::LruCache<String, Vec<f32>>>,
     /// LRU cache for search results. Key is "query:top_k", value is results.
     /// Capped at 64 entries.
-    search_cache: std::sync::Mutex<lru::LruCache<String, Vec<types::SearchResult>>>,
+    search_cache: std::sync::Mutex<lru::LruCache<String, CachedSearchResult>>,
     pub(crate) authority_fault:
         Arc<std::sync::Mutex<Option<authority_contracts::AuthorityFaultStage>>>,
     #[cfg(feature = "hnsw")]
     hnsw_index: std::sync::RwLock<HnswIndex>,
+}
+
+#[derive(Clone)]
+struct CachedSearchResult {
+    results: Vec<types::SearchResult>,
+    retrieval_epoch: RetrievalEpoch,
 }
 
 #[cfg(feature = "hnsw")]
@@ -1738,14 +1745,29 @@ impl MemoryStore {
         } else {
             None
         };
+        let cache_epoch = if cache_key.is_some() {
+            Some(self.authority().current_retrieval_epoch().await?)
+        } else {
+            None
+        };
         if let Some(ref key) = cache_key {
             match self.inner.search_cache.lock() {
                 Ok(mut cache) => {
-                    if let Some(cached) = cache.get(key).cloned() {
-                        return Ok(SearchResponse {
-                            results: cached,
-                            receipt: None,
-                        });
+                    if let Some(cached) = cache.get(key) {
+                        if let Some(retrieval_epoch) = &cache_epoch {
+                            if *retrieval_epoch == cached.retrieval_epoch {
+                                return Ok(SearchResponse {
+                                    results: cached.results.clone(),
+                                    receipt: None,
+                                });
+                            }
+                        } else {
+                            return Ok(SearchResponse {
+                                results: cached.results.clone(),
+                                receipt: None,
+                            });
+                        }
+                        cache.pop(key);
                     }
                 }
                 Err(err) => {
@@ -1874,10 +1896,16 @@ impl MemoryStore {
         if let Some(receipt) = &response.receipt {
             self.persist_search_receipt(receipt).await?;
         }
-        if let Some(ref key) = cache_key {
+        if let (Some(ref key), Some(retrieval_epoch)) = (cache_key.as_ref(), cache_epoch) {
             match self.inner.search_cache.lock() {
                 Ok(mut cache) => {
-                    cache.put(key.clone(), response.results.clone());
+                    cache.put(
+                        key.to_string(),
+                        CachedSearchResult {
+                            results: response.results.clone(),
+                            retrieval_epoch,
+                        },
+                    );
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "search cache lock poisoned; insert skipped")

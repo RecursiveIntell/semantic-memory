@@ -6,7 +6,7 @@
 
 use crate::authority_contracts::{
     AuthorityAdmission, AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit,
-    AuthorityReceiptV1, AuthoritySnapshotId, RetrievalEpoch,
+    AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, RetrievalEpoch,
 };
 use crate::db::with_transaction;
 use crate::error::MemoryError;
@@ -16,6 +16,7 @@ use crate::origin_authority::{
     GovernedSearchResponseV1, GovernedStateResolutionResponseV1, OriginAuthorityLabelV1,
     OriginAuthorityRecordV1, OriginDerivationKindV1,
 };
+use crate::quantize::{self, Quantizer};
 use crate::transition_contracts::{
     MemoryTransitionCandidateV1, MemoryTransitionOutcomeV1, MemoryTransitionRecordV1,
     MemoryTransitionVerificationV1, TransitionDisposition, TransitionOperation,
@@ -257,6 +258,27 @@ impl MemoryAuthority {
     ) -> Result<GovernedSearchResponseV1, MemoryError> {
         self.search_governed_with_view(query, top_k, request, crate::StateView::Current)
             .await
+    }
+
+    /// Read the current authority snapshot and retrieval epoch for cache validation.
+    pub async fn current_state(&self) -> Result<AuthorityStateV1, MemoryError> {
+        self.store
+            .with_read_conn(|conn| {
+                with_transaction(conn, |tx| {
+                    let epoch = current_epoch(tx)?;
+                    let snapshot_id = snapshot_id(tx, epoch)?;
+                    Ok(AuthorityStateV1 {
+                        snapshot_id,
+                        retrieval_epoch: RetrievalEpoch(epoch),
+                    })
+                })
+            })
+            .await
+    }
+
+    /// Read-only compatibility shim for callers that only need the retrieval epoch.
+    pub(crate) async fn current_retrieval_epoch(&self) -> Result<RetrievalEpoch, MemoryError> {
+        Ok(self.current_state().await?.retrieval_epoch)
     }
 
     /// Governed current or historical search. The candidate source is intentionally irrelevant:
@@ -556,11 +578,36 @@ impl MemoryAuthority {
     ) -> Result<AuthorityReceiptV1, MemoryError> {
         validate_authority_request(&permit, &caller_idempotency_key, mutation.kind())?;
 
+        let prepared = match mutation.content_for_embedding() {
+            Some(content) => {
+                let embedding = self.store.embed_text_internal(content).await?;
+                self.store.validate_embedding_dimensions(&embedding)?;
+                let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
+                let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
+                    .quantize(&embedding)
+                    .map(|qv| quantize::pack_quantized(&qv))
+                    .ok();
+
+                Some(FactEmbedding {
+                    embedding: embedding_bytes,
+                    q8: q8_bytes,
+                })
+            }
+            None => None,
+        };
+
         let fault = self.store.inner.authority_fault.clone();
         let result = self
             .store
             .with_write_conn(move |conn| {
-                execute_mutation(conn, &permit, &caller_idempotency_key, mutation, &fault)
+                execute_mutation(
+                    conn,
+                    &permit,
+                    &caller_idempotency_key,
+                    mutation,
+                    &fault,
+                    prepared,
+                )
             })
             .await?;
         self.store.clear_search_cache();
@@ -634,6 +681,14 @@ enum Mutation {
 }
 
 impl Mutation {
+    fn content_for_embedding(&self) -> Option<&str> {
+        match self {
+            Self::Append { content, .. } => Some(content),
+            Self::Supersede { content, .. } => Some(content),
+            Self::Redact { .. } => None,
+        }
+    }
+
     fn kind(&self) -> AuthorityOperationKind {
         match self {
             Self::Append { .. } => AuthorityOperationKind::Append,
@@ -794,7 +849,7 @@ fn execute_compiled_transition(
         }
 
         let mutation = mutation_from_candidate(&candidate, &candidate_digest)?;
-        let authority_receipt = execute_mutation_tx(tx, permit, key, mutation, fault)?;
+        let authority_receipt = execute_mutation_tx(tx, permit, key, mutation, fault, None)?;
         let record = build_transition_record(
             key,
             permit,
@@ -908,11 +963,12 @@ fn execute_mutation(
     key: &str,
     mutation: Mutation,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
+    prepared: Option<FactEmbedding>,
 ) -> Result<AuthorityReceiptV1, MemoryError> {
     // Safety: this closure owns every canonical authority write and only commits after the
     // mutation journal, epoch, lineage, and receipt are complete.
     with_transaction(conn, |tx| {
-        execute_mutation_tx(tx, permit, key, mutation, fault)
+        execute_mutation_tx(tx, permit, key, mutation, fault, prepared)
     })
 }
 
@@ -922,6 +978,7 @@ fn execute_mutation_tx(
     key: &str,
     mutation: Mutation,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
+    mut prepared: Option<FactEmbedding>,
 ) -> Result<AuthorityReceiptV1, MemoryError> {
     let kind = mutation.kind();
     let origin_label = effective_origin_label(tx, permit, &mutation)?;
@@ -955,7 +1012,19 @@ fn execute_mutation_tx(
     let content_digest = mutation_content_digest(&mutation)?;
 
     fault_gate(fault, AuthorityFaultStage::BeforeAppend)?;
-    let (fact_id, lineage_id, target) = append_fact(tx, &mutation, &operation_id, &content_digest)?;
+    let requires_embedding = matches!(
+        mutation.kind(),
+        AuthorityOperationKind::Append | AuthorityOperationKind::Supersede
+    );
+    let prepared = if requires_embedding {
+        Some(prepared.take().ok_or_else(|| {
+            MemoryError::Other("governed write is missing precomputed embedding".to_string())
+        })?)
+    } else {
+        None
+    };
+    let (fact_id, lineage_id, target) =
+        append_fact(tx, &mutation, &operation_id, &content_digest, prepared)?;
     persist_origin_label(tx, &fact_id, &origin_label, &origin_label_digest)?;
     fault_gate(fault, AuthorityFaultStage::AfterAppend)?;
 
@@ -1067,6 +1136,7 @@ fn append_fact(
     mutation: &Mutation,
     operation_id: &str,
     content_digest: &str,
+    prepared: Option<FactEmbedding>,
 ) -> Result<(String, String, Option<LineageTarget>), MemoryError> {
     let (namespace, content, source, target) = match mutation {
         Mutation::Append {
@@ -1100,6 +1170,7 @@ fn append_fact(
             )
         }
     };
+    let source = source.as_deref();
     if namespace.trim().is_empty() || content.is_empty() {
         return Err(MemoryError::InvalidConfig {
             field: "authority.fact",
@@ -1112,30 +1183,67 @@ fn append_fact(
         .as_ref()
         .map(|value| value.lineage_id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let metadata = serde_json::json!({
-        "authority": {
-            "operation_id": operation_id,
-            "lineage_id": lineage_id,
-            "content_digest": content_digest,
-        }
-    })
-    .to_string();
 
-    tx.execute(
-        "INSERT INTO facts (id, namespace, content, source, embedding, metadata)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-        params![fact_id, namespace, content, source, metadata],
-    )?;
-    tx.execute(
-        "INSERT INTO facts_rowid_map (fact_id) VALUES (?1)",
-        params![fact_id],
-    )?;
-    let fts_rowid = tx.last_insert_rowid();
-    tx.execute(
-        "INSERT INTO facts_fts(rowid, content) VALUES (?1, ?2)",
-        params![fts_rowid, content],
-    )?;
+    match mutation.kind() {
+        AuthorityOperationKind::Append | AuthorityOperationKind::Supersede => {
+            let prepared = prepared.ok_or_else(|| {
+                MemoryError::Other("governed write is missing precomputed embedding".to_string())
+            })?;
+            if prepared.embedding.is_empty() {
+                return Err(MemoryError::Other(
+                    "governed write produced empty embedding bytes".to_string(),
+                ));
+            }
+            let metadata = serde_json::json!({
+                "authority": {
+                    "operation_id": operation_id,
+                    "lineage_id": lineage_id,
+                    "content_digest": content_digest,
+                }
+            });
+            crate::knowledge::insert_fact_in_tx(
+                tx,
+                &fact_id,
+                &namespace,
+                &content,
+                &prepared.embedding,
+                prepared.q8.as_deref(),
+                source,
+                Some(&metadata),
+            )?;
+        }
+        AuthorityOperationKind::Redact => {
+            let metadata = serde_json::json!({
+                "authority": {
+                    "operation_id": operation_id,
+                    "lineage_id": lineage_id,
+                    "content_digest": content_digest,
+                }
+            })
+            .to_string();
+            tx.execute(
+                "INSERT INTO facts (id, namespace, content, source, embedding, metadata)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+                params![fact_id, namespace, content, source, metadata],
+            )?;
+            tx.execute(
+                "INSERT INTO facts_rowid_map (fact_id) VALUES (?1)",
+                params![fact_id],
+            )?;
+            let fts_rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO facts_fts(rowid, content) VALUES (?1, ?2)",
+                params![fts_rowid, content],
+            )?;
+        }
+    }
     Ok((fact_id, lineage_id, target))
+}
+
+#[derive(Debug)]
+struct FactEmbedding {
+    embedding: Vec<u8>,
+    q8: Option<Vec<u8>>,
 }
 
 fn apply_lineage_transition(
