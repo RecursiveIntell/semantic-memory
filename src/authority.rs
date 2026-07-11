@@ -153,6 +153,22 @@ impl MemoryAuthority {
     ) -> Result<MemoryTransitionOutcomeV1, MemoryError> {
         let kind = candidate_operation_kind(&candidate);
         validate_authority_request(&permit, &caller_idempotency_key, kind)?;
+        let prepared = match candidate_content_for_embedding(&candidate) {
+            Some(content) => {
+                let embedding = self.store.embed_text_internal(content).await?;
+                self.store.validate_embedding_dimensions(&embedding)?;
+                let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
+                let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
+                    .quantize(&embedding)
+                    .map(|qv| quantize::pack_quantized(&qv))
+                    .ok();
+                Some(FactEmbedding {
+                    embedding: embedding_bytes,
+                    q8: q8_bytes,
+                })
+            }
+            None => None,
+        };
         let fault = self.store.inner.authority_fault.clone();
         let outcome = self
             .store
@@ -163,6 +179,7 @@ impl MemoryAuthority {
                     &caller_idempotency_key,
                     candidate,
                     &fault,
+                    prepared,
                 )
             })
             .await?;
@@ -758,6 +775,19 @@ fn candidate_operation_kind(candidate: &MemoryTransitionCandidateV1) -> Authorit
     }
 }
 
+fn candidate_content_for_embedding(candidate: &MemoryTransitionCandidateV1) -> Option<&str> {
+    let assertion_id = match &candidate.operation {
+        TransitionOperation::Append { assertion_id } => assertion_id,
+        TransitionOperation::Supersede { draft } => &draft.replacement_assertion_id,
+        TransitionOperation::Retract { .. } => return None,
+    };
+    candidate
+        .assertions
+        .iter()
+        .find(|assertion| &assertion.assertion_id == assertion_id)
+        .map(|assertion| assertion.content.as_str())
+}
+
 fn mutation_from_candidate(
     candidate: &MemoryTransitionCandidateV1,
     candidate_digest: &str,
@@ -819,6 +849,7 @@ fn execute_compiled_transition(
     key: &str,
     candidate: MemoryTransitionCandidateV1,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
+    prepared: Option<FactEmbedding>,
 ) -> Result<MemoryTransitionOutcomeV1, MemoryError> {
     let candidate_digest = transition_digest(&candidate)?;
     // Safety: verification, quarantine/evidence persistence, and the existing canonical authority
@@ -849,7 +880,7 @@ fn execute_compiled_transition(
         }
 
         let mutation = mutation_from_candidate(&candidate, &candidate_digest)?;
-        let authority_receipt = execute_mutation_tx(tx, permit, key, mutation, fault, None)?;
+        let authority_receipt = execute_mutation_tx(tx, permit, key, mutation, fault, prepared)?;
         let record = build_transition_record(
             key,
             permit,

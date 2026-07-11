@@ -429,7 +429,10 @@ async fn injected_fault_rolls_back_scrubbing_invalidations_epochs_and_receipt() 
             .content,
         "rollback canary"
     );
-    assert!(store.get_fact_embedding(&root).await.unwrap().is_none());
+    assert!(
+        store.get_fact_embedding(&root).await.unwrap().is_some(),
+        "failed forgetting must preserve the governed fact embedding"
+    );
     assert!(!store
         .search("rollback canary", Some(4), Some(&["private"]), None)
         .await
