@@ -218,14 +218,6 @@ pub mod matryoshka;
 /// Multiscale retrieval scheduling pipeline (staged search with budgets).
 #[cfg(feature = "multiscale")]
 pub mod pipeline;
-/// Poly-KV bridge: compressed candidate generation via the Poly-KV codec.
-#[cfg(feature = "poly-kv-codec")]
-pub mod poly_kv_bridge;
-mod pool;
-mod projection_batch;
-mod projection_derivation;
-pub mod projection_import;
-mod projection_lane;
 /// Compatibility-only legacy import surface.
 ///
 /// This module exists only for migration compatibility with pre-V11 import paths.
@@ -234,6 +226,13 @@ mod projection_lane;
     note = "Legacy V10 import path is migration-only. Use `import_projection_batch()` with `ProjectionImportBatchV3` on the canonical lane."
 )]
 #[doc(hidden)]
+#[cfg(feature = "poly-kv-codec")]
+pub mod poly_kv_bridge;
+mod pool;
+mod projection_batch;
+mod projection_derivation;
+pub mod projection_import;
+mod projection_lane;
 mod projection_legacy_compat;
 pub(crate) mod projection_storage;
 /// Phase 2: semiring provenance (Boolean/Tropical/Probability/Confidence).
@@ -1707,6 +1706,67 @@ impl MemoryStore {
             .await?;
         self.clear_search_cache();
         Ok(edge)
+    }
+
+    /// Atomically consolidate two facts into one.
+    ///
+    /// Updates the kept fact with merged content and adds a supersession edge
+    /// from the kept fact to the superseded fact, all in one SQLite transaction.
+    /// No duplicate fact is created.
+    pub async fn consolidate_facts(
+        &self,
+        keep_id: &str,
+        supersede_id: &str,
+        merged_content: &str,
+    ) -> Result<(), MemoryError> {
+        let keep_id = keep_id.to_string();
+        let supersede_id = supersede_id.to_string();
+        let merged_content = merged_content.to_string();
+        self.with_write_conn(move |conn| {
+            use rusqlite::params;
+
+            // 1. Update the kept fact's content
+            let (fts_rowid, old_content): (i64, String) = conn
+                .query_row(
+                    "SELECT fm.rowid, f.content
+                     FROM facts f
+                     JOIN facts_rowid_map fm ON fm.fact_id = f.id
+                     WHERE f.id = ?1",
+                    params![&keep_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| MemoryError::FactNotFound(format!("{}: {e}", keep_id)))?;
+
+            conn.execute(
+                "INSERT INTO facts_fts(facts_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                params![fts_rowid, old_content],
+            )?;
+
+            conn.execute(
+                "UPDATE facts SET content = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![&merged_content, &keep_id],
+            )?;
+
+            conn.execute(
+                "INSERT INTO facts_fts(rowid, content) VALUES (?1, ?2)",
+                params![fts_rowid, &merged_content],
+            )?;
+
+            // 2. Add supersession edge from kept to superseded
+            let edge_type_json = r#"{"Entity":{"relation":"supersedes"}}"#;
+            let source = format!("fact:{}", keep_id);
+            let target = format!("fact:{}", supersede_id);
+            conn.execute(
+                "INSERT INTO graph_edges (source, target, edge_type, weight, recorded_at, is_invalidated)
+                 VALUES (?1, ?2, ?3, 1.0, datetime('now'), 0)",
+                params![&source, &target, edge_type_json],
+            )?;
+
+            Ok(())
+        })
+        .await?;
+        self.clear_search_cache();
+        Ok(())
     }
 
     /// List all stored graph edges involving a given node (as source or target),

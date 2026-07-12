@@ -31,57 +31,34 @@ static VECTOR_SCAN_WARN_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_WARN_T
 static VECTOR_SCAN_BLOCK_LIMIT: AtomicUsize = AtomicUsize::new(VECTOR_SCAN_HARD_LIMIT);
 
 /// Expand query terms to match hyphenated variants.
-/// "turbo-quant" -> `"turbo-quant" OR "turboquant"`
+/// "turbo-quant" -> "turbo-quant OR turboquant"
 /// This improves BM25 recall for technical terms with hyphens.
-fn expand_hyphenated_variants(token: &str) -> Vec<String> {
-    if token.contains('-') {
-        let no_hyphen = token.replace('-', "");
-        if !no_hyphen.is_empty() && no_hyphen != token {
-            vec![
-                format!("\"{}\"", token.replace('"', "\"\"")),
-                format!("\"{}\"", no_hyphen.replace('"', "\"\"")),
-            ]
-        } else {
-            vec![format!("\"{}\"", token.replace('"', "\"\""))]
-        }
-    } else {
-        vec![format!("\"{}\"", token.replace('"', "\"\""))]
-    }
-}
-
-pub fn sanitize_fts_query(raw: &str) -> Option<String> {
-    let cleaned: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() || c == '_' || c == '-' {
-                c
+#[allow(dead_code)]
+fn expand_query_for_fts(query: &str) -> String {
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let expanded: Vec<String> = terms
+        .iter()
+        .map(|term| {
+            if term.contains('-') {
+                let no_hyphen = term.replace('-', "");
+                if no_hyphen != *term {
+                    format!("{term} OR {no_hyphen}")
+                } else {
+                    term.to_string()
+                }
             } else {
-                ' '
+                term.to_string()
             }
         })
         .collect();
-
-    let tokens: Vec<&str> = cleaned
-        .split_whitespace()
-        .filter(|t| !matches!(t.to_uppercase().as_str(), "AND" | "OR" | "NOT" | "NEAR"))
-        .collect();
-
-    if tokens.is_empty() {
-        None
-    } else {
-        let expanded: Vec<String> = tokens
-            .iter()
-            .flat_map(|token| expand_hyphenated_variants(token))
-            .collect();
-        Some(expanded.join(" OR "))
-    }
+    expanded.join(" ")
 }
 
 /// Classify whether a query needs retrieval at all.
 /// Simple greetings, confirmations, and single-word responses don't need search.
 pub fn should_retrieve(query: &str) -> bool {
     let trimmed = query.trim();
-    if trimmed.len() < 3 {
+    if trimmed.len() < 12 {
         return false;
     }
     let lower = trimmed.to_lowercase();
@@ -123,6 +100,45 @@ pub fn should_retrieve(query: &str) -> bool {
         return false;
     }
     true
+}
+
+/// Sanitize a raw query string for safe use in an FTS5 MATCH expression.
+///
+/// Replaces any character that is not alphanumeric, whitespace, or a Unicode
+/// letter/digit with a space, then strips FTS5 boolean keywords (`AND`, `OR`,
+/// `NOT`, `NEAR`).  Returns `None` when no searchable tokens remain.
+///
+/// This uses an allowlist strategy so that *any* FTS5 operator or punctuation
+/// — including `?`, `.`, `/`, `!`, etc. — is neutralised without needing an
+/// exhaustive denylist.
+pub fn sanitize_fts_query(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+
+    let tokens: Vec<&str> = cleaned
+        .split_whitespace()
+        .filter(|t| !matches!(t.to_uppercase().as_str(), "AND" | "OR" | "NOT" | "NEAR"))
+        .collect();
+
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(
+            tokens
+                .into_iter()
+                .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        )
+    }
 }
 
 /// Compute cosine similarity between two vectors.
