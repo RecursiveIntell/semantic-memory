@@ -54,7 +54,7 @@ flowchart TB
     SQL -. reconcile/rebuild .-> VS
 ```
 
-The store uses SQLite with WAL and pooled readers; writes serialize through a writer connection. Sidecar mutations are journaled so a committed SQLite write remains durable even if its acceleration-sidecar update is pending. `verify_integrity()` reports malformed or drifting stored/indexed state, and `reconcile()` can rebuild derived retrieval state from SQLite.
+The store uses SQLite with WAL and pooled readers; writes serialize through a writer connection. Sidecar mutations are journaled so a committed SQLite write remains durable even if its acceleration-sidecar update is pending. `verify_integrity(VerifyMode::Quick | VerifyMode::Full)` reports malformed or drifting stored/indexed state. `reconcile(ReconcileAction::ReportOnly | ReconcileAction::RebuildFts | ReconcileAction::ReEmbed)` can report, rebuild FTS, or re-embed authoritative rows.
 
 ### Receipts, replay, and the V35 privacy boundary
 
@@ -156,6 +156,44 @@ The default feature set is `usearch-backend`. At least one vector backend (`usea
 | `testing` | Enables integration tests that are explicitly gated in Cargo metadata. |
 
 Features in the last two groups are not evidence that a standard `search()` call executes their research or orchestration algorithms. Use the production pipeline above as the contract for normal retrieval, and explicitly integrate feature-gated modules where desired.
+
+## Governed memory capabilities
+
+Beyond the compatibility search/write API, `MemoryStore::authority()` exposes the governed authority surface. It supports append, supersede, redact, selective forgetting, governed direct reads/search/graph traversal, export, and replay. Origin-authority labels and revocations are immutable ledgered state; recall authority does not imply permission to assert or act on recalled content.
+
+Additional public subsystems are intentionally separate from the default hybrid-search pipeline:
+
+- **State-aware retrieval:** `StateView`, historical/transition/trajectory resolution, premise status, answer disposition, dependency-state receipts, and governed `resolve_memory` variants.
+- **Evidence-gap retrieval:** bounded evidence packets, terminal outcomes, ablation receipts, and state-aware reranking.
+- **Selective forgetting:** canonical/derived closure planning, explicit governed elevation, and immutable forgetting receipts.
+- **Shadow policies:** proposals, evaluation windows, promotion gates, active policy versions, and promotion receipts.
+- **Procedural memory:** governed procedure artifacts, validation, retrieval, lifecycle permits, and test receipts.
+- **Projection import V3:** governed import and reads for projected claims, relations, episodes, entities, and evidence. Legacy V10 import APIs are deprecated compatibility surfaces.
+
+These APIs have their own authority and receipt contracts. Utility operations such as adding a graph edge return their domain objects and do not universally emit typed receipts; do not generalize receipt guarantees beyond the APIs that declare them.
+
+## Schema history
+
+`MAX_SCHEMA_VERSION` is 36. Migrations are monotonic; feature-gated Rust APIs may be disabled even when their compatibility tables/columns exist.
+
+| Version | Durable addition |
+| ---: | --- |
+| V18 | Search receipts |
+| V19–V21 | Derived-vector artifacts and generation manifests |
+| V22 | Bitemporal episodes |
+| V23 | Codec governance |
+| V24 | proveKV/poly-kv pool generations |
+| V25 | Provenance tables |
+| V26 | Temporal score columns |
+| V27–V28 | Stored and bitemporal graph edges |
+| V29 | Authority state, lineage, and receipts |
+| V30 | Transition verification and quarantine |
+| V31 | Origin authority and revocations |
+| V32 | Selective-forgetting closure |
+| V33 | Shadow policies |
+| V34 | Procedural memory |
+| V35 | Opt-in replay inputs |
+| V36 | Sparse vectors and deletion cleanup triggers |
 
 ## SciFact evaluation
 

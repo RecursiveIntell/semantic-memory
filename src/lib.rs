@@ -1610,7 +1610,7 @@ impl MemoryStore {
     ///
     /// - `ReportOnly`: no-op, just returns the integrity report.
     /// - `RebuildFts`: rebuilds all FTS indexes from source data.
-    /// - `ReEmbed`: not yet implemented (requires async embedding calls).
+    /// - `ReEmbed`: re-embeds authoritative rows and then verifies integrity.
     pub async fn reconcile(
         &self,
         action: db::ReconcileAction,
