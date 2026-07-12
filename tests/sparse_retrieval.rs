@@ -76,8 +76,10 @@ impl Embedder for DeterministicDenseOnlyEmbedder {
 }
 
 fn config(temp: &TempDir, sparse_weight: f64) -> MemoryConfig {
-    let mut config = MemoryConfig::default();
-    config.base_dir = temp.path().to_path_buf();
+    let mut config = MemoryConfig {
+        base_dir: temp.path().to_path_buf(),
+        ..MemoryConfig::default()
+    };
     config.embedding.dimensions = 2;
     config.search.sparse_weight = sparse_weight;
     config.search.sparse_top_k = 10;

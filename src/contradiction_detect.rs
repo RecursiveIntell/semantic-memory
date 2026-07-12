@@ -264,13 +264,13 @@ fn evaluate_pair(
     // 3 & 4. Negation polarity / antonym: require proximity (embedding or lexical).
     if proximal {
         if has_negation(a_text) != has_negation(b_text) {
-            if embedding_sim.is_some() && overlap < cfg.min_overlap {
+            if let Some(similarity) = embedding_sim.filter(|_| overlap < cfg.min_overlap) {
                 // Flagged via embedding proximity, not lexical overlap — this is
                 // a paraphrased contradiction that the lexical gate would miss.
                 signals.push(ContradictionSignal::EmbeddingAntipode);
                 reasons.push(format!(
                     "embedding similarity {:.2} but opposite negation (paraphrased contradiction)",
-                    embedding_sim.unwrap()
+                    similarity
                 ));
             } else {
                 signals.push(ContradictionSignal::NegationPolarity);
@@ -280,11 +280,11 @@ fn evaluate_pair(
             }
         }
         if antonym_hit(&a_words, &b_words) {
-            if embedding_sim.is_some() && overlap < cfg.min_overlap {
+            if let Some(similarity) = embedding_sim.filter(|_| overlap < cfg.min_overlap) {
                 signals.push(ContradictionSignal::EmbeddingAntipode);
                 reasons.push(format!(
                     "embedding similarity {:.2} but antonym pair (paraphrased contradiction)",
-                    embedding_sim.unwrap()
+                    similarity
                 ));
             } else {
                 signals.push(ContradictionSignal::Antonym);
