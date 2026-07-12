@@ -218,6 +218,14 @@ pub mod matryoshka;
 /// Multiscale retrieval scheduling pipeline (staged search with budgets).
 #[cfg(feature = "multiscale")]
 pub mod pipeline;
+/// Poly-KV bridge: compressed candidate generation via the Poly-KV codec.
+#[cfg(feature = "poly-kv-codec")]
+pub mod poly_kv_bridge;
+mod pool;
+mod projection_batch;
+mod projection_derivation;
+pub mod projection_import;
+mod projection_lane;
 /// Compatibility-only legacy import surface.
 ///
 /// This module exists only for migration compatibility with pre-V11 import paths.
@@ -226,13 +234,6 @@ pub mod pipeline;
     note = "Legacy V10 import path is migration-only. Use `import_projection_batch()` with `ProjectionImportBatchV3` on the canonical lane."
 )]
 #[doc(hidden)]
-#[cfg(feature = "poly-kv-codec")]
-pub mod poly_kv_bridge;
-mod pool;
-mod projection_batch;
-mod projection_derivation;
-pub mod projection_import;
-mod projection_lane;
 mod projection_legacy_compat;
 pub(crate) mod projection_storage;
 /// Phase 2: semiring provenance (Boolean/Tropical/Probability/Confidence).
