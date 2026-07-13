@@ -103,6 +103,9 @@ pub use evidence_gap::{
     EvidenceTerminalOutcomeV1, StateRerankCandidateV1, StateRerankWeightsV1, EVIDENCE_GAP_V1,
     EVIDENCE_PACKET_V1, EVIDENCE_ROUTE_RECEIPT_V1,
 };
+/// Archived pure-Rust implementations replaced by C kernels.
+#[allow(dead_code)]
+pub mod archive;
 /// Phase 9b: benchmark harness for routing quality.
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
@@ -144,6 +147,7 @@ mod hnsw_backend;
 mod hnsw_ops;
 /// Claim-bounded scoring and receipt invariants for the hostile memory benchmark.
 pub mod hostile_benchmark;
+
 /// Deterministic CPU-only hubness scoring over dense embedding collections.
 pub mod hubness;
 /// Phase 10: cross-feature integration wiring.
@@ -282,9 +286,10 @@ pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
 #[cfg(feature = "candle-embedder")]
 pub use embedder::CandleEmbedder;
 pub use embedder::{
-    BgeM3DeriveConfig, BgeM3Embedder, Embedder, MockEmbedder, MultiEmbedBatchFuture,
-    MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding, MultiVectorEmbedding,
-    OllamaEmbedder, OptionalMultiEmbedBatchFuture, OptionalMultiEmbedFuture, SparseWeights,
+    BgeM3DeriveConfig, BgeM3Embedder, EmbedBatchFuture, EmbedFuture, Embedder, MockEmbedder,
+    MultiEmbedBatchFuture, MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding,
+    MultiVectorEmbedding, OllamaEmbedder, OptionalMultiEmbedBatchFuture, OptionalMultiEmbedFuture,
+    SparseWeights,
 };
 pub use error::MemoryError;
 #[cfg(feature = "hnsw")]

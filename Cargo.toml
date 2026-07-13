@@ -134,6 +134,8 @@ hf-hub = { version = "1.0.0-rc.1", default-features = false, features = ["blocki
 tokenizers = { version = "0.23", default-features = false, features = ["onig"], optional = true }
 
 [build-dependencies]
+# cc compiles the C SIMD kernel (c-kernels/similarity.c) for cosine_similarity.
+cc = "1.0"
 # cxx-build is only needed when the usearch backend is enabled (it triggers
 # the C++ bridge compilation). Declared unconditionally so the build script
 # can switch behavior based on the active feature.

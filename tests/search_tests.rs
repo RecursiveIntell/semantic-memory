@@ -25,6 +25,11 @@ fn test_store() -> (MemoryStore, TempDir) {
     (store, tmp)
 }
 
+#[test]
+fn default_search_config_does_not_enable_matryoshka_candidate_dimensions() {
+    assert_eq!(SearchConfig::default().candidate_dims, None);
+}
+
 #[tokio::test]
 async fn ordinary_search_is_current_and_historical_search_reconstructs_old_head() {
     let (store, _tmp) = test_store();

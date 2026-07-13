@@ -276,8 +276,8 @@ pub struct SearchConfig {
     /// Matryoshka candidate-stage embedding dimensions for 2-stage search.
     /// When set to Some(dim) and the `matryoshka` feature is enabled, the query
     /// embedding is truncated to `dim` dimensions for candidate retrieval, then
-    /// reranked with the full embedding. Defaults to Some(64).
-    /// Set to None to disable 2-stage matryoshka search.
+    /// reranked with the full embedding. Disabled by default because it requires
+    /// a compatible truncated-vector index; callers opt in explicitly.
     #[serde(default = "default_candidate_dims")]
     pub candidate_dims: Option<usize>,
 
@@ -334,7 +334,7 @@ const fn default_sparse_derive_min_weight() -> f32 {
 }
 
 const fn default_candidate_dims() -> Option<usize> {
-    Some(64)
+    None
 }
 
 impl Default for SearchConfig {
