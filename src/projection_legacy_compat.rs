@@ -50,7 +50,9 @@ pub(crate) async fn import_envelope(
 
     let mut prepared = Vec::new();
     for (i, record) in envelope.records.iter().enumerate() {
-        let embedding = store.embed_text_internal(record.content_text()).await?;
+        let embedding = store
+            .embed_text_internal(record.content_text(), crate::EmbeddingPurpose::Document)
+            .await?;
         store.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         let q8_bytes = quantize::Quantizer::new(store.inner.config.embedding.dimensions)

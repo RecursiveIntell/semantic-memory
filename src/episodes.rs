@@ -676,8 +676,9 @@ impl MemoryStore {
             .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
             .await?;
         let search_text = build_episode_search_text(&document_title, &document_context, &meta);
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(&search_text, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -747,8 +748,9 @@ impl MemoryStore {
             .with_read_conn(move |conn| load_episode_context(conn, &doc_id))
             .await?;
         let search_text = build_episode_search_text(&document_title, &document_context, &meta);
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(&search_text, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -840,8 +842,9 @@ impl MemoryStore {
             .await?;
         let search_text =
             build_episode_search_text(&document_title, &document_context, &updated_meta);
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(&search_text, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -913,8 +916,9 @@ impl MemoryStore {
             .await?;
         let search_text =
             build_episode_search_text(&document_title, &document_context, &updated_meta);
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(&search_text).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(&search_text, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal

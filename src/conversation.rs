@@ -642,8 +642,9 @@ impl MemoryStore {
         let effective_token_count =
             token_count.or_else(|| Some(self.inner.token_counter.count_tokens(content) as u32));
 
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(content).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -701,10 +702,16 @@ impl MemoryStore {
             .min(MAX_TOP_K);
 
         let (query_embedding, query_sparse) = if self.inner.config.search.sparse_weight > 0.0 {
-            let (dense, sparse, _) = self.embed_text_with_sparse_internal(query).await?;
+            let (dense, sparse, _) = self
+                .embed_text_with_sparse_internal(query, crate::EmbeddingPurpose::Query)
+                .await?;
             (dense, sparse)
         } else {
-            (self.embed_text_internal(query).await?, None)
+            (
+                self.embed_text_internal(query, crate::EmbeddingPurpose::Query)
+                    .await?,
+                None,
+            )
         };
 
         #[cfg(feature = "hnsw")]

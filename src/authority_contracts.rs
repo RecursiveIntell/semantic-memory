@@ -144,15 +144,27 @@ pub struct SupersessionReceiptV1 {
 }
 
 /// Capability-bearing caller permit for the governed authority mutation lane.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Ordinary callers cannot construct or deserialize this credential:
+/// ```compile_fail
+/// use semantic_memory::{AuthorityAdmission, AuthorityPermit};
+/// let _forged = AuthorityPermit {
+///     principal: "attacker".into(),
+///     caller_id: "attacker".into(),
+///     capability: AuthorityPermit::APPEND_CAPABILITY.into(),
+///     admission: AuthorityAdmission::OperatorSystem,
+///     origin_authority: None,
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuthorityPermit {
-    pub principal: String,
-    pub caller_id: String,
-    pub capability: String,
-    pub admission: AuthorityAdmission,
+    pub(crate) principal: String,
+    pub(crate) caller_id: String,
+    pub(crate) capability: String,
+    pub(crate) admission: AuthorityAdmission,
     /// Immutable origin proposed for the governed write. Missing origin fails closed.
     #[serde(default)]
-    pub origin_authority: Option<crate::OriginAuthorityLabelV1>,
+    pub(crate) origin_authority: Option<crate::OriginAuthorityLabelV1>,
 }
 
 /// Admission basis carried by a governed authority permit.
@@ -164,6 +176,69 @@ pub enum AuthorityAdmission {
     OperatorSystem,
 }
 
+/// Trusted in-process issuer. It has no public constructor, so ordinary callers cannot mint
+/// capability-bearing permits or supply caller identities as request data.
+pub struct AuthorityIssuer {
+    _private: (),
+}
+
+/// Resolver-produced immutable evidence identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedEvidenceDigest(String);
+
+impl AuthorityIssuer {
+    #[cfg(feature = "testing")]
+    pub(crate) fn trusted() -> Self {
+        Self { _private: () }
+    }
+
+    pub fn mint_operator_system(
+        &self,
+        principal: impl Into<String>,
+        caller_id: impl Into<String>,
+        capability: impl Into<String>,
+    ) -> AuthorityPermit {
+        let principal = principal.into();
+        let caller_id = caller_id.into();
+        AuthorityPermit {
+            origin_authority: Some(crate::OriginAuthorityLabelV1::operator_system(
+                &principal, &caller_id,
+            )),
+            principal,
+            caller_id,
+            capability: capability.into(),
+            admission: AuthorityAdmission::OperatorSystem,
+        }
+    }
+
+    pub fn mint_with_resolved_evidence(
+        &self,
+        principal: impl Into<String>,
+        caller_id: impl Into<String>,
+        capability: impl Into<String>,
+        evidence: Vec<ResolvedEvidenceDigest>,
+        origin_authority: crate::OriginAuthorityLabelV1,
+    ) -> AuthorityPermit {
+        AuthorityPermit {
+            principal: principal.into(),
+            caller_id: caller_id.into(),
+            capability: capability.into(),
+            admission: AuthorityAdmission::Evidence {
+                evidence_refs: evidence.into_iter().map(|digest| digest.0).collect(),
+            },
+            origin_authority: Some(origin_authority),
+        }
+    }
+}
+
+impl ResolvedEvidenceDigest {
+    pub fn from_resolver(digest: String) -> Option<Self> {
+        let hex = digest.strip_prefix("blake3:")?;
+        (hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then_some(Self(digest))
+    }
+}
+
 impl AuthorityPermit {
     pub const APPEND_CAPABILITY: &'static str = "memory.authority.append";
     pub const SUPERSEDE_CAPABILITY: &'static str = "memory.authority.supersede";
@@ -171,6 +246,7 @@ impl AuthorityPermit {
     pub const REVOKE_ORIGIN_CAPABILITY: &'static str = "memory.authority.revoke_origin";
     pub const FORGET_CAPABILITY: &'static str = "memory.authority.forget";
 
+    #[cfg(feature = "testing")]
     pub fn new(
         principal: impl Into<String>,
         caller_id: impl Into<String>,
@@ -186,6 +262,7 @@ impl AuthorityPermit {
     }
 
     /// Construct a permit for a fact proposal supported by explicit evidence.
+    #[cfg(feature = "testing")]
     pub fn with_evidence(
         principal: impl Into<String>,
         caller_id: impl Into<String>,
@@ -202,25 +279,17 @@ impl AuthorityPermit {
     }
 
     /// Construct the explicit operator/system bypass used for trusted inserts.
+    #[cfg(feature = "testing")]
     pub fn operator_system(
         principal: impl Into<String>,
         caller_id: impl Into<String>,
         capability: impl Into<String>,
     ) -> Self {
-        let principal = principal.into();
-        let caller_id = caller_id.into();
-        Self {
-            origin_authority: Some(crate::OriginAuthorityLabelV1::operator_system(
-                &principal, &caller_id,
-            )),
-            principal,
-            caller_id,
-            capability: capability.into(),
-            admission: AuthorityAdmission::OperatorSystem,
-        }
+        AuthorityIssuer::trusted().mint_operator_system(principal, caller_id, capability)
     }
 
     /// Bind an immutable origin label to this governed write permit.
+    #[cfg(feature = "testing")]
     pub fn with_origin(mut self, origin: crate::OriginAuthorityLabelV1) -> Self {
         self.origin_authority = Some(origin);
         self

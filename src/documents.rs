@@ -400,7 +400,9 @@ impl MemoryStore {
         }
 
         let chunk_texts: Vec<String> = text_chunks.iter().map(|c| c.content.clone()).collect();
-        let embeddings = self.embed_batch_with_sparse_internal(chunk_texts).await?;
+        let embeddings = self
+            .embed_batch_with_sparse_internal(chunk_texts, crate::EmbeddingPurpose::Document)
+            .await?;
 
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
         let chunks: Vec<ChunkRow> = text_chunks
@@ -516,7 +518,9 @@ impl MemoryStore {
         }
 
         let chunk_texts: Vec<String> = entries.iter().map(|entry| entry.content.clone()).collect();
-        let embeddings = self.embed_batch_with_sparse_internal(chunk_texts).await?;
+        let embeddings = self
+            .embed_batch_with_sparse_internal(chunk_texts, crate::EmbeddingPurpose::Document)
+            .await?;
 
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
         let chunks: Vec<ChunkRow> = entries

@@ -1,6 +1,6 @@
 use semantic_memory::{
-    answer_policy_for, resolve_dependency_states, AnswerDisposition, AuthorityPermit, MemoryConfig,
-    MemoryStore, MockEmbedder, PremiseStatus, ResolvedMemoryAnswerV1, StateDependencyEdgeV1,
+    answer_policy_for, resolve_dependency_states, AnswerDisposition, MemoryConfig, MemoryStore,
+    MockEmbedder, PremiseStatus, ResolvedMemoryAnswerV1, StateDependencyEdgeV1,
     StateResolutionMode, StateResolutionReceiptV1, StateView,
 };
 use tempfile::TempDir;
@@ -158,17 +158,11 @@ fn local_a_tma_and_memtrace_fixtures_keep_time_and_trajectory_explicit() {
 async fn resolved_answer_uses_existing_store_and_always_carries_receipt() {
     let (store, _tmp) = store();
     let _ = store
-        .authority()
-        .append(
-            AuthorityPermit::operator_system(
-                "test",
-                "state-test",
-                AuthorityPermit::APPEND_CAPABILITY,
-            ),
-            "state-answer-1".into(),
-            "general".into(),
-            "Rust was first released in 2015".into(),
-            Some("fixture:stale-a-tma-memtrace-local".into()),
+        .add_fact(
+            "general",
+            "Rust was first released in 2015",
+            Some("fixture:stale-a-tma-memtrace-local"),
+            None,
         )
         .await
         .unwrap();
@@ -187,9 +181,11 @@ async fn resolved_answer_uses_existing_store_and_always_carries_receipt() {
     assert_eq!(answer.receipt.schema_version, "state_resolution_receipt_v1");
     assert_eq!(answer.receipt.state_view, answer.state_view);
     assert!(!answer.receipt.receipt_digest.is_empty());
+    // Raw fixture insertion does not advance governed authority state; the witness must report
+    // the actual epoch rather than inventing a governed mutation.
     assert_eq!(
         answer.retrieval_witness.retrieval_epoch,
-        semantic_memory::RetrievalEpoch(1)
+        semantic_memory::RetrievalEpoch(0)
     );
     assert_eq!(
         answer.retrieval_witness.ordered_result_ids,
@@ -205,41 +201,27 @@ async fn resolved_answer_uses_existing_store_and_always_carries_receipt() {
 #[tokio::test]
 async fn dependency_edges_use_existing_graph_storage_and_mark_stale_results() {
     let (store, _tmp) = store();
-    let authority = store.authority();
-    let old = authority
-        .append(
-            AuthorityPermit::operator_system(
-                "test",
-                "state-edge",
-                AuthorityPermit::APPEND_CAPABILITY,
-            ),
-            "state-edge-old".into(),
-            "general".into(),
-            "service color was blue".into(),
-            Some("fixture:stale".into()),
+    let old = store
+        .add_fact(
+            "general",
+            "service color was blue",
+            Some("fixture:stale"),
+            None,
         )
         .await
         .unwrap();
-    let new = authority
-        .append(
-            AuthorityPermit::operator_system(
-                "test",
-                "state-edge",
-                AuthorityPermit::APPEND_CAPABILITY,
-            ),
-            "state-edge-new".into(),
-            "general".into(),
-            "service color is green".into(),
-            Some("fixture:stale".into()),
+    let new = store
+        .add_fact(
+            "general",
+            "service color is green",
+            Some("fixture:stale"),
+            None,
         )
         .await
         .unwrap();
     store
         .add_state_dependency_edge(
-            StateDependencyEdgeV1::invalidates(
-                format!("fact:{}", new.affected_ids[0]),
-                format!("fact:{}", old.affected_ids[0]),
-            ),
+            StateDependencyEdgeV1::invalidates(format!("fact:{new}"), format!("fact:{old}")),
             1.0,
         )
         .await

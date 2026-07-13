@@ -45,7 +45,7 @@ fn permit(principal: &str) -> AuthorityPermit {
         principal,
         "evidence-gap-test",
         AuthorityPermit::APPEND_CAPABILITY,
-        vec!["fixture:evidence-gap".into()],
+        vec![format!("blake3:{}", "a".repeat(64))],
     )
     .with_origin(origin(principal, AuthorityScopeV1::PrincipalOnly))
 }

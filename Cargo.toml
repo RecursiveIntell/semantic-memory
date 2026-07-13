@@ -118,9 +118,8 @@ schemars = { workspace = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
 bitemporal-runtime = { version = "0.1.0", path = "../bitemporal-runtime" }
 
-# Vector search backends. Only one is active at a time (enforced by feature
-# flag; trying to enable both `hnsw` and `usearch-backend` simultaneously is
-# allowed but the runtime will pick the first that matches the feature gate).
+# Vector search backends may be compiled together intentionally. Runtime dispatch has explicit,
+# tested precedence (`hnsw` before `usearch-backend`) when both are enabled.
 hnsw_rs = { version = "0.3", optional = true }
 usearch = { version = "2.25", default-features = false, optional = true }
 turbo-quant = { version = "0.2.1", path = "../turbo-quant", optional = true }
@@ -146,6 +145,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = { workspace = true }
 semantic-memory-forge = { version = "0.1.1", path = "../semantic-memory-forge" }
 
+[[example]]
+name = "hostile_memory_integrity"
+path = "examples/hostile_memory_integrity.rs"
+required-features = ["testing"]
+
 [[test]]
 name = "authority_transactions"
 path = "tests/authority_transactions.rs"
@@ -169,6 +173,21 @@ required-features = ["testing"]
 [[test]]
 name = "procedural_memory"
 path = "tests/procedural_memory.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "evidence_gap"
+path = "tests/evidence_gap.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "origin_authority"
+path = "tests/origin_authority.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "multi_principal_policy"
+path = "tests/multi_principal_policy.rs"
 required-features = ["testing"]
 
 # LIB-005: inherit workspace lint policy

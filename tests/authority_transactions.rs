@@ -46,6 +46,35 @@ async fn append_rejects_model_permit_without_evidence_and_persists_nothing() {
 }
 
 #[tokio::test]
+async fn append_rejects_unresolved_evidence_strings() {
+    let (store, _tmp) = test_store();
+    let permit = AuthorityPermit::with_evidence(
+        "principal:test",
+        "caller:test",
+        AuthorityPermit::APPEND_CAPABILITY,
+        vec!["evidence:caller-controlled".into()],
+    )
+    .with_origin(semantic_memory::OriginAuthorityLabelV1::operator_system(
+        "principal:test",
+        "caller:test",
+    ));
+    let result = store
+        .authority()
+        .append(
+            permit,
+            "unresolved-evidence".into(),
+            "general".into(),
+            "must not persist".into(),
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(MemoryError::AuthorityAdmissionRejected { .. })
+    ));
+}
+
+#[tokio::test]
 async fn append_persists_fact_and_receipt() {
     let (store, _tmp) = test_store();
     let authority = store.authority();

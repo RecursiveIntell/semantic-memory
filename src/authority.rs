@@ -181,8 +181,10 @@ impl MemoryAuthority {
         validate_authority_request(&permit, &caller_idempotency_key, kind)?;
         let prepared = match candidate_content_for_embedding(&candidate) {
             Some(content) => {
-                let (embedding, sparse, sparse_representation) =
-                    self.store.embed_text_with_sparse_internal(content).await?;
+                let (embedding, sparse, sparse_representation) = self
+                    .store
+                    .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+                    .await?;
                 self.store.validate_embedding_dimensions(&embedding)?;
                 let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
                 let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
@@ -626,8 +628,10 @@ impl MemoryAuthority {
 
         let prepared = match mutation.content_for_embedding() {
             Some(content) => {
-                let (embedding, sparse, sparse_representation) =
-                    self.store.embed_text_with_sparse_internal(content).await?;
+                let (embedding, sparse, sparse_representation) = self
+                    .store
+                    .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+                    .await?;
                 self.store.validate_embedding_dimensions(&embedding)?;
                 let embedding_bytes = crate::db::embedding_to_bytes(&embedding);
                 let q8_bytes = Quantizer::new(self.store.inner.config.embedding.dimensions)
@@ -681,13 +685,21 @@ fn validate_authority_request(
     }
     let append_admitted = match &permit.admission {
         AuthorityAdmission::OperatorSystem => true,
-        AuthorityAdmission::Evidence { evidence_refs } => !evidence_refs.is_empty(),
+        AuthorityAdmission::Evidence { evidence_refs } => {
+            !evidence_refs.is_empty()
+                && evidence_refs.iter().all(|reference| {
+                    let Some(hex) = reference.strip_prefix("blake3:") else {
+                        return false;
+                    };
+                    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        }
         AuthorityAdmission::Unspecified => false,
     };
     if kind == AuthorityOperationKind::Append && !append_admitted {
         return Err(MemoryError::AuthorityAdmissionRejected {
             principal: permit.principal.clone(),
-            reason: "authoritative append requires evidence or an operator/system permit".into(),
+            reason: "authoritative append requires resolver-produced evidence digests or an operator/system permit".into(),
         });
     }
     let origin =

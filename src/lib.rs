@@ -690,6 +690,16 @@ struct MemoryStoreInner {
     hnsw_index: std::sync::RwLock<HnswIndex>,
 }
 
+/// Role of an embedding in the asymmetric retrieval model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmbeddingPurpose {
+    Query,
+    Document,
+}
+
+const EMBEDDING_PROFILE_VERSION: &str = "asymmetric-purpose-v2";
+const EMBEDDING_NORMALIZATION_PROFILE: &str = "provider-output-v1";
+
 #[derive(Clone)]
 struct CachedSearchResult {
     results: Vec<types::SearchResult>,
@@ -939,7 +949,15 @@ impl MemoryStore {
         })?;
 
         let pool = pool::SqlitePool::open(&paths.sqlite_path, &config.pool, &config.limits)?;
-        pool.with_write_conn(|conn| db::check_embedding_metadata(conn, &config.embedding))?;
+        // Purpose/profile changes invalidate every derived vector even when the provider model
+        // and dimensions are unchanged. Binding the profile into durable metadata makes upgrades
+        // fail visibly through `embeddings_dirty` instead of silently reusing old vectors.
+        let mut embedding_metadata = config.embedding.clone();
+        embedding_metadata.model = format!(
+            "{}|{}|{}",
+            embedding_metadata.model, EMBEDDING_NORMALIZATION_PROFILE, EMBEDDING_PROFILE_VERSION
+        );
+        pool.with_write_conn(|conn| db::check_embedding_metadata(conn, &embedding_metadata))?;
 
         // Ensure HNSW dimensions match the embedding config
         #[cfg(feature = "hnsw")]
@@ -1114,9 +1132,21 @@ impl MemoryStore {
             .map_err(|e| MemoryError::Other(format!("embedding semaphore closed: {e}")))
     }
 
-    async fn embed_text_internal(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+    async fn embed_text_internal(
+        &self,
+        text: &str,
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<f32>, MemoryError> {
         // Check embedding cache first -- skip the compute for repeated queries
-        let cache_key = text.to_string();
+        let cache_key = format!(
+            "{:?}|{}|{}|{}|{}|{}",
+            purpose,
+            self.inner.embedder.model_name(),
+            self.inner.config.embedding.dimensions,
+            EMBEDDING_NORMALIZATION_PROFILE,
+            EMBEDDING_PROFILE_VERSION,
+            text
+        );
         {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
@@ -1136,7 +1166,10 @@ impl MemoryStore {
         // "search_document:" for documents (ingestion-time)
         // The prefix is added here so ALL embedder backends (Candle, Ollama)
         // get the same prefix without each backend needing to handle it.
-        let prefixed = format!("search_query: {text}");
+        let prefixed = match purpose {
+            EmbeddingPurpose::Query => format!("search_query: {text}"),
+            EmbeddingPurpose::Document => format!("search_document: {text}"),
+        };
         let embedding = self.inner.embedder.embed(&prefixed).await?;
         db::validate_embedding(&embedding, self.inner.config.embedding.dimensions)?;
 
@@ -1160,11 +1193,15 @@ impl MemoryStore {
     async fn embed_text_with_sparse_internal(
         &self,
         text: &str,
+        purpose: EmbeddingPurpose,
     ) -> Result<(Vec<f32>, Option<SparseWeights>, Option<String>), MemoryError> {
         let _permit = self.with_embedding_permit().await?;
         // Keep the established prefix used by embed_text_internal so enabling
         // sparse persistence does not silently change dense embedding semantics.
-        let prefixed = format!("search_query: {text}");
+        let prefixed = match purpose {
+            EmbeddingPurpose::Query => format!("search_query: {text}"),
+            EmbeddingPurpose::Document => format!("search_document: {text}"),
+        };
         if let Some(multi) = self.inner.embedder.embed_multi_optional(&prefixed).await? {
             db::validate_embedding(&multi.dense, self.inner.config.embedding.dimensions)?;
             if multi
@@ -1209,12 +1246,17 @@ impl MemoryStore {
     async fn embed_batch_with_sparse_internal(
         &self,
         texts: Vec<String>,
+        purpose: EmbeddingPurpose,
     ) -> Result<Vec<(Vec<f32>, Option<SparseWeights>, Option<String>)>, MemoryError> {
         let requested = texts.len();
         let _permit = self.with_embedding_permit().await?;
+        let prefix = match purpose {
+            EmbeddingPurpose::Query => "search_query",
+            EmbeddingPurpose::Document => "search_document",
+        };
         let prefixed: Vec<String> = texts
             .iter()
-            .map(|text| format!("search_document: {text}"))
+            .map(|text| format!("{prefix}: {text}"))
             .collect();
         if let Some(multi) = self
             .inner
@@ -1278,7 +1320,11 @@ impl MemoryStore {
             .collect())
     }
 
-    async fn embed_batch_internal(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, MemoryError> {
+    async fn embed_batch_internal(
+        &self,
+        texts: Vec<String>,
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<Vec<f32>>, MemoryError> {
         let requested = texts.len();
 
         // Check cache for each text
@@ -1286,10 +1332,21 @@ impl MemoryStore {
         let mut misses: Vec<String> = Vec::new();
         let mut miss_indices: Vec<usize> = Vec::new();
 
+        let cache_key = |text: &str| {
+            format!(
+                "{:?}|{}|{}|{}|{}|{}",
+                purpose,
+                self.inner.embedder.model_name(),
+                self.inner.config.embedding.dimensions,
+                EMBEDDING_NORMALIZATION_PROFILE,
+                EMBEDDING_PROFILE_VERSION,
+                text
+            )
+        };
         for (i, text) in texts.iter().enumerate() {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
-                    if let Some(cached) = cache.get(text).cloned() {
+                    if let Some(cached) = cache.get(&cache_key(text)).cloned() {
                         results.push(Some(cached));
                     } else {
                         results.push(None);
@@ -1309,10 +1366,12 @@ impl MemoryStore {
         let _permit = self.with_embedding_permit().await?;
 
         // Add search_document: prefix for all documents (ingestion path)
-        let prefixed_misses: Vec<String> = misses
-            .iter()
-            .map(|t| format!("search_document: {t}"))
-            .collect();
+        let prefix = match purpose {
+            EmbeddingPurpose::Query => "search_query",
+            EmbeddingPurpose::Document => "search_document",
+        };
+        let prefixed_misses: Vec<String> =
+            misses.iter().map(|t| format!("{prefix}: {t}")).collect();
 
         let miss_embeddings = if prefixed_misses.is_empty() {
             Vec::new()
@@ -1329,7 +1388,7 @@ impl MemoryStore {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
                     for (text, emb) in misses.iter().zip(embeddings.iter()) {
-                        cache.put(text.clone(), emb.clone());
+                        cache.put(cache_key(text), emb.clone());
                     }
                 }
                 Err(err) => {
@@ -1981,10 +2040,16 @@ impl MemoryStore {
         }
 
         let (query_embedding, query_sparse) = if self.inner.config.search.sparse_weight > 0.0 {
-            let (dense, sparse, _) = self.embed_text_with_sparse_internal(query).await?;
+            let (dense, sparse, _) = self
+                .embed_text_with_sparse_internal(query, EmbeddingPurpose::Query)
+                .await?;
             (dense, sparse)
         } else {
-            (self.embed_text_internal(query).await?, None)
+            (
+                self.embed_text_internal(query, EmbeddingPurpose::Query)
+                    .await?,
+                None,
+            )
         };
 
         #[cfg(feature = "hnsw")]
@@ -2298,7 +2363,9 @@ impl MemoryStore {
         let k = top_k
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
-        let query_embedding = self.embed_text_internal(query).await?;
+        let query_embedding = self
+            .embed_text_internal(query, EmbeddingPurpose::Query)
+            .await?;
 
         #[cfg(feature = "hnsw")]
         let hnsw_hits = if context.exactness_profile == ExactnessProfile::PreferExact
@@ -2453,10 +2520,16 @@ impl MemoryStore {
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
         let (query_embedding, query_sparse) = if self.inner.config.search.sparse_weight > 0.0 {
-            let (dense, sparse, _) = self.embed_text_with_sparse_internal(query).await?;
+            let (dense, sparse, _) = self
+                .embed_text_with_sparse_internal(query, EmbeddingPurpose::Query)
+                .await?;
             (dense, sparse)
         } else {
-            (self.embed_text_internal(query).await?, None)
+            (
+                self.embed_text_internal(query, EmbeddingPurpose::Query)
+                    .await?,
+                None,
+            )
         };
 
         #[cfg(feature = "hnsw")]
@@ -2746,8 +2819,12 @@ impl MemoryStore {
         text_a: &str,
         text_b: &str,
     ) -> Result<types::EmbeddingDisplacement, MemoryError> {
-        let emb_a = self.embed_text_internal(text_a).await?;
-        let emb_b = self.embed_text_internal(text_b).await?;
+        let emb_a = self
+            .embed_text_internal(text_a, EmbeddingPurpose::Query)
+            .await?;
+        let emb_b = self
+            .embed_text_internal(text_b, EmbeddingPurpose::Query)
+            .await?;
         Self::embedding_displacement_from_vecs(&emb_a, &emb_b)
     }
 
@@ -2795,13 +2872,41 @@ impl MemoryStore {
 
     /// Embed a single text via the configured provider.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
-        self.embed_text_internal(text).await
+        self.embed_query(text).await
     }
 
-    /// Embed multiple texts in a batch.
+    /// Embed retrieval text using the query role.
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed_text_internal(text, EmbeddingPurpose::Query)
+            .await
+    }
+
+    /// Embed stored content using the document role.
+    pub async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed_text_internal(text, EmbeddingPurpose::Document)
+            .await
+    }
+
+    /// Embed multiple stored texts in a batch.
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, MemoryError> {
+        self.embed_documents_batch(texts).await
+    }
+
+    /// Embed multiple stored texts using the document role.
+    pub async fn embed_documents_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<f32>>, MemoryError> {
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        self.embed_batch_internal(owned).await
+        self.embed_batch_internal(owned, EmbeddingPurpose::Document)
+            .await
+    }
+
+    /// Embed multiple retrieval texts using the query role.
+    pub async fn embed_queries_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, MemoryError> {
+        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        self.embed_batch_internal(owned, EmbeddingPurpose::Query)
+            .await
     }
 
     /// Get database statistics.
@@ -2889,7 +2994,9 @@ impl MemoryStore {
         let mut fact_count = 0usize;
         for batch in fact_contents.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_with_sparse_internal(texts).await?;
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
             let updates: Vec<_> = batch
@@ -2965,7 +3072,9 @@ impl MemoryStore {
         let mut chunk_count = 0usize;
         for batch in chunk_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_with_sparse_internal(texts).await?;
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
             let updates: Vec<_> = batch
@@ -3041,7 +3150,9 @@ impl MemoryStore {
         let mut msg_count = 0usize;
         for batch in message_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_with_sparse_internal(texts).await?;
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
             let updates: Vec<_> = batch
@@ -3117,7 +3228,9 @@ impl MemoryStore {
         let mut episode_count = 0usize;
         for batch in episode_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
-            let embeddings = self.embed_batch_with_sparse_internal(texts).await?;
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
             let updates: Vec<_> = batch

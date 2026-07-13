@@ -916,8 +916,9 @@ impl MemoryStore {
             return Ok(id);
         }
 
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(content).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         let fact_id = uuid::Uuid::new_v4().to_string();
@@ -1065,8 +1066,9 @@ impl MemoryStore {
     #[cfg(feature = "admin-ops")]
     pub async fn update_fact(&self, fact_id: &str, content: &str) -> Result<(), MemoryError> {
         self.validate_content("fact.content", content)?;
-        let (embedding, sparse, sparse_representation) =
-            self.embed_text_with_sparse_internal(content).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal

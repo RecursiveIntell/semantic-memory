@@ -1,7 +1,8 @@
+#[cfg(feature = "testing")]
 use semantic_memory::{
-    AuthorityPermit, ExactnessProfile, MemoryConfig, MemoryStore, MockEmbedder, ReceiptMode, Role,
-    SearchContext, SearchSource,
+    AuthorityPermit, ExactnessProfile, ReceiptMode, SearchContext, SearchSource,
 };
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, Role};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -492,6 +493,7 @@ async fn search_cache_cleared_after_delete_namespace() {
     );
 }
 
+#[cfg(feature = "testing")]
 #[tokio::test]
 async fn two_store_governed_canary_is_immediately_witnessed_and_cache_coherent_by_epoch() {
     let dir = tempfile::TempDir::new().unwrap();

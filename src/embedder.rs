@@ -261,14 +261,14 @@ impl MockEmbedder {
 
 impl Embedder for MockEmbedder {
     fn embed<'a>(&'a self, text: &'a str) -> EmbedFuture<'a> {
-        let embedding = deterministic_embedding(text, self.dimensions);
+        let embedding = deterministic_embedding(mock_semantic_text(text), self.dimensions);
         Box::pin(async move { Ok(embedding) })
     }
 
     fn embed_batch<'a>(&'a self, texts: Vec<String>) -> EmbedBatchFuture<'a> {
         let embeddings: Vec<Vec<f32>> = texts
             .iter()
-            .map(|t| deterministic_embedding(t, self.dimensions))
+            .map(|t| deterministic_embedding(mock_semantic_text(t), self.dimensions))
             .collect();
         Box::pin(async move { Ok(embeddings) })
     }
@@ -280,6 +280,12 @@ impl Embedder for MockEmbedder {
     fn dimensions(&self) -> usize {
         self.dimensions
     }
+}
+
+fn mock_semantic_text(text: &str) -> &str {
+    text.strip_prefix("search_query: ")
+        .or_else(|| text.strip_prefix("search_document: "))
+        .unwrap_or(text)
 }
 
 /// Generate a deterministic embedding from text using a hash-seeded xorshift RNG.

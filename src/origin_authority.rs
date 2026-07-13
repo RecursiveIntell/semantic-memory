@@ -102,8 +102,10 @@ fn optional_scope_matches(resource: &Option<String>, requested: &Option<String>)
     }
 }
 
-/// A time-bounded delegation or explicit operator elevation. Leases are request data, never
-/// durable authority labels, and therefore cannot be replayed as an elevation after expiry.
+/// Compatibility shape for a caller-carried lease request.
+///
+/// This value is never authority: the local crate has no issuer-controlled lease resolver, so
+/// governed evaluation fail-closes every delegation/elevation request that carries one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationElevationLeaseV1 {
     pub lease_id: String,
@@ -929,7 +931,8 @@ fn validate_lease(
         reasons.push("delegation_scope_denied".into());
         return false;
     }
-    true
+    reasons.push("untrusted_caller_carried_lease".into());
+    false
 }
 
 fn access_request_digest(

@@ -1,5 +1,6 @@
 //! Hostile, claim-bounded comparison against two local memory patterns.
-//! Run from the crate: `cargo run -p semantic-memory --example hostile_memory_integrity`
+//! Run from the crate:
+//! `cargo run -p semantic-memory --features testing --example hostile_memory_integrity`
 
 use rusqlite::{params, Connection};
 use semantic_memory::hostile_benchmark::{

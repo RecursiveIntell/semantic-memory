@@ -87,7 +87,73 @@ fn caller_subject_confusion_and_confused_deputy_fail_closed_without_a_live_lease
         None,
         &delegated,
     );
-    assert!(decision.allowed, "{:?}", decision.reasons);
+    assert!(
+        !decision.allowed,
+        "caller-carried lease must never grant delegation"
+    );
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason == "untrusted_caller_carried_lease"));
+}
+
+#[test]
+fn forged_altered_wrong_scope_wrong_audience_and_replayed_leases_are_denied() {
+    let forged = DelegationElevationLeaseV1::delegation(
+        "unknown:caller-minted",
+        "principal:patient",
+        "principal:alice",
+        vec![GovernedAccessPurposeV1::Recall],
+        NamespaceScopeV1::exact("medical"),
+        vec!["team:medical".into()],
+        "2999-01-01T00:00:00Z",
+    );
+    let forged_request = request().with_delegation_or_elevation(forged.clone());
+    for _ in 0..2 {
+        let decision = evaluate_governed_access_v1(
+            "fact:patient",
+            Some("medical"),
+            Some(&label()),
+            None,
+            &forged_request,
+        );
+        assert!(!decision.allowed);
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason == "untrusted_caller_carried_lease"));
+    }
+
+    let mut altered = forged.clone();
+    altered.delegatee = CallerPrincipalV1::new("principal:mallory").unwrap();
+    let wrong_scope = DelegationElevationLeaseV1::delegation(
+        "wrong:scope",
+        "principal:patient",
+        "principal:alice",
+        vec![GovernedAccessPurposeV1::Recall],
+        NamespaceScopeV1::exact("other"),
+        vec!["team:medical".into()],
+        "2999-01-01T00:00:00Z",
+    );
+    let wrong_audience = DelegationElevationLeaseV1::delegation(
+        "wrong:audience",
+        "principal:patient",
+        "principal:alice",
+        vec![GovernedAccessPurposeV1::Recall],
+        NamespaceScopeV1::exact("medical"),
+        vec!["team:other".into()],
+        "2999-01-01T00:00:00Z",
+    );
+    for lease in [altered, wrong_scope, wrong_audience] {
+        let decision = evaluate_governed_access_v1(
+            "fact:patient",
+            Some("medical"),
+            Some(&label()),
+            None,
+            &request().with_delegation_or_elevation(lease),
+        );
+        assert!(!decision.allowed);
+    }
 }
 
 #[test]
@@ -179,14 +245,17 @@ fn audience_namespace_expiry_revocation_and_admin_elevation_are_receipted() {
             NamespaceScopeV1::exact("medical"),
             "2999-01-01T00:00:00Z",
         ));
-    let allowed = evaluate_governed_access_v1(
+    let denied = evaluate_governed_access_v1(
         "fact:patient",
         Some("medical"),
         Some(&label()),
         None,
         &admin,
     );
-    assert!(allowed.allowed, "{:?}", allowed.reasons);
+    assert!(
+        !denied.allowed,
+        "caller-carried lease must never grant Admin"
+    );
 }
 
 #[test]
@@ -249,7 +318,7 @@ async fn direct_cache_graph_export_replay_state_historical_and_projection_paths_
                 "principal:writer",
                 "test",
                 semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
-                vec!["evidence:test".into()],
+                vec![format!("blake3:{}", "a".repeat(64))],
             )
             .with_origin(write_label),
             "multi-principal-paths".into(),

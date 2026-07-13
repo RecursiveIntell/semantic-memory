@@ -51,7 +51,7 @@ fn permit(principal: &str, origin: OriginAuthorityLabelV1) -> AuthorityPermit {
         principal,
         "origin-authority-test",
         AuthorityPermit::APPEND_CAPABILITY,
-        vec!["evidence:test".into()],
+        vec![format!("blake3:{}", "a".repeat(64))],
     )
     .with_origin(origin)
 }
@@ -70,7 +70,7 @@ async fn direct_poison_without_origin_fails_closed_on_canonical_write() {
                 "model:poison",
                 "hostile",
                 AuthorityPermit::APPEND_CAPABILITY,
-                vec!["untrusted:model-output".into()],
+                vec![format!("blake3:{}", "b".repeat(64))],
             ),
             "direct-poison".into(),
             "general".into(),
