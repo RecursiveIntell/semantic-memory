@@ -149,6 +149,7 @@ async fn hnsw_search_empty_store() {
     assert!(results.is_empty(), "Empty store should return no results");
 }
 
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn hnsw_delete_removes_from_search() {
     let (store, _tmp) = test_store();

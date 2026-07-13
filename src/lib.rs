@@ -1772,11 +1772,11 @@ impl MemoryStore {
         Ok(edge)
     }
 
-    /// Atomically consolidate two facts into one.
+    /// **DANGER**: legacy physical consolidation mutates a truth-bearing row.
     ///
-    /// Updates the kept fact with merged content and adds a supersession edge
-    /// from the kept fact to the superseded fact, all in one SQLite transaction.
-    /// No duplicate fact is created.
+    /// This migration-only operation is admin-only. Governed callers must use a
+    /// source-grounded supersession transition rather than mutating a head.
+    #[cfg(feature = "admin-ops")]
     pub async fn consolidate_facts(
         &self,
         keep_id: &str,
@@ -2000,14 +2000,29 @@ impl MemoryStore {
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
 
-        // Check search result cache for simple unfiltered queries.
-        // Cache is keyed by (query, k) and only used when no namespace/source_type
-        // filters are applied AND receipt mode is not requested. Cleared on any
-        // mutating operation (update/delete).
+        // Fail closed: result caching is solely for ordinary current approximate
+        // retrieval. Any governed/explained/exact/replay request must execute so
+        // its receipt and execution semantics cannot be inherited from another
+        // request. Recency-enabled searches also retain their evaluation-time
+        // semantics by bypassing this cache.
         let cache_key = if matches!(view, StateView::Current)
             && namespaces.is_none()
             && source_types.is_none()
-            && context.receipt_mode != ReceiptMode::ReturnReceipt
+            && context.receipt_mode == ReceiptMode::Disabled
+            && context.replay_mode == ReplayMode::NoReplay
+            && context.exactness_profile == ExactnessProfile::Default
+            && self.inner.config.search.recency_half_life_days.is_none()
+            && context.request_id.is_none()
+            && context.trace_id.is_none()
+            && context.attempt_family_id.is_none()
+            && context.attempt_id.is_none()
+            && context.replay_of.is_none()
+            && context.query_text_digest.is_none()
+            && context.query_input_digest.is_none()
+            && context.filter_digest.is_none()
+            && context.redaction_state.is_none()
+            && context.budget_id.is_none()
+            && context.deadline_at.is_none()
         {
             Some(format!("{query}:{k}"))
         } else {

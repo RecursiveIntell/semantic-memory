@@ -4,14 +4,12 @@ use semantic_memory::search::{cosine_similarity, sanitize_fts_query, source_dedu
 #[cfg(feature = "turbo-quant-codec")]
 use semantic_memory::DerivedVectorBackendPolicy;
 #[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
-use semantic_memory::ExactnessProfile;
+use semantic_memory::ReplayMode;
 use semantic_memory::SearchSource;
 use semantic_memory::{
-    GraphEdgeType, MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType,
-    StateView,
+    ExactnessProfile, GraphEdgeType, MemoryConfig, MemoryStore, MockEmbedder, ReceiptMode,
+    SearchConfig, SearchContext, SearchSourceType, StateView,
 };
-#[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
-use semantic_memory::{ReceiptMode, ReplayMode, SearchContext};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -80,6 +78,35 @@ async fn ordinary_search_is_current_and_historical_search_reconstructs_old_head(
         .unwrap();
     assert!(historical.iter().any(|r| r.content.contains("cobalt")));
     assert!(!historical.iter().any(|r| r.content.contains("amber")));
+}
+
+#[tokio::test]
+async fn warm_default_cache_never_satisfies_explained_or_exact_search() {
+    let (store, _tmp) = test_store();
+    store
+        .add_fact("cache-isolation", "cache isolation sentinel", None, None)
+        .await
+        .unwrap();
+
+    // Warm the only eligible cache lane: ordinary current, unfiltered, receipt-disabled search.
+    store
+        .search("cache isolation sentinel", Some(3), None, None)
+        .await
+        .unwrap();
+
+    let mut context = SearchContext::default_now();
+    context.receipt_mode = ReceiptMode::ExplainOnly;
+    context.exactness_profile = ExactnessProfile::PreferExact;
+    let evaluation_time = context.evaluation_time;
+    let explained = store
+        .search_with_context("cache isolation sentinel", Some(3), None, None, context)
+        .await
+        .unwrap();
+
+    let receipt = explained
+        .receipt
+        .expect("ExplainOnly must not be satisfied by a receiptless cache entry");
+    assert_eq!(receipt.evaluation_time, evaluation_time);
 }
 
 #[cfg(feature = "turbo-quant-codec")]

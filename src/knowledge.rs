@@ -261,6 +261,7 @@ pub fn update_fact_with_fts(
 }
 
 /// Delete all namespace-scoped memory atomically and report every affected surface.
+#[cfg(feature = "admin-ops")]
 pub fn delete_namespace(
     conn: &Connection,
     namespace: &str,
@@ -1119,7 +1120,10 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Delete all memory in a namespace and return a per-surface report.
+    /// **DANGER**: physically deletes every truth-bearing row in a namespace.
+    /// This is admin-only and gated behind the `admin-ops` feature. Ordinary
+    /// callers must use governed supersession/forgetting flows instead.
+    #[cfg(feature = "admin-ops")]
     pub async fn delete_namespace(
         &self,
         namespace: &str,

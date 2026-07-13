@@ -102,6 +102,7 @@ async fn both_features_handle_empty_store() {
     );
 }
 
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn both_features_handle_delete() {
     let (store, _tmp) = test_store();
