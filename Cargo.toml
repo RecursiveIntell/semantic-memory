@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory"
-version = "0.5.8"
+version = "0.5.10"
 edition = "2021"
 rust-version = "1.75"
 description = "Local-first hybrid semantic search (SQLite + FTS5 + usearch 2.25) with bitemporal truth and typed receipts"
@@ -102,6 +102,7 @@ candle-embedder = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 lru = "0.16.3"
 bytemuck = { version = "1", features = ["derive"] }
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 rusqlite = { workspace = true, features = ["bundled", "blob"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
@@ -117,9 +118,8 @@ schemars = { workspace = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
 bitemporal-runtime = { version = "0.1.0", path = "../bitemporal-runtime" }
 
-# Vector search backends. Only one is active at a time (enforced by feature
-# flag; trying to enable both `hnsw` and `usearch-backend` simultaneously is
-# allowed but the runtime will pick the first that matches the feature gate).
+# Vector search backends may be compiled together intentionally. Runtime dispatch has explicit,
+# tested precedence (`hnsw` before `usearch-backend`) when both are enabled.
 hnsw_rs = { version = "0.3", optional = true }
 usearch = { version = "2.25", default-features = false, optional = true }
 turbo-quant = { version = "0.2.1", path = "../turbo-quant", optional = true }
@@ -134,6 +134,8 @@ hf-hub = { version = "1.0.0-rc.1", default-features = false, features = ["blocki
 tokenizers = { version = "0.23", default-features = false, features = ["onig"], optional = true }
 
 [build-dependencies]
+# cc compiles the C SIMD kernel (c-kernels/similarity.c) for cosine_similarity.
+cc = "1.0"
 # cxx-build is only needed when the usearch backend is enabled (it triggers
 # the C++ bridge compilation). Declared unconditionally so the build script
 # can switch behavior based on the active feature.
@@ -144,6 +146,51 @@ cxx = { version = "1.0", optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = { workspace = true }
 semantic-memory-forge = { version = "0.1.1", path = "../semantic-memory-forge" }
+
+[[example]]
+name = "hostile_memory_integrity"
+path = "examples/hostile_memory_integrity.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "authority_transactions"
+path = "tests/authority_transactions.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "transition_compiler"
+path = "tests/transition_compiler.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "forgetting_closure"
+path = "tests/forgetting_closure.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "shadow_policy"
+path = "tests/shadow_policy.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "procedural_memory"
+path = "tests/procedural_memory.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "evidence_gap"
+path = "tests/evidence_gap.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "origin_authority"
+path = "tests/origin_authority.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "multi_principal_policy"
+path = "tests/multi_principal_policy.rs"
+required-features = ["testing"]
 
 # LIB-005: inherit workspace lint policy
 [lints]

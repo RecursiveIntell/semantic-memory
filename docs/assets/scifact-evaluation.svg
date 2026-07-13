@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">BEIR SciFact evaluation workflow for semantic-memory</title>
+  <desc id="desc">The BEIR-hosted SciFact archive is shape-checked, embedded with a cached fixture, loaded into a persisted semantic-memory store, divided deterministically into calibration and held-out query splits, evaluated in three retrieval modes, and independently validated from raw JSONL and aggregate receipts.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17304A" stroke-width="1" opacity="0.45"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64748B"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="630" rx="24" fill="#07111F"/>
+  <rect width="1200" height="630" rx="24" fill="url(#grid)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="56" y="62" fill="#E2E8F0" font-size="27" font-weight="700">SCIFACT / RECEIPT-BEARING EVALUATION</text>
+    <text x="56" y="91" fill="#94A3B8" font-size="14">build once · calibrate without peeking · freeze · evaluate held-out · recompute independently</text>
+
+    <!-- arrows -->
+    <g fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M240 196H300"/>
+      <path d="M500 196H560"/>
+      <path d="M760 196H820"/>
+      <path d="M920 248V324"/>
+      <path d="M820 392H744"/>
+      <path d="M544 392H468"/>
+      <path d="M268 392H192"/>
+    </g>
+
+    <!-- Stage 1 -->
+    <rect x="56" y="132" width="184" height="128" rx="12" fill="#151E2B" stroke="#94A3B8" stroke-width="2"/>
+    <text x="76" y="164" fill="#CBD5E1" font-size="12" font-weight="700">01 / SOURCE</text>
+    <text x="76" y="194" fill="#F1F5F9" font-size="16">BEIR-hosted archive</text>
+    <text x="76" y="220" fill="#CBD5E1" font-size="13">5,183 documents</text>
+    <text x="76" y="242" fill="#CBD5E1" font-size="13">300 test queries</text>
+
+    <!-- Stage 2 -->
+    <rect x="300" y="132" width="200" height="128" rx="12" fill="#102333" stroke="#22D3EE" stroke-width="2"/>
+    <text x="320" y="164" fill="#67E8F9" font-size="12" font-weight="700">02 / FIXTURE</text>
+    <text x="320" y="194" fill="#ECFEFF" font-size="16">default: all-minilm</text>
+    <text x="320" y="220" fill="#CFFAFE" font-size="13">normalized embeddings</text>
+    <text x="320" y="242" fill="#94A3B8" font-size="11">append-only fsync JSONL cache</text>
+
+    <!-- Stage 3 -->
+    <rect x="560" y="132" width="200" height="128" rx="12" fill="#10271F" stroke="#34D399" stroke-width="2"/>
+    <text x="580" y="164" fill="#6EE7B7" font-size="12" font-weight="700">03 / STORE</text>
+    <text x="580" y="194" fill="#ECFDF5" font-size="16">persisted fact store</text>
+    <text x="580" y="220" fill="#A7F3D0" font-size="13">namespace: beir-scifact</text>
+    <text x="580" y="242" fill="#94A3B8" font-size="11">no graph edges · no re-embedding</text>
+
+    <!-- Stage 4 -->
+    <rect x="820" y="132" width="200" height="128" rx="12" fill="#242014" stroke="#FBBF24" stroke-width="2"/>
+    <text x="840" y="164" fill="#FDE68A" font-size="12" font-weight="700">04 / SPLIT</text>
+    <text x="840" y="194" fill="#FEF3C7" font-size="16">SHA-256 query IDs</text>
+    <text x="840" y="220" fill="#FDE68A" font-size="13">calibration 100</text>
+    <text x="840" y="242" fill="#FDE68A" font-size="13">held-out 200</text>
+
+    <!-- Stage 5 modes -->
+    <rect x="820" y="324" width="200" height="136" rx="12" fill="#171D31" stroke="#A78BFA" stroke-width="2"/>
+    <text x="840" y="356" fill="#C4B5FD" font-size="12" font-weight="700">05 / EXECUTE</text>
+    <text x="840" y="384" fill="#EDE9FE" font-size="15">fts_only</text>
+    <text x="840" y="408" fill="#EDE9FE" font-size="15">vector_only / PreferExact</text>
+    <text x="840" y="432" fill="#EDE9FE" font-size="15">hybrid / explained</text>
+
+    <rect x="857" y="277" width="126" height="28" rx="14" fill="#17240E" stroke="#84CC16"/>
+    <text x="920" y="296" text-anchor="middle" fill="#BEF264" font-size="11" font-weight="700">FREEZE CONFIG</text>
+
+    <!-- Stage 6 artifacts -->
+    <rect x="544" y="324" width="200" height="136" rx="12" fill="#2A1328" stroke="#F472B6" stroke-width="2"/>
+    <text x="564" y="356" fill="#F9A8D4" font-size="12" font-weight="700">06 / ARTIFACTS</text>
+    <text x="564" y="384" fill="#FCE7F3" font-size="15">per-query JSONL</text>
+    <text x="564" y="408" fill="#FCE7F3" font-size="15">aggregate JSON</text>
+    <text x="564" y="432" fill="#FBCFE8" font-size="13">search + provenance receipts</text>
+
+    <!-- Stage 7 validator -->
+    <rect x="268" y="324" width="200" height="136" rx="12" fill="#102333" stroke="#38BDF8" stroke-width="2"/>
+    <text x="288" y="356" fill="#7DD3FC" font-size="12" font-weight="700">07 / VALIDATE</text>
+    <text x="288" y="384" fill="#E0F2FE" font-size="15">recompute metrics</text>
+    <text x="288" y="408" fill="#E0F2FE" font-size="15">verify hashes + split</text>
+    <text x="288" y="432" fill="#BAE6FD" font-size="13">ranks · IDs · executable</text>
+
+    <!-- Stage 8 claim boundary -->
+    <rect x="56" y="324" width="136" height="136" rx="12" fill="#202016" stroke="#FBBF24" stroke-width="2"/>
+    <text x="76" y="356" fill="#FDE68A" font-size="12" font-weight="700">08 / INTERPRET</text>
+    <text x="76" y="386" fill="#FEF3C7" font-size="14">exact run only</text>
+    <text x="76" y="410" fill="#FEF3C7" font-size="14">no superiority</text>
+    <text x="76" y="434" fill="#FEF3C7" font-size="14">no model claim</text>
+
+    <rect x="56" y="514" width="964" height="70" rx="12" fill="#111A27" stroke="#334155"/>
+    <text x="78" y="542" fill="#CBD5E1" font-size="12" font-weight="700">CHECKED-IN CLAIM BOUNDARY</text>
+    <text x="78" y="567" fill="#94A3B8" font-size="13">The repository includes the harness and validator, not a frozen score artifact. Publish numbers only with their validated receipt bundle.</text>
+  </g>
+</svg>

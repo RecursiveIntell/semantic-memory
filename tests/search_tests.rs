@@ -4,11 +4,12 @@ use semantic_memory::search::{cosine_similarity, sanitize_fts_query, source_dedu
 #[cfg(feature = "turbo-quant-codec")]
 use semantic_memory::DerivedVectorBackendPolicy;
 #[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
-use semantic_memory::ExactnessProfile;
+use semantic_memory::ReplayMode;
 use semantic_memory::SearchSource;
-use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchConfig, SearchSourceType};
-#[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
-use semantic_memory::{ReceiptMode, SearchContext};
+use semantic_memory::{
+    ExactnessProfile, GraphEdgeType, MemoryConfig, MemoryStore, MockEmbedder, ReceiptMode,
+    SearchConfig, SearchContext, SearchSourceType, StateView,
+};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -20,6 +21,92 @@ fn test_store() -> (MemoryStore, TempDir) {
     let embedder = Box::new(MockEmbedder::new(768));
     let store = MemoryStore::open_with_embedder(config, embedder).unwrap();
     (store, tmp)
+}
+
+#[test]
+fn default_search_config_does_not_enable_matryoshka_candidate_dimensions() {
+    assert_eq!(SearchConfig::default().candidate_dims, None);
+}
+
+#[tokio::test]
+async fn ordinary_search_is_current_and_historical_search_reconstructs_old_head() {
+    let (store, _tmp) = test_store();
+    let old = store
+        .add_fact("state", "deployment channel is cobalt", None, None)
+        .await
+        .unwrap();
+    let primed = store
+        .search("deployment channel", Some(10), None, None)
+        .await
+        .unwrap();
+    assert!(primed.iter().any(|r| r.content.contains("cobalt")));
+    let historical_at = chrono::Utc::now().to_rfc3339();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let new = store
+        .add_fact("state", "deployment channel is amber", None, None)
+        .await
+        .unwrap();
+    store
+        .add_graph_edge(
+            &format!("fact:{new}"),
+            &format!("fact:{old}"),
+            GraphEdgeType::Entity {
+                relation: "supersedes".into(),
+            },
+            1.0,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let current = store
+        .search("deployment channel", Some(10), Some(&["state"]), None)
+        .await
+        .unwrap();
+    assert!(current.iter().any(|r| r.content.contains("amber")));
+    assert!(!current.iter().any(|r| r.content.contains("cobalt")));
+
+    let historical = store
+        .search_with_view(
+            "deployment channel",
+            Some(10),
+            Some(&["state"]),
+            None,
+            StateView::HistoricalAt(historical_at),
+        )
+        .await
+        .unwrap();
+    assert!(historical.iter().any(|r| r.content.contains("cobalt")));
+    assert!(!historical.iter().any(|r| r.content.contains("amber")));
+}
+
+#[tokio::test]
+async fn warm_default_cache_never_satisfies_explained_or_exact_search() {
+    let (store, _tmp) = test_store();
+    store
+        .add_fact("cache-isolation", "cache isolation sentinel", None, None)
+        .await
+        .unwrap();
+
+    // Warm the only eligible cache lane: ordinary current, unfiltered, receipt-disabled search.
+    store
+        .search("cache isolation sentinel", Some(3), None, None)
+        .await
+        .unwrap();
+
+    let mut context = SearchContext::default_now();
+    context.receipt_mode = ReceiptMode::ExplainOnly;
+    context.exactness_profile = ExactnessProfile::PreferExact;
+    let evaluation_time = context.evaluation_time;
+    let explained = store
+        .search_with_context("cache isolation sentinel", Some(3), None, None, context)
+        .await
+        .unwrap();
+
+    let receipt = explained
+        .receipt
+        .expect("ExplainOnly must not be satisfied by a receiptless cache entry");
+    assert_eq!(receipt.evaluation_time, evaluation_time);
 }
 
 #[cfg(feature = "turbo-quant-codec")]
@@ -1366,6 +1453,62 @@ async fn durable_receipt_replay_matches_original_inputs() {
         durable_replay.is_some(),
         "replay attempt should leave its own receipt"
     );
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
+async fn stored_replay_inputs_produce_equivalent_results() {
+    let (store, _tmp) = test_store_with_recency(None, 0.0);
+    let fact_id = store
+        .add_fact(
+            "replay-opt-in",
+            "Stored replay inputs preserve filters and results",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut context = SearchContext::at(
+        chrono::DateTime::parse_from_rfc3339("2026-02-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    context.receipt_mode = ReceiptMode::ReturnReceipt;
+    context.replay_mode = ReplayMode::StoreInputs;
+    context.exactness_profile = ExactnessProfile::PreferExact;
+    context.request_id = Some("stored-replay-inputs".to_string());
+
+    let response = store
+        .search_with_context(
+            "Stored replay inputs preserve filters",
+            Some(1),
+            Some(&["replay-opt-in"]),
+            Some(&[SearchSourceType::Facts]),
+            context,
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .search_replay_inputs_available("stored-replay-inputs")
+        .await
+        .unwrap());
+
+    let report = store
+        .replay_search_from_stored_inputs("stored-replay-inputs")
+        .await
+        .unwrap();
+
+    assert!(report.query_embedding_digest_matches);
+    assert!(report.result_ids_match);
+    assert_eq!(
+        response.receipt.unwrap().result_ids,
+        report.replay_receipt.result_ids
+    );
+    assert!(report
+        .replay_receipt
+        .result_ids
+        .contains(&format!("fact:{fact_id}")));
 }
 
 #[cfg(feature = "testing")]

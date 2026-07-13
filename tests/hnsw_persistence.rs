@@ -97,6 +97,7 @@ async fn keymap_survives_reopen() {
 
 /// 2.2 — After adding 10 facts, deleting 3, closing, and reopening, the deleted
 /// facts should not appear in search while the remaining ones should.
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn deletions_survive_reopen() {
     let tmp = TempDir::new().unwrap();

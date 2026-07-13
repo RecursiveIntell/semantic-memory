@@ -1,698 +1,352 @@
 # semantic-memory
 
-Local-first hybrid semantic search backed by authoritative SQLite
-state and a high-performance vector sidecar.
+Local-first hybrid retrieval for Rust, with SQLite as authoritative state and receipts for execution evidence.
 
-`semantic-memory` stores facts, chunked documents, conversation
-messages, and searchable episodes in SQLite. Search combines
-**BM25 (FTS5)** and **vector retrieval** with **Reciprocal Rank
-Fusion**, and `search_explained()` returns the exact scoring
-breakdown from the live pipeline.
+![semantic-memory system and trust boundaries](docs/assets/semantic-memory-boundaries.svg)
 
-The vector sidecar is **usearch 2.25** (default), with hnsw_rs 0.3
-and brute-force as opt-in alternatives. All three implement the
-`VectorBackend` trait.
+`semantic-memory` stores facts, documents and chunks, conversations, episodes, embeddings, temporal state, authority ledgers, and search receipts in SQLite. FTS indexes, vector sidecars, sparse representations, and compressed candidate artifacts accelerate retrieval; they do not replace canonical state and can be reconciled from SQLite.
 
-## Why this crate
+> **Status:** research-grade library with a tested default retrieval contract. Feature-gated research and orchestration modules are not implicit guarantees of `MemoryStore::search()` behavior.
 
-Most "vector databases" treat the index as authoritative and
-the metadata as a side table. `semantic-memory` is the
-opposite: **SQLite is authoritative** for all durable state
-(records, embeddings, content, conversations, links). The
-vector index is an **acceleration sidecar** that can be
-rebuilt from SQLite at any time. If the sidecar corrupts, you
-call `reconcile()` and you have a fresh index from
-authoritative state.
+| Contract fact | Current value |
+| --- | --- |
+| Crate version | `0.5.10` |
+| Minimum Rust version | `1.75` |
+| Default Cargo feature | `usearch-backend` |
+| Maximum schema version | `36` |
+| License | Apache-2.0 |
 
-This makes the crate suitable for local-first AI systems that
-need:
+## What the crate owns
 
-- **Durable, recoverable state** — SQLite + WAL, one writer +
-  pooled readers.
-- **Fast vector search** — usearch 2.25 (default), hnsw_rs 0.3
-  (opt-in), or brute-force (no C++ toolchain needed).
-- **Hybrid search** — BM25 + vector + RRF, with the breakdown
-  exposed via `search_explained()`.
-- **Bitemporal truth** — every fact carries a `valid_time` and
-  `recorded_time` via the [bitemporal-runtime](https://crates.io/crates/bitemporal-runtime)
-  foundation.
-- **Receipt-bearing operations** — every state transition
-  emits a typed, blake3-digested receipt.
-- **Provenance** — algebraic confidence scores (semiring-based)
-  with support counts.
-- **Contradiction detection** — syndrome detection and belief
-  propagation on conflict graphs.
-- **Adaptive routing** — query profiling and stage selection.
-- **Lawful subtraction** — safe forgetting with invariant
-  verification and recovery.
-- **Typed graph edges** — durable, append-only edges (semantic,
-  temporal, causal, entity) with invalidation.
-- **Factor graph reasoning** — unified belief propagation over
-  all four edge types.
-- **Topological analysis** — Betti numbers and void detection.
-- **Community detection** — Leiden-inspired with contradiction
-  scanning.
-- **Late-interaction RRF** — a third retrieval signal (proxy
-  ColBERT MaxSim) fused alongside BM25 and vector.
-- **Temporal scoring** — stale facts are automatically downranked
-  via temporal weight in the RRF score.
-- **Provenance-weighted scoring** — high-confidence facts rank
-  higher via provenance confidence multiplier.
-- **Namespace-weighted scoring** — configurable per-namespace boost
-  in `SearchConfig`.
-- **Self-RAG gating** — `should_retrieve()` skips search for
-  greetings, confirmations, and trivial queries.
-- **Embedding cache** — LRU cache (256 entries) skips model
-  compute for repeated query texts.
-- **Search result cache** — LRU cache (64 entries) returns identical
-  queries instantly. Invalidated on any mutation.
-- **Query expansion** — hyphenated variants (turbo-quant /
-  turboquant) automatically matched in BM25.
-- **Result diversity** — max 2 chunks per document prevents
-  narrow single-source results.
-- **Embedding similarity dedup** — Jaccard + cosine heuristic
-  removes near-duplicate results.
-- **SimpleMem compression** — `compress_search_results()`
-  shortens result content to first sentence + key terms (opt-in
-  via `SearchConfig.compress_results`).
-- **Matryoshka 2-stage search** — 64d truncated embeddings for
-  fast candidate generation, 768d exact rerank (opt-in via
-  `SearchConfig.candidate_dims`).
-- **RL routing feedback** — `record_routing_outcome()` feeds
-  good/bad/neutral signals to the tabular routing policy.
-- **BM25 tuning** — configurable `k1` and `b` parameters in
-  `SearchConfig`.
-- **TurboQuant codec** — optional compressed vector sidecar via
-  the `turbo-quant-codec` feature flag.
+| Surface | Contract |
+| --- | --- |
+| Canonical storage | SQLite content, raw f32 embeddings, temporal fields, lineage, authority records, and durable receipts |
+| Default retrieval | FTS5/BM25 plus dense-vector candidates, weighted reciprocal-rank fusion, current-state visibility, deduplication, and diversity |
+| State semantics | Current, historical, and supersession views for facts, plus separately invoked transition and state-resolution APIs |
+| Recovery | Integrity checks and reconciliation from canonical SQLite state |
+| Governed mutation | Capability-gated append, supersession, redaction, forgetting, export, and replay through `MemoryStore::authority()` |
+| Execution evidence | Optional search receipts that disclose backend, exactness, candidates, fallback, degradation, and result identity |
+
+## What the crate does not own
+
+- **Claim truth.** A search receipt records retrieval execution; it is not a claim-ledger verification decision.
+- **Agent action permission.** Recall authority does not grant permission to assert a memory or act on it.
+- **MCP transport policy.** See [`semantic-memory-mcp`](https://github.com/RecursiveIntell/semantic-memory-mcp) for transport, tool profiles, and application-level authority composition.
+- **Automatic activation of every feature.** Compiling routing, graph, topology, community, decoder, or compression modules does not make the normal search path invoke them.
+- **Native SPLADE or native ColBERT.** Dense-derived sparse values and the current late-interaction proxy must not be presented as those systems.
+
+## Install
+
+```toml
+[dependencies]
+semantic-memory = "0.5.10"
+tokio = { version = "1", features = ["macros", "rt"] }
+```
+
+The default build enables `usearch-backend`. For an exact pure-Rust backend without the C++ bridge:
+
+```toml
+[dependencies]
+semantic-memory = { version = "0.5.10", default-features = false, features = ["brute-force"] }
+```
 
 ## Quick start
 
+This example uses the deterministic `MockEmbedder`, so it needs no network service or downloaded model.
+
 ```rust
-use semantic_memory::{MemoryConfig, MemoryStore};
+use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, MockEmbedder};
+use std::path::PathBuf;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), semantic_memory::MemoryError> {
-    let store = MemoryStore::open(MemoryConfig::default())?;
+    let config = MemoryConfig {
+        base_dir: PathBuf::from("memory-example"),
+        embedding: EmbeddingConfig {
+            dimensions: 768,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-    // Store a fact.
-    store.add_fact("general", "Rust was first released in 2015", None, None).await?;
+    let store = MemoryStore::open_with_embedder(
+        config,
+        Box::new(MockEmbedder::new(768)),
+    )?;
 
-    // Hybrid search (BM25 + vector + RRF).
-    let results = store.search("when was Rust released", None, None, None).await?;
-    for hit in &results {
-        println!("  score={:.4}  {}", hit.score, hit.content);
+    store
+        .add_fact("general", "Rust was first released in 2015", None, None)
+        .await?;
+
+    let results = store
+        .search(
+            "when was Rust released",
+            Some(5),
+            Some(&["general"]),
+            None,
+        )
+        .await?;
+
+    for result in results {
+        println!("{:.4} {}", result.score, result.content);
     }
 
-    // Get the exact scoring breakdown.
-    let explained = store.search_explained("when was Rust released", None, None).await?;
-    for hit in explained {
-        println!(
-            "  rrf={:.4}  bm25={:?}  vec={:?}  -> {}",
-            hit.breakdown.rrf_score,
-            hit.breakdown.bm25_score,
-            hit.breakdown.vector_score,
-            hit.result.content,
-        );
-    }
     Ok(())
 }
 ```
 
-`MemoryConfig::default()` uses the in-process Candle embedder
-(pure-Rust, CPU-only) with `nomic-embed-text-v1.5` at 768 dimensions.
-The model downloads automatically from HuggingFace on first use and
-is cached in `~/.cache/huggingface/hub`. No external process or
-server required.
+`MemoryStore::open()` selects `OllamaEmbedder` unless the crate is compiled with `candle-embedder`, in which case it selects `CandleEmbedder`. Use `open_with_embedder` to inject another provider or a deterministic fixture.
 
-To use Ollama instead, enable the `ollama` path by constructing
-`OllamaEmbedder` explicitly (see below).
+## Choose the retrieval API deliberately
 
-## Examples
+| Need | API | Notes |
+| --- | --- | --- |
+| Default hybrid retrieval | `search` | Facts, document chunks, and searchable episodes; current state; receipt disabled by default |
+| Explicit context and receipt | `search_with_context` | Caller-supplied or wall-clock-initialized evaluation time, receipt/replay mode, exactness profile, request identity, and budgets |
+| Historical or superseded view | `search_with_view` | Caller chooses `StateView`; never relabels a current search as historical |
+| Lexical only | `search_fts_only` / `search_fts_only_with_context` | No query embedding required |
+| Vector only | `search_vector_only` / `search_vector_only_with_context` | Supports `ExactnessProfile::PreferExact` through context |
+| Per-lane score evidence | `search_explained` / `search_explained_with_context` | Returns BM25, vector, sparse, and recency fields with RRF contributions; the late-interaction proxy is not separately attributed |
+| Conversation retrieval | `search_conversations` | Separate session/message search surface |
+| Governed read/search | `MemoryStore::authority()` | Enforces origin and capability contracts independently of relevance score |
 
-The crate ships with several runnable examples in `examples/`:
+Messages are not part of the normal hybrid source set unless selected with `SearchSourceType::Messages`. Conversation search is available separately.
 
-### Basic search (`basic_search.rs`)
+## Default hybrid retrieval contract
 
-Creates a store, adds 5 facts across two namespaces, demonstrates
-`search()`, `search_explained()`, `search_fts_only()`, `stats()`,
-and `graph_view().neighbors()`. Uses `MockEmbedder` — no Ollama
-or model download needed.
+![semantic-memory default hybrid retrieval pipeline](docs/assets/retrieval-pipeline.svg)
 
-```bash
-cargo run --example basic_search
-```
+The baseline lanes are SQLite FTS5/BM25 and dense-vector retrieval. Their ranked lists are fused with weighted Reciprocal Rank Fusion (RRF). `SearchConfig` controls lane weights, RRF constant, candidate pool size, minimum similarity, result limits, recency behavior, and optional stages.
 
-### Conversation memory (`conversation_memory.rs`)
+### Dense retrieval and exactness
 
-Creates a conversation session, stores system/user/assistant
-messages, retrieves messages within a token budget, runs
-`search_conversations()`. Uses `MockEmbedder` — no Ollama needed.
+The active backend is a runtime fact, not a README promise. When receipts are enabled, `candidate_backend`, `fallback`, `exact_rerank`, candidate counts, and `degradations` report what actually happened.
 
-```bash
-cargo run --example conversation_memory
-```
+- `DerivedVectorBackendPolicy::Disabled` selects the non-derived vector policy. With `hnsw` compiled, ordinary search can use HNSW candidates; without that candidate path it uses authoritative SQLite-backed f32 scoring.
+- `ExactnessProfile::PreferExact` requests the exact reference path.
+- HNSW can supply candidates when the `hnsw` feature is compiled and exactness does not require the reference path.
+- TurboQuant and proveKV/poly-kv policies are candidate-only. Their final ranking requires authoritative f32 reranking.
+- The default `usearch-backend` feature supplies the public `VectorIndex` implementation; enabling it does not by itself make ordinary `MemoryStore::search()` approximate.
+- The `brute-force` feature satisfies the crate's backend feature guard for ordinary exact search; it is not a separate implementation of `VectorIndex::new()`.
 
-### Hybrid retrieval recall gate (`hybrid_retrieval_recall_gate.rs`)
+### Optional lanes and stages
 
-Measures end-to-end recall@10 for the hybrid BM25+vector+RRF
-pipeline against a golden 30-document corpus and 12 ground-truth
-queries. Emits a JSON receipt. Uses `MockEmbedder`.
+| Stage | Activation | Boundaries |
+| --- | --- | --- |
+| Durable sparse | `sparse_weight > 0` plus a usable query sparse representation | Dense-derived sparse is opt-in and is not native SPLADE |
+| Matryoshka coarse/full rerank | `matryoshka`, valid `candidate_dims`, compatible reduced-dimension representation, and non-`PreferExact` context | A separate truncated-query candidate attempt may replace the full result only after exact f32 rerank; it is off by default, and not every failed attempt is currently surfaced as a degradation |
+| Late interaction | `late-interaction` plus positive weight, when sparse is inactive | The non-HNSW detailed hybrid branch applies a proxy over single dense vectors; it is not persistent token-level ColBERT and is not fused by the HNSW hybrid branch |
+| Routing | `routing` feature and explicit application integration | The router can recommend stages; `search*` does not invoke it automatically |
+| Recency | Configured half-life and weight | Evaluation-time semantics disable ordinary cache reuse |
+| Result compression | Explicit `compress_results` configuration | Compressed text is a derived response projection, not replacement source content |
 
-```bash
-cargo run --example hybrid_retrieval_recall_gate
-```
+### Cache boundary
 
-### Real benchmark (`real_bench.rs`)
+Result caching is intentionally narrow. Only ordinary, unfiltered, current-state searches with default exactness, no receipt, no replay, no request/trace/budget identity, and no recency half-life are cache eligible. Historical, explained, exact, replay-bearing, receipt-bearing, filtered, or governed requests execute independently. Cache entries are also bound to the authority retrieval epoch.
 
-Inserts 500 facts across 10 namespaces with `MockEmbedder`
-(384-dim), runs 50 benchmark queries comparing hybrid vs
-FTS-only vs vector-only search. Reports avg latency, top-5
-overlap analysis, and a feature comparison vs Qdrant.
+## Durability, recovery, and replay privacy
 
-```bash
-cargo run --example real_bench
-```
+![semantic-memory durability and recovery model](docs/assets/durability-recovery.svg)
 
-### Routing benchmark (`run_bench.rs`)
+The store uses SQLite WAL with pooled readers and a serialized writer. Under the `hnsw` feature, pending sidecar operations are journaled and replayed so a committed SQLite write remains authoritative while HNSW synchronization is pending. The default standalone usearch `VectorIndex` does not share that `MemoryStore` HNSW lifecycle.
 
-Runs the RAGRouter-Bench default benchmark using
-`benchmark::run_default_benchmark()`. Prints a human-readable
-report and a JSON reproducibility manifest.
+- `verify_integrity(VerifyMode::Quick | VerifyMode::Full)` reports malformed or drifting state.
+- `reconcile(ReconcileAction::ReportOnly | ReconcileAction::RebuildFts | ReconcileAction::ReEmbed)` reports or rebuilds derived state from SQLite.
+- Sidecar and derived-artifact failures must not silently become canonical state.
+- Search receipts receive canonical BLAKE3 digests when persisted.
 
-```bash
-cargo run --example run_bench --features benchmark
-```
-
-### TurboQuant benchmark (`turboquant_benchmark_gate.rs`)
-
-Benchmarks the TurboQuant codec: encodes 1000 vectors at 8 bits,
-runs 50 queries, measures recall@10, NDCG@10, rank drift, score
-error, and latency. Writes a JSON summary with green/amber/red
-classification.
-
-```bash
-cargo run --example turboquant_benchmark_gate --features turbo-quant-codec
-```
-
-## Embedding backends
-
-`semantic-memory` supports three embedding backends:
-
-### Candle (default with `candle-embedder` feature)
-
-In-process pure-Rust ML framework (CPU-only). No external process
-or server required. Downloads `nomic-embed-text-v1.5` from
-HuggingFace on first use (cached after).
+### Receipts and replay
 
 ```rust
-use semantic_memory::{MemoryConfig, MemoryStore};
+use semantic_memory::{MemoryStore, ReceiptMode, ReplayMode, SearchContext};
 
-// CandleEmbedder is the default when candle-embedder is enabled.
-let store = MemoryStore::open(MemoryConfig::default())?;
-```
+async fn replayable_search(store: &MemoryStore) -> Result<(), semantic_memory::MemoryError> {
+    let context = SearchContext {
+        receipt_mode: ReceiptMode::ReturnReceipt,
+        replay_mode: ReplayMode::StoreInputs,
+        ..SearchContext::default()
+    };
 
-### Ollama (external server)
+    let response = store
+        .search_with_context(
+            "when was Rust released",
+            Some(5),
+            None,
+            None,
+            context,
+        )
+        .await?;
 
-If you prefer using an external Ollama instance (e.g. for GPU
-acceleration or shared model serving):
-
-```rust
-use semantic_memory::{MemoryConfig, MemoryStore, embedder::OllamaEmbedder};
-
-let config = MemoryConfig::default();
-let embedder = Box::new(OllamaEmbedder::try_new(&config.embedding)?);
-let store = MemoryStore::open_with_embedder(config, embedder)?;
-```
-
-Requires Ollama running with the model pulled:
-```bash
-ollama pull nomic-embed-text
-```
-
-### Mock (testing/CI)
-
-Deterministic hash-based embeddings for tests and CI — no network,
-no model download:
-
-```rust
-use semantic_memory::{MemoryConfig, MemoryStore, embedder::MockEmbedder};
-
-let config = MemoryConfig {
-    base_dir: std::env::temp_dir().join("sm-test"),
-    ..Default::default()
-};
-let embedder = Box::new(MockEmbedder::new(768));
-let store = MemoryStore::open_with_embedder(config, embedder)?;
-```
-
-## Storing and searching documents
-
-```rust
-// Ingest a document — it's automatically chunked and each chunk
-// is embedded and indexed independently.
-let doc_id = store
-    .ingest_document("Tokio Tutorial", long_text, "docs", None, None)
-    .await?;
-
-// Search across facts AND document chunks.
-let results = store
-    .search("how does tokio scheduling work", None, None, None)
-    .await?;
-
-// Search only document chunks (filter by source type).
-use semantic_memory::SearchSourceType;
-let chunks = store
-    .search(
-        "tokio spawn",
-        Some(5),
-        None,
-        Some(&[SearchSourceType::Chunks]),
-    )
-    .await?;
-```
-
-## Conversation memory
-
-```rust
-use semantic_memory::{MemoryStore, MemoryConfig, embedder::MockEmbedder, Role};
-
-let store = MemoryStore::open_with_embedder(
-    MemoryConfig { base_dir: dir, ..Default::default() },
-    Box::new(MockEmbedder::new(768)),
-)?;
-
-// Create a conversation session.
-let session_id = store.create_session("chat", None).await?;
-
-// Store messages.
-store.add_message(&session_id, Role::User, "What is RAG?", None).await?;
-store.add_message(&session_id, Role::Assistant, "RAG stands for...", None).await?;
-
-// Search conversation history.
-let messages = store
-    .search_conversations("what did we discuss about RAG", &session_id, Some(5))
-    .await?;
-```
-
-## Graph edges
-
-```rust
-use semantic_memory::GraphEdgeType;
-
-// Add a causal edge between two facts.
-let edge = store
-    .add_graph_edge(
-        "fact:abc123-...",
-        "fact:def456-...",
-        GraphEdgeType::Causal {
-            confidence: 0.85,
-            evidence_ids: vec!["fact:ev1-...".to_string()],
-        },
-        1.0,
-        None,
-    )
-    .await?;
-
-// Add an entity edge with a relation name.
-let edge = store
-    .add_graph_edge(
-        "fact:abc123-...",
-        "namespace:rust-facts",
-        GraphEdgeType::Entity { relation: "belongs_to".to_string() },
-        1.0,
-        None,
-    )
-    .await?;
-
-// List edges for a node.
-let edges = store
-    .list_graph_edges_for_node("fact:abc123-...")
-    .await?;
-
-// Find the shortest path between two items.
-let g = store.graph_view();
-if let Some(path) = g.path("fact:abc123-...", "fact:xyz789-...", 5)? {
-    println!("Path: {:?}", path);
-}
-```
-
-## Provenance
-
-```rust
-use semantic_memory::provenance::{ConfidenceSemiring, ConfidenceValue, ProvenanceItemType};
-
-// Set evidence confidence for a fact.
-let value = ConfidenceValue::new(0.92, 3); // confidence=0.92, support_count=3
-let receipt = store
-    .set_provenance::<ConfidenceSemiring>(
-        &ProvenanceItemType::Fact,
-        "fact:abc123-...",
-        &value,
-        &[],
-        None,
-    )
-    .await?;
-println!("Provenance recorded: {}", receipt.provenance_id);
-```
-
-## Integrity and reconciliation
-
-```rust
-// Strict integrity check — surfaces malformed data, sidecar drift,
-// invalid embeddings, broken FTS indexes.
-let report = store.verify_integrity(None).await?;
-if !report.errors.is_empty() {
-    for err in &report.errors {
-        eprintln!("Integrity error: {err}");
+    if let Some(receipt) = response.receipt {
+        let report = store
+            .replay_search_from_stored_inputs(&receipt.receipt_id)
+            .await?;
+        println!("same result IDs: {}", report.result_ids_match);
     }
+
+    Ok(())
 }
-
-// Rebuild everything from authoritative SQLite state.
-store.reconcile(None).await?;
 ```
 
-## HNSW to usearch migration (June 2026)
+`ReplayMode::NoReplay` is the default privacy boundary. Query text, namespace filters, and source-type filters are not retained; receipts keep their digests. `ReplayMode::StoreInputs` explicitly retains those inputs in the V35 `replay_inputs` table and enables `replay_search_from_stored_inputs`.
 
-The vector sidecar was migrated from `hnsw_rs 0.3` to
-`usearch 2.25` based on a head-to-head benchmark on
-**2026-06-02**.
+A receipt can establish that a named backend, exactness route, fallback, degradation set, and pre-visibility result identity were recorded. Receipt result IDs are assembled before later `StateView` and forgetting filters, so do not equate them universally with the final governed caller-visible list. A receipt does **not** establish that a result is true, safe to assert, or authorized for downstream action.
 
-### Headline @ D=768 (production case)
+## Temporal truth and governed mutation
 
-| Metric | hnsw_rs 0.3 | usearch 2.25 | Advantage |
-|---|---:|---:|---:|
-| **Insert throughput** | 265 vec/s | 770 vec/s | **2.9x** |
-| **Search p50** | 9,992 us | 529 us | **18.9x** |
-| **Search p99** | 54,110 us | 692 us | **78x** |
-| **Search mean** | 14,524 us | 538 us | **27x** |
-| **Recall@10** | 0.885 | 0.925 | **+4 pp** |
-| **Load time** | 34,484 ms | 11 ms | **3,134x** |
-| **p99/p50 ratio** | 5.4x | 1.3x | usearch stable |
+Normal fact reads use `StateView::Current`, which excludes superseded facts. Historical fact reconstruction is explicit through `StateView` and bitemporal fields. Chunks and messages do not receive an equivalent authority-state filter in the normal hybrid result pass, while episodes and imported projections use their own validity/invalidation handling. If the fact store cannot establish one coherent current head, state-aware resolution fails closed rather than selecting an arbitrary version.
 
-The key wins: 78x better search p99 (hnsw_rs had pathological tail
-behavior), 3,134x faster load (hnsw_rs re-runs slow on-disk decode),
-and +4pp recall@10 at production scale.
+`MemoryStore::authority()` exposes a capability-gated surface for trusted integrations. Governed mutations require an authority permit issued inside the trust boundary; ordinary downstream code is not intended to mint its own authority. The surface covers:
 
-### Reproduce the benchmark
+- append and supersession;
+- redaction and selective forgetting;
+- governed direct reads, search, and graph traversal;
+- export and replay;
+- immutable origin-authority labels and revocations;
+- transition verification, quarantine, and rollback references where declared by the operation.
 
-```bash
-cargo build -p hnsw-bench --bin hnsw-bench \
-    --no-default-features --features hnsw --release
-./target/release/hnsw-bench            # hnsw_rs run
+The compatibility API remains available for ordinary local use. Raw compatibility reads and writes are not equivalent to governed reads: they do not apply the same origin, revocation, scope, purpose, and state decisions. Do not infer a typed transition receipt from a method unless its return contract declares one. Graph utility operations return domain objects and do not universally produce governance receipts.
 
-cargo build -p hnsw-bench --bin hnsw-bench \
-    --no-default-features --features usearch-backend --release
-./target/release/hnsw-bench            # usearch run
-```
+Hard delete and in-place truth mutation are disabled by default. The `admin-ops` feature exposes administrative operations; use supersession for normal correction workflows.
 
-Receipts: `hnsw-bench-receipt-{hnsw_rs,usearch}-20260602-*.json`.
+## Embedding identity and purpose
 
-### Choosing a backend
+The committed embedding contract distinguishes `EmbeddingPurpose::Query` from `EmbeddingPurpose::Document`. Query and document text receive different role prefixes, and purpose/profile identity participates in embedding caches and durable dirty-metadata checks. Custom embedders, imported vectors, re-embedding workflows, and benchmark fixtures must preserve that asymmetry or explicitly disclose a different profile.
 
-```toml
-# Default — usearch 2.25 (recommended)
-semantic-memory = "0.5"
-
-# Legacy — hnsw_rs 0.3 (opt-in)
-semantic-memory = { version = "0.5", default-features = false, features = ["hnsw"] }
-
-# No C++ toolchain — pure-Rust brute-force
-semantic-memory = { version = "0.5", default-features = false, features = ["brute-force"] }
-```
-
-## What's in the box
-
-### Storage
-
-- **SQLite + WAL** — authoritative for all durable state.
-  One writer connection + pooled reader connections.
-- **FTS5** — BM25 full-text search over content, episode
-  titles, message bodies.
-- **Vector sidecar** — usearch 2.25 (default), hnsw_rs 0.3
-  (opt-in), or brute-force (opt-in). All implement the
-  `VectorBackend` trait. Pending sidecar mutations are
-  journaled in SQLite and replayed on open / flush / rebuild
-  / reconcile.
-- **Bitemporal truth** — every fact carries a `valid_time` and
-  `recorded_time` via the [bitemporal-runtime](https://crates.io/crates/bitemporal-runtime)
-  foundation.
-- **Typed graph edges** — durable, append-only edges with
-  invalidation. Four edge types: semantic, temporal, causal,
-  entity. Stored in the `graph_edges` SQLite table.
-
-### Search
-
-- **`search()`** — hybrid (BM25 + vector + RRF) over facts,
-  document chunks, and episodes by default.
-- **`search_explained()`** — same as `search()` but with the
-  per-signal scores exposed (BM25, vector, recency, RRF,
-  weights, contributions).
-- **`search_conversations()`** — message-level retrieval.
-- **`search_fts_only()`** — BM25 only, no vector path.
-- **`search_vector_only()`** — vector only, no BM25 path.
-- **`reconcile()`** — rebuild FTS, re-embed, rebuild the
-  sidecar from authoritative SQLite state.
-
-### Integrity
-
-- **`verify_integrity()`** — strict check for malformed stored
-  data (invalid roles, JSON, enums, embedding blobs, quantized
-  blobs, sidecar drift). Surfaces errors instead of silently
-  converting to defaults.
-- **Strict deserialization** — invalid stored data is an
-  error, not a fallback.
-
-### Graph
-
-- **`store.graph_view()`** — deterministic traversal over
-  namespaces, facts, documents, chunks, sessions, messages,
-  episodes, and semantic/temporal/causal/entity edges derived
-  from SQLite state.
-- **`add_graph_edge()`** — add typed edges with per-type
-  metadata (cosine_similarity, delta_secs, confidence,
-  relation). Idempotent insertion.
-- **`list_graph_edges()` / `invalidate_graph_edge()`** —
-  append-only edge lifecycle. Edges are never deleted, only
-  invalidated with a reason.
-
-### Receipts
-
-- Every state transition (add_fact, search, reconcile,
-  add_graph_edge, set_provenance, ...) emits a typed receipt.
-  Receipts are content-addressed (blake3-digested) and
-  reproducible. The `SearchContext` struct carries audit
-  metadata (request_id, trace_id, attempt_family_id,
-  replay_of) for full replay support.
+The SciFact fixture records its own supplied vectors and refuses unknown query text so evaluation cannot silently cross into another embedding provider.
 
 ## Cargo features
 
-| Feature | Default | What it enables |
-|---|---|---|
-| `usearch-backend` | yes | usearch 2.25 vector backend (C++ cxx-bridge) |
-| `candle-embedder` | no | In-process Candle embedder (pure-Rust, CPU-only, no Ollama required) |
-| `hnsw` | no | hnsw_rs 0.3 vector backend (legacy, opt-in) |
-| `brute-force` | no | Pure-Rust brute-force backend (no ANN, no C++ needed) |
-| `provenance` | no | Semiring provenance (Boolean, Tropical, Probability, Confidence) |
-| `temporal` | no | Temporal weight scoring (requires provenance) |
-| `multiscale` | no | Multiscale retrieval scheduling pipeline |
-| `discord` | no | Second-order graph-neighbor retrieval |
-| `decoder` | no | Syndrome detection + belief propagation contradiction correction |
-| `subtraction` | no | Lawful forgetting with invariant verification |
-| `compression-governor` | no | Importance-driven quantization level decisions |
-| `routing` | no | Adaptive query-aware retrieval stage selection |
-| `benchmark` | no | Benchmark harness for routing (requires routing) |
-| `integration` | no | Cross-feature wiring (requires all constituent features) |
-| `late-interaction` | no | ColBERT-style late interaction multi-vector retrieval |
-| `topology` | no | Persistent homology and topological void detection |
-| `matryoshka` | no | Matryoshka Representation Learning (multi-resolution embeddings) |
-| `community` | no | Leiden community detection with contradiction tracking |
-| `rl-routing` | no | MemRL-style RL routing over receipts (requires routing) |
-| `subgraph-pruning` | no | Reasoning subgraph pruning with lawful subtraction (requires subtraction) |
-| `turbo-quant-codec` | no | TurboQuant codec integration for compressed vector search |
-| `admin-ops` | no | Admin-only hard delete/update of truth-bearing rows |
-| `testing` | no | Internal testing utilities |
+At least one vector backend (`usearch-backend`, `hnsw`, or `brute-force`) must be enabled.
 
-The `integration` feature requires all constituent features
-(provenance, temporal, multiscale, discord, decoder, subtraction,
-compression-governor, routing, topology, community,
-subgraph-pruning, matryoshka) and wires cross-feature bridges:
-routing to decoder, decoder to subtraction, provenance to
-temporal, subtraction to compression, discord to provenance.
+### Storage, retrieval, and embedding
 
-The `turbo-quant-codec` feature is an opt-in experimental codec
-integration that adds [turbo-quant](https://crates.io/crates/turbo-quant),
-[quant-governor](https://crates.io/crates/quant-governor), and
-[scr-runtime-compression](https://crates.io/crates/scr-runtime-compression)
-as dependencies. It enables approximate candidate generation with
-exact f32 rerank. Not needed for standard search — usearch already
-handles vector indexing.
+| Feature | Current effect |
+| --- | --- |
+| `default` | Enables `usearch-backend` |
+| `usearch-backend` | Default public `VectorIndex` implementation through usearch 2.25 |
+| `hnsw` | Opt-in legacy `hnsw_rs` candidate backend |
+| `brute-force` | Enables ordinary pure-Rust exact f32 search without an ANN dependency; not a standalone `VectorIndex::new()` implementation |
+| `candle-embedder` | In-process Candle embedder; changes the `MemoryStore::open()` default |
+| `turbo-quant-codec` | TurboQuant derived artifacts and candidate-only policy |
+| `poly-kv-codec` | proveKV/poly-kv candidate-only pool policy |
+| `matryoshka` | Coarse truncated-embedding candidate stage followed by full rerank |
+| `late-interaction` | Late-interaction primitives and the guarded proxy fusion branch |
 
-## Public API surface
+### Governance and operations
 
-### Core types
+| Feature | Current effect |
+| --- | --- |
+| `provenance` | Semiring provenance storage |
+| `temporal` | Temporal field provenance; depends on `provenance` |
+| `subtraction` | Lawful subtraction engine |
+| `subgraph-pruning` | Reasoning-subgraph pruning; depends on `subtraction` |
+| `compression-governor` | Importance-based compression governance |
+| `admin-ops` | Administrative hard-delete and in-place update operations |
+| `testing` | Explicitly gated conformance and authority test targets |
 
-| Type | Description |
-|------|-------------|
-| `MemoryStore` | The main store handle. All operations go through this. |
-| `MemoryConfig` | Configuration (base_dir, embedding, search, chunking, pool, limits). |
-| `EmbeddingConfig` | Embedding backend config (model, dimensions, batch_size, timeout, ollama_url for Ollama). |
-| `SearchConfig` | BM25/vector weights, RRF k, recency, candidate pool, derived backend policy. |
-| `SearchResult` | One search hit: content, source, score, bm25_rank, vector_rank, cosine_similarity. |
-| `ExplainedResult` | SearchResult + ScoreBreakdown with all per-signal scores. |
-| `SearchSource` | Enum: Fact, Chunk, Message, Episode, Projection — tells you what type of thing the result is. |
-| `GraphEdgeType` | Enum: Semantic, Temporal, Causal, Entity — with per-type metadata. |
-| `GraphView` | Deterministic graph traversal over the store's state. |
-| `MemoryStats` | Facts, documents, chunks, sessions, messages counts + DB size + embedding info. |
-| `VectorIndex` | The vector sidecar handle (usearch/hnsw/brute-force). |
+### Research and orchestration
 
-### Embedder
+| Feature | Current effect |
+| --- | --- |
+| `routing` | Deterministic query profiling and route recommendations |
+| `benchmark` | Routing benchmark harness; depends on `routing` |
+| `rl-routing` | Receipt-driven routing-policy persistence; depends on `routing` |
+| `multiscale` | Staged multiscale retrieval scheduling |
+| `discord` | Second-order graph-neighbor retrieval |
+| `decoder` | Contradiction decoder and related analysis |
+| `topology` | Persistent-homology/topological analysis |
+| `community` | Community detection |
+| `integration` | Compile-time bundle of cross-feature modules; not a runtime switch for `search()` |
 
-| Type | Description |
-|------|-------------|
-| `Embedder` | Trait for embedding providers. |
-| `CandleEmbedder` | In-process pure-Rust embedder (CPU-only, no Ollama). Feature `candle-embedder`. |
-| `OllamaEmbedder` | External — calls Ollama's /api/embed endpoint. |
-| `MockEmbedder` | Deterministic embedder for tests/CI. No network. |
+A feature flag proves that code is compiled, not that a default search request exercised it. Use receipts, explained results, tests, or application-level traces for runtime claims.
 
-### Error
+## Selected schema milestones, V18–V36
 
-| Type | Description |
-|------|-------------|
-| `MemoryError` | The unified error type for all operations. |
+`MAX_SCHEMA_VERSION` is `36`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
 
-### Modules (feature-gated)
+| Version | Durable addition |
+| ---: | --- |
+| V18 | Search receipts |
+| V19–V21 | Derived-vector artifacts and generation manifests |
+| V22 | Bitemporal episodes |
+| V23 | Codec governance |
+| V24 | proveKV/poly-kv pool generations |
+| V25 | Provenance tables |
+| V26 | Temporal score columns |
+| V27–V28 | Stored and bitemporal graph edges |
+| V29 | Authority state, lineage, and receipts |
+| V30 | Transition verification and quarantine |
+| V31 | Origin authority and revocations |
+| V32 | Selective-forgetting closure |
+| V33 | Shadow policies |
+| V34 | Procedural memory |
+| V35 | Opt-in replay inputs |
+| V36 | Sparse vectors and deletion cleanup triggers |
 
-| Module | Feature | What it provides |
-|--------|---------|-----------------|
-| `provenance` | `provenance` | ConfidenceSemiring, BooleanSemiring, TropicalSemiring, ProbabilitySemiring, ConfidenceValue, ProvenanceItemType |
-| `temporal` | `temporal` | Temporal weight computation (age, supersession, support, contradiction) |
-| `pipeline` | `multiscale` | Multiscale retrieval scheduling (staged search with budgets) |
-| `discord` | `discord` | DiscordScorer, GraphEdgeRef — second-order retrieval |
-| `decoder` | `decoder` | detect_syndromes, compute_correction, pass_messages, ConflictGraph |
-| `subtraction` | `subtraction` | SubtractionCandidate, invariant verification |
-| `compression_governor` | `compression-governor` | decide_quantization, QuantizationLevel, ImportanceConfig |
-| `routing` | `routing` | RetrievalRouter, QueryProfile, RoutingDecision |
-| `benchmark` | `benchmark` | run_default_benchmark, BenchmarkReport |
-| `integration` | `integration` | plan_execution, corrections_to_subtraction_candidates, should_trigger_recompression, autonomous_subgraph_maintenance |
-| `factor_graph` | `integration` | FactorGraph, FactorGraphConfig, factors_from_edges |
-| `topology` | `topology` | compute_betti_numbers, find_voids, gap_report |
-| `matryoshka` | `matryoshka` | MatryoshkaConfig, multi_resolution_route |
-| `community` | `community` | detect_communities, community_contradiction_scan, community_aware_compression |
-| `subgraph_pruning` | `subgraph-pruning` | AccessLog, autonomous_subgraph_maintenance |
-| `rl_routing` | `rl-routing` | RL-trained routing policy |
-| `late_interaction` | `late-interaction` | ColBERT-style multi-vector retrieval |
+Projection-import compatibility APIs are migration surfaces. New integrations should use the current batch-import seam and preserve source export time, transformation time, importer commit time, scope, and temporal fields separately.
 
-## MSRV
+## Evaluation
 
-Rust 1.75 (2021 edition). The `usearch` cxx-bridge requires
-C++17 to build, which is a documented `build.rs` prerequisite.
+![BEIR SciFact evaluation workflow](docs/assets/scifact-evaluation.svg)
 
-## Test coverage
+The [BEIR SciFact evaluation guide](docs/evaluation/scifact/README.md) runs the checked-in retrieval APIs in three frozen modes:
 
-- **321 tests** pass with default features (`cargo test`).
-  **500+ tests** pass with all features enabled.
-- Tests cover: SQLite schema, WAL concurrency, FTS5 rebuild,
-  usearch backend (insert, search, save, load, hot-swap), hnsw
-  backend (opt-in), bitemporal as-of queries, hybrid search
-  with score breakdown, receipt emission, integrity checks,
-  graph view traversal, provenance (all four semirings), temporal
-  weight, decoder syndromes, subtraction, compression governor,
-  routing, discord, graph edges, factor graph, topology,
-  community, and cross-feature integration.
+1. FTS-only;
+2. vector-only with `PreferExact`;
+3. baseline hybrid with explained results.
 
-## Dependencies
+The repository includes the builder, runner, independent validator, and tests. It does **not** check in a frozen score artifact, so this README intentionally makes no numeric quality or latency claim. Publish measurements only with the raw per-query JSONL, aggregate receipt, corpus hashes, executable identity, configuration, split definition, and validator result from the same run.
 
-### Runtime
+The SciFact harness does not evaluate general-domain quality, graph retrieval, native sparse/SPLADE retrieval, token-level late interaction, Matryoshka quality, or model quality.
 
-| Crate | Purpose |
-|-------|---------|
-| `rusqlite` | SQLite + FTS5 bindings (bundled) |
-| `usearch` | Vector sidecar (default backend) |
-| `reqwest` | HTTP client for Ollama embeddings (when using OllamaEmbedder) |
-| `blake3` | Content-addressed receipts |
-| `tokio` | Async runtime |
-| `serde` / `serde_json` | Serialization |
-| `chrono` | Timestamps |
-| `uuid` | ID generation |
-| `tracing` | Structured logging |
-| `thiserror` | Error derive |
-| `bytemuck` | Zero-copy byte conversions |
-| `schemars` | JSON Schema generation |
+## Verification
 
-### Stack crates (from the same monorepo)
+From the workspace root:
 
-| Crate | Purpose |
-|-------|---------|
-| [stack-ids](https://crates.io/crates/stack-ids) | Typed IDs, scopes, trace context, BLAKE3 digests |
-| [bitemporal-runtime](https://crates.io/crates/bitemporal-runtime) | Bitemporal truth primitives |
-| [boundary-compiler](https://crates.io/crates/boundary-compiler) | RFC 8785 JSON Canonicalization (JCS) |
-| [forge-memory-bridge](https://crates.io/crates/forge-memory-bridge) | Projection import transforms |
+```bash
+cargo fmt --package semantic-memory -- --check
+cargo check -p semantic-memory --all-targets
+cargo test -p semantic-memory --all-targets
+cargo clippy -p semantic-memory --all-targets -- -D warnings
+```
 
-## Where it's used
+Backend-specific examples:
 
-`semantic-memory` is the search engine for:
+```bash
+cargo test -p semantic-memory --no-default-features --features brute-force --all-targets
+cargo test -p semantic-memory --no-default-features --features hnsw --all-targets --no-run
+```
 
-- [semantic-memory-mcp](https://crates.io/crates/semantic-memory-mcp)
-  — MCP server exposing 48 tools (33 lean / 39 standard / 48 full) and 14 HTTP endpoints for agent
-  integration (Hermes Agent, Claude Desktop, Cursor, Windsurf).
-- The LLM agent stack (forge-pilot, llm-pipeline) — every
-  retrieval over a knowledge base.
-- The LLM tool runtime — long-term tool-call memory.
-- The verification runtime — fact storage with bitemporal
-  truth.
-- `fib-quant`, `turbo-quant`, `quant-eval` — recall measurements
-  in benchmarks run through `semantic-memory::search` against the
-  raw-vector baseline.
+## Examples
 
-Any system that needs **local-first, hybrid, bitemporal,
-receipt-bearing** search can adopt `semantic-memory`
-directly.
+| Example | Purpose |
+| --- | --- |
+| `basic_search.rs` | Minimal fact insertion and hybrid retrieval |
+| `conversation_memory.rs` | Session/message persistence and recall |
+| `hybrid_retrieval_recall_gate.rs` | Hybrid retrieval with an explicit recall gate |
+| `scifact_retrieval_eval.rs` | Receipt-bearing official SciFact evaluation |
+| `rebuild_hnsw.rs` | HNSW rebuild flow |
+| `real_bench.rs` / `run_bench.rs` | Local benchmark harnesses; results are environment-scoped |
+| `turboquant_benchmark_gate.rs` | Candidate-codec benchmark gate |
 
-**No cloud dependencies.** Every component runs locally: SQLite
-for storage, usearch for vector search, Candle for embeddings (or
-Ollama if you choose). No calls to OpenAI, Anthropic, Pinecone,
-Weaviate, Supabase, or any hosted service. The only network call
-is the one-time HuggingFace model download (cached after) when
-using Candle, or your local Ollama instance when using Ollama.
-Your data never leaves your machine.
+## Public claim boundary
 
-## Scope and limits
+Defensible from current source and tests:
 
-- The crate is a library, not a server. The MCP server
-  ([semantic-memory-mcp](https://crates.io/crates/semantic-memory-mcp))
-  wraps it for agent integration.
-- Requires an embedding backend. With the `candle-embedder` feature,
-  `MemoryStore::open()` defaults to `CandleEmbedder` (in-process,
-  pure-Rust, CPU-only, no Ollama). Without it, defaults to
-  `OllamaEmbedder`. Use `MockEmbedder` for tests.
-- The `integration` feature wires cross-feature bridges
-  (routing to decoder, decoder to subtraction, provenance to
-  temporal, subtraction to compression, discord to provenance)
-  but the decoder does not yet re-rank search results in the
-  live search path. The factor graph runs independently.
-- Graph-based reasoning tools (discord, factor graph, topology,
-  community) require stored graph edges to produce meaningful
-  results. With zero edges they return empty results — not
-  broken, just no graph to work with.
-- The `turbo-quant-codec` and `admin-ops` features are opt-in
-  and not enabled by default. `turbo-quant-codec` adds external
-  codec dependencies; `admin-ops` enables hard delete/update
-  operations that bypass supersession.
+- local-first SQLite-backed authoritative state;
+- rebuildable lexical/vector/sparse/derived projections;
+- default hybrid retrieval with explained score components;
+- explicit current/historical fact views;
+- optional durable search receipts and opt-in replay inputs;
+- capability-gated authority APIs and administrative-operation feature gates;
+- experimental and feature-gated retrieval/governance modules.
 
-## License
+Not established merely by this README or by compiling the crate:
 
-Apache-2.0. See `LICENSE` for the full text.
-
-## Changelog
-
-See `CHANGELOG.md` for the release history.
-
-## Acknowledgments
-
-The HNSW to usearch migration was a 2-day investigation that
-included the full benchmark harness, the `VectorBackend`
-trait refactor, the default switch, and the sidecar-format
-migration. The benchmark receipts (machine fingerprint, git
-commit, full per-row payload) are in
-`hnsw-bench-receipt-{hnsw_rs,usearch}-20260602-*.json` for
-independent verification.
+- production certification or secure autonomous administration;
+- universal truth verification;
+- permission to act on recalled content;
+- superiority over other retrieval systems;
+- native SPLADE, native ColBERT, or universal lossless compression;
+- performance outside a named, reproducible benchmark receipt.

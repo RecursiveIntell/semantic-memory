@@ -83,11 +83,29 @@ compile_error!(
     "At least one search backend feature must be enabled: 'hnsw', 'usearch-backend', or 'brute-force'"
 );
 
+mod authority;
+pub mod authority_contracts;
 pub mod chunker;
 pub mod config;
 pub(crate) mod conversation;
 pub(crate) mod db;
+/// Bounded evidence-gap retrieval and state-aware reranking over existing authority/search paths.
+pub mod evidence_gap;
+mod forgetting;
+mod procedural_memory;
+pub mod transition_contracts;
+mod transition_verifier;
 pub use db::{bytes_to_embedding, decode_f32_le, embedding_to_bytes};
+pub use evidence_gap::{
+    rerank_state_aware, EvidenceAblationReceiptV1, EvidenceGapOutcomeV1, EvidenceGapReasonV1,
+    EvidenceGapRequestV1, EvidenceGapV1, EvidencePacketItemV1, EvidencePacketV1,
+    EvidenceRetrievalRouteV1, EvidenceRouteReceiptV1, EvidenceTerminalOutcome,
+    EvidenceTerminalOutcomeV1, StateRerankCandidateV1, StateRerankWeightsV1, EVIDENCE_GAP_V1,
+    EVIDENCE_PACKET_V1, EVIDENCE_ROUTE_RECEIPT_V1,
+};
+/// Archived pure-Rust implementations replaced by C kernels.
+#[allow(dead_code)]
+pub mod archive;
 /// Phase 9b: benchmark harness for routing quality.
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
@@ -127,6 +145,9 @@ pub mod hnsw;
 mod hnsw_backend;
 #[cfg(feature = "hnsw")]
 mod hnsw_ops;
+/// Claim-bounded scoring and receipt invariants for the hostile memory benchmark.
+pub mod hostile_benchmark;
+
 /// Deterministic CPU-only hubness scoring over dense embedding collections.
 pub mod hubness;
 /// Phase 10: cross-feature integration wiring.
@@ -134,6 +155,64 @@ pub mod hubness;
 pub mod integration;
 mod json_compat_import;
 pub(crate) mod knowledge;
+/// Immutable origin-bound authority labels and governed access decisions.
+pub mod origin_authority;
+pub use authority::MemoryAuthority;
+pub use authority_contracts::{
+    AuthorityAdmission, AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit,
+    AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, CapabilityManifestV1, Confidence,
+    CosineSimilarity, InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1,
+    NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1,
+    StageOutcomeV1, SupersessionReceiptV1,
+};
+pub use forgetting::{
+    ForgettingClosureReceiptV1, ForgettingClosureRequestV1, ForgettingDispositionV1,
+    ForgettingEpochsV1, ForgettingSurfaceRefV1, ForgettingVerificationV1,
+    FORGETTING_CLOSURE_RECEIPT_V1,
+};
+pub use knowledge::StateView;
+pub use origin_authority::{
+    evaluate_governed_access_v1, AudienceV1, AuthorityScopeV1, AuthorityScopesV1,
+    CallerPrincipalV1, DelegationElevationLeaseV1, ElevationRequirementV1, GovernedAccessPurposeV1,
+    GovernedAccessRequestV1, GovernedFactAccessV1, GovernedFactListResponseV1,
+    GovernedGraphResponseV1, GovernedProjectionResponseV1, GovernedReplayResponseV1,
+    GovernedSearchResponseV1, GovernedStateResolutionResponseV1, NamespaceScopeV1,
+    OriginAuthorityDecisionV1, OriginAuthorityLabelV1, OriginAuthorityRecordV1, OriginClassV1,
+    OriginDerivationKindV1, OriginRiskV1, PolicyDecisionV1, RevocationStatusV1, SubjectPrincipalV1,
+};
+pub use procedural_memory::{
+    validate_procedure_artifact_v1, verify_procedure_lifecycle_receipt_v1,
+    verify_procedure_test_receipt_v1, AllowedProcedureToolV1, ApplicabilityOperatorV1,
+    ApplicabilityPredicateV1, GovernedProcedureDecisionV1, GovernedProcedureRetrievalV1,
+    ProceduralMemoryArtifactV1, ProcedureAccessPathV1, ProcedureActionPermitV1, ProcedureActionV1,
+    ProcedureCapabilityV1, ProcedureEffectV1, ProcedureEvidenceTestEnvelopeV1,
+    ProcedureFixtureReceiptV1, ProcedureFixtureV1, ProcedureLifecycleDispositionV1,
+    ProcedureLifecyclePermitV1, ProcedureLifecycleReceiptV1, ProcedurePreconditionV1,
+    ProcedureRetrievalRequestV1, ProcedureRevocationV1, ProcedureRiskV1, ProcedureStepV1,
+    ProcedureTestReceiptV1, ProcedureValidationV1, PROCEDURAL_MEMORY_ARTIFACT_V1,
+    PROCEDURE_LIFECYCLE_RECEIPT_V1, PROCEDURE_TEST_RECEIPT_V1,
+};
+pub use shadow_policy::{
+    compare_shadow_execution_v1, evaluate_shadow_policy_promotion_v1, shadow_policy_digest,
+    ActiveShadowPolicyV1, PromotionDecisionReceiptV1, PromotionDispositionV1, PromotionEvidenceV1,
+    PromotionGateDecisionV1, ShadowEvaluationWindowV1, ShadowExecutionComparisonV1,
+    ShadowPolicyKindV1, ShadowPolicyPromotionPermitV1, ShadowPolicyProposalV1,
+    ShadowPolicyProvenanceV1, ShadowPolicyRiskV1, ShadowPolicyStatusV1,
+    PROMOTION_DECISION_RECEIPT_V1, SHADOW_POLICY_PROPOSAL_V1,
+};
+pub use state_epistemics::{
+    answer_policy_for, resolve_dependency_states, AnswerDisposition, AnswerPolicy,
+    AnswerPolicyDecision, BeliefAlternativeV1, DependencyResolutionV1, DependencyState,
+    PremiseStatus, ResolvedAssertionV1, ResolvedMemoryAnswerV1, StateDependencyEdgeV1,
+    StateResolutionMode, StateResolutionReceiptV1, StateResolvedRetrievalResponseV1,
+    STATE_RESOLUTION_RECEIPT_V1, STATE_RESOLVED_RETRIEVAL_V1,
+};
+pub use transition_contracts::{
+    ActiveHeadSimulationV1, AssertionDraftV1, DependencySimulationV1, MemoryTransitionCandidateV1,
+    MemoryTransitionOutcomeV1, MemoryTransitionRecordV1, MemoryTransitionVerificationV1,
+    OmittedSourceSpanV1, SourceArtifactV1, SourceSpanRefV1, SupersessionDraftV1,
+    TransitionDisposition, TransitionOperation, UnsupportedAssertionSpanV1, VerificationScore,
+};
 /// ColBERT-style late interaction multi-vector retrieval.
 #[cfg(feature = "late-interaction")]
 pub mod late_interaction;
@@ -174,6 +253,8 @@ pub mod rl_routing;
 #[cfg(feature = "routing")]
 pub mod routing;
 pub mod search;
+pub mod shadow_policy;
+pub mod state_epistemics;
 pub mod storage;
 mod store_support;
 /// Reasoning subgraph pruning with lawful subtraction.
@@ -205,9 +286,10 @@ pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
 #[cfg(feature = "candle-embedder")]
 pub use embedder::CandleEmbedder;
 pub use embedder::{
-    BgeM3DeriveConfig, BgeM3Embedder, Embedder, MockEmbedder, MultiEmbedBatchFuture,
-    MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding, MultiVectorEmbedding,
-    OllamaEmbedder, SparseWeights,
+    BgeM3DeriveConfig, BgeM3Embedder, EmbedBatchFuture, EmbedFuture, Embedder, MockEmbedder,
+    MultiEmbedBatchFuture, MultiEmbedFuture, MultiFunctionEmbedder, MultiFunctionEmbedding,
+    MultiVectorEmbedding, OllamaEmbedder, OptionalMultiEmbedBatchFuture, OptionalMultiEmbedFuture,
+    SparseWeights,
 };
 pub use error::MemoryError;
 #[cfg(feature = "hnsw")]
@@ -231,9 +313,9 @@ pub use types::{
     ProjectionEntityAlias, ProjectionEpisode, ProjectionEvidenceRef, ProjectionQuery,
     ProjectionRelationVersion, ProveKvPoolArtifactBuildReceiptV1, ProveKvPoolArtifactStatusV1,
     ProveKvPoolGenerationStatus, ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1, ReceiptMode,
-    Role, ScoreBreakdown, SearchContext, SearchReceiptAnswersV1, SearchReplayReportV1,
-    SearchResponse, SearchResult, SearchSource, SearchSourceType, Session, TextChunk,
-    VectorArtifactBuildReceiptV1, VectorSearchReceiptV1, VerificationStatus,
+    ReplayMode, Role, ScoreBreakdown, SearchContext, SearchReceiptAnswersV1, SearchReplayReportV1,
+    SearchResponse, SearchResult, SearchSource, SearchSourceType, Session, SparseRankReceiptV1,
+    TextChunk, VectorArtifactBuildReceiptV1, VectorSearchReceiptV1, VerificationStatus,
 };
 pub use vector_backend::{VectorBackend, VectorHit, VectorIndex, VectorIndexConfig};
 #[cfg(feature = "turbo-quant-codec")]
@@ -606,9 +688,27 @@ struct MemoryStoreInner {
     embedding_cache: std::sync::Mutex<lru::LruCache<String, Vec<f32>>>,
     /// LRU cache for search results. Key is "query:top_k", value is results.
     /// Capped at 64 entries.
-    search_cache: std::sync::Mutex<lru::LruCache<String, Vec<types::SearchResult>>>,
+    search_cache: std::sync::Mutex<lru::LruCache<String, CachedSearchResult>>,
+    pub(crate) authority_fault:
+        Arc<std::sync::Mutex<Option<authority_contracts::AuthorityFaultStage>>>,
     #[cfg(feature = "hnsw")]
     hnsw_index: std::sync::RwLock<HnswIndex>,
+}
+
+/// Role of an embedding in the asymmetric retrieval model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmbeddingPurpose {
+    Query,
+    Document,
+}
+
+const EMBEDDING_PROFILE_VERSION: &str = "asymmetric-purpose-v2";
+const EMBEDDING_NORMALIZATION_PROFILE: &str = "provider-output-v1";
+
+#[derive(Clone)]
+struct CachedSearchResult {
+    results: Vec<types::SearchResult>,
+    retrieval_epoch: RetrievalEpoch,
 }
 
 #[cfg(feature = "hnsw")]
@@ -673,6 +773,11 @@ fn nonzero_cache_capacity(value: usize) -> std::num::NonZeroUsize {
 }
 
 impl MemoryStore {
+    /// Return the capability-gated, append-only authority mutation surface.
+    pub fn authority(&self) -> MemoryAuthority {
+        MemoryAuthority::new(self.clone())
+    }
+
     /// Run read-only work on a pooled reader connection on a blocking thread.
     ///
     /// This prevents SQLite I/O from stalling the tokio executor while allowing
@@ -711,13 +816,43 @@ impl MemoryStore {
         }
     }
 
+    pub(crate) fn clear_search_cache_strict(&self) -> Result<(), MemoryError> {
+        let mut cache = self.inner.search_cache.lock().map_err(|_| {
+            MemoryError::ForgettingClosureIncomplete {
+                detail: "search cache lock is poisoned".into(),
+            }
+        })?;
+        cache.clear();
+        Ok(())
+    }
+
     async fn persist_search_receipt(
         &self,
         receipt: &VectorSearchReceiptV1,
+        query: &str,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+        replay_mode: ReplayMode,
     ) -> Result<(), MemoryError> {
         let receipt = receipt.clone();
-        self.with_write_conn(move |conn| db::store_search_receipt(conn, &receipt))
-            .await
+        let query = query.to_string();
+        let namespaces = to_owned_string_vec(namespaces);
+        let source_types = source_types.map(|values| values.to_vec());
+        self.with_write_conn(move |conn| {
+            db::store_search_receipt(conn, &receipt)?;
+            if replay_mode == ReplayMode::StoreInputs {
+                let namespace_refs = as_str_slice(&namespaces);
+                db::store_replay_inputs(
+                    conn,
+                    &receipt.receipt_id,
+                    &query,
+                    namespace_refs.as_deref(),
+                    source_types.as_deref(),
+                )?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Run HNSW search on a blocking thread to avoid holding std::sync::RwLock
@@ -819,7 +954,15 @@ impl MemoryStore {
         })?;
 
         let pool = pool::SqlitePool::open(&paths.sqlite_path, &config.pool, &config.limits)?;
-        pool.with_write_conn(|conn| db::check_embedding_metadata(conn, &config.embedding))?;
+        // Purpose/profile changes invalidate every derived vector even when the provider model
+        // and dimensions are unchanged. Binding the profile into durable metadata makes upgrades
+        // fail visibly through `embeddings_dirty` instead of silently reusing old vectors.
+        let mut embedding_metadata = config.embedding.clone();
+        embedding_metadata.model = format!(
+            "{}|{}|{}",
+            embedding_metadata.model, EMBEDDING_NORMALIZATION_PROFILE, EMBEDDING_PROFILE_VERSION
+        );
+        pool.with_write_conn(|conn| db::check_embedding_metadata(conn, &embedding_metadata))?;
 
         // Ensure HNSW dimensions match the embedding config
         #[cfg(feature = "hnsw")]
@@ -966,6 +1109,7 @@ impl MemoryStore {
                     256,
                 ))),
                 search_cache: std::sync::Mutex::new(lru::LruCache::new(nonzero_cache_capacity(64))),
+                authority_fault: Arc::new(std::sync::Mutex::new(None)),
                 #[cfg(feature = "hnsw")]
                 hnsw_index: std::sync::RwLock::new(hnsw_index),
             }),
@@ -993,9 +1137,21 @@ impl MemoryStore {
             .map_err(|e| MemoryError::Other(format!("embedding semaphore closed: {e}")))
     }
 
-    async fn embed_text_internal(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+    async fn embed_text_internal(
+        &self,
+        text: &str,
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<f32>, MemoryError> {
         // Check embedding cache first -- skip the compute for repeated queries
-        let cache_key = text.to_string();
+        let cache_key = format!(
+            "{:?}|{}|{}|{}|{}|{}",
+            purpose,
+            self.inner.embedder.model_name(),
+            self.inner.config.embedding.dimensions,
+            EMBEDDING_NORMALIZATION_PROFILE,
+            EMBEDDING_PROFILE_VERSION,
+            text
+        );
         {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
@@ -1015,7 +1171,10 @@ impl MemoryStore {
         // "search_document:" for documents (ingestion-time)
         // The prefix is added here so ALL embedder backends (Candle, Ollama)
         // get the same prefix without each backend needing to handle it.
-        let prefixed = format!("search_query: {text}");
+        let prefixed = match purpose {
+            EmbeddingPurpose::Query => format!("search_query: {text}"),
+            EmbeddingPurpose::Document => format!("search_document: {text}"),
+        };
         let embedding = self.inner.embedder.embed(&prefixed).await?;
         db::validate_embedding(&embedding, self.inner.config.embedding.dimensions)?;
 
@@ -1034,7 +1193,143 @@ impl MemoryStore {
         Ok(embedding)
     }
 
-    async fn embed_batch_internal(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, MemoryError> {
+    /// Embed text while retaining an embedder-provided sparse representation.
+    /// Dense-only derivation is possible only through the explicit search config.
+    async fn embed_text_with_sparse_internal(
+        &self,
+        text: &str,
+        purpose: EmbeddingPurpose,
+    ) -> Result<(Vec<f32>, Option<SparseWeights>, Option<String>), MemoryError> {
+        let _permit = self.with_embedding_permit().await?;
+        // Keep the established prefix used by embed_text_internal so enabling
+        // sparse persistence does not silently change dense embedding semantics.
+        let prefixed = match purpose {
+            EmbeddingPurpose::Query => format!("search_query: {text}"),
+            EmbeddingPurpose::Document => format!("search_document: {text}"),
+        };
+        if let Some(multi) = self.inner.embedder.embed_multi_optional(&prefixed).await? {
+            db::validate_embedding(&multi.dense, self.inner.config.embedding.dimensions)?;
+            if multi
+                .sparse
+                .entries
+                .iter()
+                .any(|(_, weight)| !weight.is_finite())
+            {
+                return Err(MemoryError::Other(
+                    "embedder returned non-finite sparse weights".to_string(),
+                ));
+            }
+            return Ok((
+                multi.dense,
+                Some(multi.sparse),
+                Some(if self.inner.embedder.model_name().contains("bge-m3") {
+                    "bge_m3_generated_sparse".to_string()
+                } else {
+                    "native_sparse".to_string()
+                }),
+            ));
+        }
+
+        let dense = self.inner.embedder.embed(&prefixed).await?;
+        db::validate_embedding(&dense, self.inner.config.embedding.dimensions)?;
+        if self.inner.config.search.derive_sparse_from_dense {
+            let sparse = SparseWeights::from_dense(
+                &dense,
+                self.inner.config.search.sparse_derive_top_k,
+                self.inner.config.search.sparse_derive_min_weight,
+            );
+            Ok((
+                dense,
+                Some(sparse),
+                Some("generic_dense_derived_sparse".to_string()),
+            ))
+        } else {
+            Ok((dense, None, None))
+        }
+    }
+
+    async fn embed_batch_with_sparse_internal(
+        &self,
+        texts: Vec<String>,
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<(Vec<f32>, Option<SparseWeights>, Option<String>)>, MemoryError> {
+        let requested = texts.len();
+        let _permit = self.with_embedding_permit().await?;
+        let prefix = match purpose {
+            EmbeddingPurpose::Query => "search_query",
+            EmbeddingPurpose::Document => "search_document",
+        };
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|text| format!("{prefix}: {text}"))
+            .collect();
+        if let Some(multi) = self
+            .inner
+            .embedder
+            .embed_batch_multi_optional(prefixed.clone())
+            .await?
+        {
+            if multi.len() != requested {
+                return Err(MemoryError::EmbeddingBatchCountMismatch {
+                    requested,
+                    returned: multi.len(),
+                });
+            }
+            let representation = if self.inner.embedder.model_name().contains("bge-m3") {
+                "bge_m3_generated_sparse"
+            } else {
+                "native_sparse"
+            };
+            let mut output = Vec::with_capacity(requested);
+            for value in multi {
+                db::validate_embedding(&value.dense, self.inner.config.embedding.dimensions)?;
+                if value
+                    .sparse
+                    .entries
+                    .iter()
+                    .any(|(_, weight)| !weight.is_finite())
+                {
+                    return Err(MemoryError::Other(
+                        "embedder returned non-finite sparse weights".to_string(),
+                    ));
+                }
+                output.push((
+                    value.dense,
+                    Some(value.sparse),
+                    Some(representation.to_string()),
+                ));
+            }
+            return Ok(output);
+        }
+
+        let dense = self.inner.embedder.embed_batch(prefixed).await?;
+        db::validate_embedding_batch(&dense, requested, self.inner.config.embedding.dimensions)?;
+        Ok(dense
+            .into_iter()
+            .map(|dense| {
+                if self.inner.config.search.derive_sparse_from_dense {
+                    let sparse = SparseWeights::from_dense(
+                        &dense,
+                        self.inner.config.search.sparse_derive_top_k,
+                        self.inner.config.search.sparse_derive_min_weight,
+                    );
+                    (
+                        dense,
+                        Some(sparse),
+                        Some("generic_dense_derived_sparse".to_string()),
+                    )
+                } else {
+                    (dense, None, None)
+                }
+            })
+            .collect())
+    }
+
+    async fn embed_batch_internal(
+        &self,
+        texts: Vec<String>,
+        purpose: EmbeddingPurpose,
+    ) -> Result<Vec<Vec<f32>>, MemoryError> {
         let requested = texts.len();
 
         // Check cache for each text
@@ -1042,10 +1337,21 @@ impl MemoryStore {
         let mut misses: Vec<String> = Vec::new();
         let mut miss_indices: Vec<usize> = Vec::new();
 
+        let cache_key = |text: &str| {
+            format!(
+                "{:?}|{}|{}|{}|{}|{}",
+                purpose,
+                self.inner.embedder.model_name(),
+                self.inner.config.embedding.dimensions,
+                EMBEDDING_NORMALIZATION_PROFILE,
+                EMBEDDING_PROFILE_VERSION,
+                text
+            )
+        };
         for (i, text) in texts.iter().enumerate() {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
-                    if let Some(cached) = cache.get(text).cloned() {
+                    if let Some(cached) = cache.get(&cache_key(text)).cloned() {
                         results.push(Some(cached));
                     } else {
                         results.push(None);
@@ -1065,10 +1371,12 @@ impl MemoryStore {
         let _permit = self.with_embedding_permit().await?;
 
         // Add search_document: prefix for all documents (ingestion path)
-        let prefixed_misses: Vec<String> = misses
-            .iter()
-            .map(|t| format!("search_document: {t}"))
-            .collect();
+        let prefix = match purpose {
+            EmbeddingPurpose::Query => "search_query",
+            EmbeddingPurpose::Document => "search_document",
+        };
+        let prefixed_misses: Vec<String> =
+            misses.iter().map(|t| format!("{prefix}: {t}")).collect();
 
         let miss_embeddings = if prefixed_misses.is_empty() {
             Vec::new()
@@ -1085,7 +1393,7 @@ impl MemoryStore {
             match self.inner.embedding_cache.lock() {
                 Ok(mut cache) => {
                     for (text, emb) in misses.iter().zip(embeddings.iter()) {
-                        cache.put(text.clone(), emb.clone());
+                        cache.put(cache_key(text), emb.clone());
                     }
                 }
                 Err(err) => {
@@ -1366,7 +1674,7 @@ impl MemoryStore {
     ///
     /// - `ReportOnly`: no-op, just returns the integrity report.
     /// - `RebuildFts`: rebuilds all FTS indexes from source data.
-    /// - `ReEmbed`: not yet implemented (requires async embedding calls).
+    /// - `ReEmbed`: re-embeds authoritative rows and then verifies integrity.
     pub async fn reconcile(
         &self,
         action: db::ReconcileAction,
@@ -1424,9 +1732,105 @@ impl MemoryStore {
             edge_type,
             weight,
             metadata,
+            valid_time: None,
+            recorded_time: None,
         };
-        self.with_write_conn(move |conn| graph_edges::insert_graph_edge(conn, &params))
-            .await
+        let edge = self
+            .with_write_conn(move |conn| graph_edges::insert_graph_edge(conn, &params))
+            .await?;
+        self.clear_search_cache();
+        Ok(edge)
+    }
+
+    /// Add a durable graph edge with explicit bitemporal timestamps.
+    ///
+    /// Use this when importing or correcting historical relationships where
+    /// domain validity and system record time differ from the current wall clock.
+    pub async fn add_graph_edge_at(
+        &self,
+        source: &str,
+        target: &str,
+        edge_type: GraphEdgeType,
+        weight: f64,
+        metadata: Option<serde_json::Value>,
+        valid_time: &str,
+        recorded_time: &str,
+    ) -> Result<graph_edges::StoredGraphEdge, MemoryError> {
+        let params = graph_edges::AddGraphEdgeParams {
+            source: source.to_string(),
+            target: target.to_string(),
+            edge_type,
+            weight,
+            metadata,
+            valid_time: Some(valid_time.to_string()),
+            recorded_time: Some(recorded_time.to_string()),
+        };
+        let edge = self
+            .with_write_conn(move |conn| graph_edges::insert_graph_edge(conn, &params))
+            .await?;
+        self.clear_search_cache();
+        Ok(edge)
+    }
+
+    /// **DANGER**: legacy physical consolidation mutates a truth-bearing row.
+    ///
+    /// This migration-only operation is admin-only. Governed callers must use a
+    /// source-grounded supersession transition rather than mutating a head.
+    #[cfg(feature = "admin-ops")]
+    pub async fn consolidate_facts(
+        &self,
+        keep_id: &str,
+        supersede_id: &str,
+        merged_content: &str,
+    ) -> Result<(), MemoryError> {
+        let keep_id = keep_id.to_string();
+        let supersede_id = supersede_id.to_string();
+        let merged_content = merged_content.to_string();
+        self.with_write_conn(move |conn| {
+            use rusqlite::params;
+
+            // 1. Update the kept fact's content
+            let (fts_rowid, old_content): (i64, String) = conn
+                .query_row(
+                    "SELECT fm.rowid, f.content
+                     FROM facts f
+                     JOIN facts_rowid_map fm ON fm.fact_id = f.id
+                     WHERE f.id = ?1",
+                    params![&keep_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| MemoryError::FactNotFound(format!("{}: {e}", keep_id)))?;
+
+            conn.execute(
+                "INSERT INTO facts_fts(facts_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                params![fts_rowid, old_content],
+            )?;
+
+            conn.execute(
+                "UPDATE facts SET content = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![&merged_content, &keep_id],
+            )?;
+
+            conn.execute(
+                "INSERT INTO facts_fts(rowid, content) VALUES (?1, ?2)",
+                params![fts_rowid, &merged_content],
+            )?;
+
+            // 2. Add supersession edge from kept to superseded
+            let edge_type_json = r#"{"Entity":{"relation":"supersedes"}}"#;
+            let source = format!("fact:{}", keep_id);
+            let target = format!("fact:{}", supersede_id);
+            conn.execute(
+                "INSERT INTO graph_edges (source, target, edge_type, weight, recorded_at, is_invalidated)
+                 VALUES (?1, ?2, ?3, 1.0, datetime('now'), 0)",
+                params![&source, &target, edge_type_json],
+            )?;
+
+            Ok(())
+        })
+        .await?;
+        self.clear_search_cache();
+        Ok(())
     }
 
     /// List all stored graph edges involving a given node (as source or target),
@@ -1438,6 +1842,32 @@ impl MemoryStore {
         let node_id = node_id.to_string();
         self.with_read_conn(move |conn| graph_edges::list_graph_edges_for_node(conn, &node_id))
             .await
+    }
+
+    /// List graph edges involving a node as of explicit bitemporal cutoffs.
+    ///
+    /// `as_of_valid_time` is domain/business time; `as_of_recorded_time` is
+    /// system knowledge time. This is the graph analogue of bitemporal as-of
+    /// fact queries: it can reconstruct what the relationship graph knew at a
+    /// prior recorded time, including edges invalidated later.
+    pub async fn list_graph_edges_for_node_as_of(
+        &self,
+        node_id: &str,
+        as_of_valid_time: &str,
+        as_of_recorded_time: &str,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        let node_id = node_id.to_string();
+        let as_of_valid_time = as_of_valid_time.to_string();
+        let as_of_recorded_time = as_of_recorded_time.to_string();
+        self.with_read_conn(move |conn| {
+            graph_edges::list_graph_edges_for_node_as_of(
+                conn,
+                &node_id,
+                &as_of_valid_time,
+                &as_of_recorded_time,
+            )
+        })
+        .await
     }
 
     /// List ALL stored graph edges, excluding invalidated ones.
@@ -1524,30 +1954,103 @@ impl MemoryStore {
         source_types: Option<&[SearchSourceType]>,
         context: SearchContext,
     ) -> Result<SearchResponse, MemoryError> {
+        self.search_with_context_for_view(
+            query,
+            top_k,
+            namespaces,
+            source_types,
+            context,
+            StateView::Current,
+        )
+        .await
+    }
+
+    /// Hybrid fact search under an explicit authority-state view.
+    pub async fn search_with_view(
+        &self,
+        query: &str,
+        top_k: Option<usize>,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+        view: StateView,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        Ok(self
+            .search_with_context_for_view(
+                query,
+                top_k,
+                namespaces,
+                source_types,
+                SearchContext::default_now(),
+                view,
+            )
+            .await?
+            .results)
+    }
+
+    async fn search_with_context_for_view(
+        &self,
+        query: &str,
+        top_k: Option<usize>,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+        context: SearchContext,
+        view: StateView,
+    ) -> Result<SearchResponse, MemoryError> {
         let k = top_k
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
 
-        // Check search result cache for simple unfiltered queries.
-        // Cache is keyed by (query, k) and only used when no namespace/source_type
-        // filters are applied AND receipt mode is not requested. Cleared on any
-        // mutating operation (update/delete).
-        let cache_key = if namespaces.is_none()
+        // Fail closed: result caching is solely for ordinary current approximate
+        // retrieval. Any governed/explained/exact/replay request must execute so
+        // its receipt and execution semantics cannot be inherited from another
+        // request. Recency-enabled searches also retain their evaluation-time
+        // semantics by bypassing this cache.
+        let cache_key = if matches!(view, StateView::Current)
+            && namespaces.is_none()
             && source_types.is_none()
-            && context.receipt_mode != ReceiptMode::ReturnReceipt
+            && context.receipt_mode == ReceiptMode::Disabled
+            && context.replay_mode == ReplayMode::NoReplay
+            && context.exactness_profile == ExactnessProfile::Default
+            && self.inner.config.search.recency_half_life_days.is_none()
+            && context.request_id.is_none()
+            && context.trace_id.is_none()
+            && context.attempt_family_id.is_none()
+            && context.attempt_id.is_none()
+            && context.replay_of.is_none()
+            && context.query_text_digest.is_none()
+            && context.query_input_digest.is_none()
+            && context.filter_digest.is_none()
+            && context.redaction_state.is_none()
+            && context.budget_id.is_none()
+            && context.deadline_at.is_none()
         {
             Some(format!("{query}:{k}"))
+        } else {
+            None
+        };
+        let cache_epoch = if cache_key.is_some() {
+            Some(self.authority().current_retrieval_epoch().await?)
         } else {
             None
         };
         if let Some(ref key) = cache_key {
             match self.inner.search_cache.lock() {
                 Ok(mut cache) => {
-                    if let Some(cached) = cache.get(key).cloned() {
-                        return Ok(SearchResponse {
-                            results: cached,
-                            receipt: None,
-                        });
+                    if let Some(cached) = cache.get(key) {
+                        if let Some(retrieval_epoch) = &cache_epoch {
+                            if *retrieval_epoch == cached.retrieval_epoch {
+                                return Ok(SearchResponse {
+                                    results: cached.results.clone(),
+                                    receipt: None,
+                                });
+                            }
+                        } else {
+                            return Ok(SearchResponse {
+                                results: cached.results.clone(),
+                                receipt: None,
+                            });
+                        }
+                        cache.pop(key);
                     }
                 }
                 Err(err) => {
@@ -1556,7 +2059,18 @@ impl MemoryStore {
             }
         }
 
-        let query_embedding = self.embed_text_internal(query).await?;
+        let (query_embedding, query_sparse) = if self.inner.config.search.sparse_weight > 0.0 {
+            let (dense, sparse, _) = self
+                .embed_text_with_sparse_internal(query, EmbeddingPurpose::Query)
+                .await?;
+            (dense, sparse)
+        } else {
+            (
+                self.embed_text_internal(query, EmbeddingPurpose::Query)
+                    .await?,
+                None,
+            )
+        };
 
         #[cfg(feature = "hnsw")]
         let hnsw_hits = if context.exactness_profile == ExactnessProfile::PreferExact
@@ -1584,7 +2098,7 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         let hnsw_hits_owned = hnsw_hits;
 
-        let response = self
+        let mut response = self
             .with_read_conn(move |conn| {
                 if db::is_embeddings_dirty(conn)? {
                     tracing::warn!(
@@ -1603,6 +2117,7 @@ impl MemoryStore {
                             conn,
                             &q,
                             &query_embedding,
+                            query_sparse.as_ref(),
                             &config,
                             &context_owned,
                             k,
@@ -1615,6 +2130,7 @@ impl MemoryStore {
                             conn,
                             &q,
                             &query_embedding,
+                            query_sparse.as_ref(),
                             &config,
                             &context_owned,
                             k,
@@ -1648,6 +2164,7 @@ impl MemoryStore {
                         conn,
                         &q,
                         &query_embedding,
+                        query_sparse.as_ref(),
                         &config,
                         &context_owned,
                         k,
@@ -1668,13 +2185,31 @@ impl MemoryStore {
                 }
             })
             .await?;
+        let raw_results = std::mem::take(&mut response.results);
+        response.results = self
+            .filter_search_results(raw_results, view.clone())
+            .await?;
+        response.results.truncate(k);
         if let Some(receipt) = &response.receipt {
-            self.persist_search_receipt(receipt).await?;
+            self.persist_search_receipt(
+                receipt,
+                query,
+                namespaces,
+                source_types,
+                context.replay_mode,
+            )
+            .await?;
         }
-        if let Some(ref key) = cache_key {
+        if let (Some(ref key), Some(retrieval_epoch)) = (cache_key.as_ref(), cache_epoch) {
             match self.inner.search_cache.lock() {
                 Ok(mut cache) => {
-                    cache.put(key.clone(), response.results.clone());
+                    cache.put(
+                        key.to_string(),
+                        CachedSearchResult {
+                            results: response.results.clone(),
+                            retrieval_epoch,
+                        },
+                    );
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "search cache lock poisoned; insert skipped")
@@ -1682,6 +2217,55 @@ impl MemoryStore {
             }
         }
         Ok(response)
+    }
+
+    async fn filter_search_results(
+        &self,
+        results: Vec<SearchResult>,
+        view: StateView,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        self.with_read_conn(move |conn| {
+            results
+                .into_iter()
+                .filter_map(|result| match &result.source {
+                    SearchSource::Fact { fact_id, .. } => {
+                        match knowledge::fact_is_visible_with_view(conn, fact_id, &view) {
+                            Ok(true) => Some(Ok(result)),
+                            Ok(false) => None,
+                            Err(error) => Some(Err(error)),
+                        }
+                    }
+                    SearchSource::Episode { episode_id, .. } => {
+                        let invalidated = conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM forgetting_artifact_invalidations
+                             WHERE surface_kind = 'episode' AND artifact_id = ?1)",
+                            rusqlite::params![episode_id],
+                            |row| row.get::<_, bool>(0),
+                        );
+                        match invalidated {
+                            Ok(false) => Some(Ok(result)),
+                            Ok(true) => None,
+                            Err(error) => Some(Err(MemoryError::from(error))),
+                        }
+                    }
+                    SearchSource::Projection { projection_id, .. } => {
+                        let invalidated = conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM forgetting_artifact_invalidations
+                             WHERE surface_kind = 'projection' AND artifact_id = ?1)",
+                            rusqlite::params![projection_id],
+                            |row| row.get::<_, bool>(0),
+                        );
+                        match invalidated {
+                            Ok(false) => Some(Ok(result)),
+                            Ok(true) => None,
+                            Err(error) => Some(Err(MemoryError::from(error))),
+                        }
+                    }
+                    _ => Some(Ok(result)),
+                })
+                .collect()
+        })
+        .await
     }
 
     /// Full-text search only (no embeddings needed).
@@ -1699,13 +2283,72 @@ impl MemoryStore {
         let config = self.inner.config.search.clone();
         let ns_owned = to_owned_string_vec(namespaces);
         let st_owned: Option<Vec<SearchSourceType>> = source_types.map(|s| s.to_vec());
-        self.with_read_conn(move |conn| {
-            let ns_refs = as_str_slice(&ns_owned);
-            let ns_slice: Option<&[&str]> = ns_refs.as_deref();
-            let st_slice: Option<&[SearchSourceType]> = st_owned.as_deref();
-            search::fts_only_search(conn, &q, &config, k, ns_slice, st_slice, None)
-        })
-        .await
+        let results = self
+            .with_read_conn(move |conn| {
+                let ns_refs = as_str_slice(&ns_owned);
+                let ns_slice: Option<&[&str]> = ns_refs.as_deref();
+                let st_slice: Option<&[SearchSourceType]> = st_owned.as_deref();
+                search::fts_only_search(conn, &q, &config, k, ns_slice, st_slice, None)
+            })
+            .await?;
+        self.filter_search_results(results, StateView::Current)
+            .await
+    }
+
+    /// Full-text-only search with an explicit deterministic context and optional receipt.
+    pub async fn search_fts_only_with_context(
+        &self,
+        query: &str,
+        top_k: Option<usize>,
+        namespaces: Option<&[&str]>,
+        source_types: Option<&[SearchSourceType]>,
+        context: SearchContext,
+    ) -> Result<SearchResponse, MemoryError> {
+        let k = top_k
+            .unwrap_or(self.inner.config.search.default_top_k)
+            .min(MAX_TOP_K);
+        let q = query.to_string();
+        let config = self.inner.config.search.clone();
+        let ns_owned = to_owned_string_vec(namespaces);
+        let st_owned: Option<Vec<SearchSourceType>> = source_types.map(|s| s.to_vec());
+        let context_owned = context.clone();
+        let mut response = self
+            .with_read_conn(move |conn| {
+                let ns_refs = as_str_slice(&ns_owned);
+                let execution = search::fts_only_search_detailed_with_context(
+                    conn,
+                    &q,
+                    &config,
+                    &context_owned,
+                    k,
+                    ns_refs.as_deref(),
+                    st_owned.as_deref(),
+                    None,
+                )?;
+                Ok(SearchResponse {
+                    results: execution
+                        .results
+                        .into_iter()
+                        .map(|result| result.result)
+                        .collect(),
+                    receipt: execution.receipt,
+                })
+            })
+            .await?;
+        response.results = self
+            .filter_search_results(response.results, StateView::Current)
+            .await?;
+        if let Some(receipt) = &response.receipt {
+            self.persist_search_receipt(
+                receipt,
+                query,
+                namespaces,
+                source_types,
+                context.replay_mode,
+            )
+            .await?;
+        }
+        Ok(response)
     }
 
     /// Vector similarity search only (no FTS).
@@ -1740,7 +2383,9 @@ impl MemoryStore {
         let k = top_k
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
-        let query_embedding = self.embed_text_internal(query).await?;
+        let query_embedding = self
+            .embed_text_internal(query, EmbeddingPurpose::Query)
+            .await?;
 
         #[cfg(feature = "hnsw")]
         let hnsw_hits = if context.exactness_profile == ExactnessProfile::PreferExact
@@ -1767,7 +2412,7 @@ impl MemoryStore {
         #[cfg(feature = "hnsw")]
         let hnsw_hits_owned = hnsw_hits;
 
-        let response = self
+        let mut response = self
             .with_read_conn(move |conn| {
                 if db::is_embeddings_dirty(conn)? {
                     tracing::warn!(
@@ -1844,8 +2489,18 @@ impl MemoryStore {
                 }
             })
             .await?;
+        response.results = self
+            .filter_search_results(response.results, StateView::Current)
+            .await?;
         if let Some(receipt) = &response.receipt {
-            self.persist_search_receipt(receipt).await?;
+            self.persist_search_receipt(
+                receipt,
+                query,
+                namespaces,
+                source_types,
+                context.replay_mode,
+            )
+            .await?;
         }
         Ok(response)
     }
@@ -1884,7 +2539,18 @@ impl MemoryStore {
         let k = top_k
             .unwrap_or(self.inner.config.search.default_top_k)
             .min(MAX_TOP_K);
-        let query_embedding = self.embed_text_internal(query).await?;
+        let (query_embedding, query_sparse) = if self.inner.config.search.sparse_weight > 0.0 {
+            let (dense, sparse, _) = self
+                .embed_text_with_sparse_internal(query, EmbeddingPurpose::Query)
+                .await?;
+            (dense, sparse)
+        } else {
+            (
+                self.embed_text_internal(query, EmbeddingPurpose::Query)
+                    .await?,
+                None,
+            )
+        };
 
         #[cfg(feature = "hnsw")]
         let hnsw_hits = if context.exactness_profile == ExactnessProfile::PreferExact {
@@ -1923,6 +2589,7 @@ impl MemoryStore {
                             conn,
                             &q,
                             &query_embedding,
+                            query_sparse.as_ref(),
                             &config,
                             &context_owned,
                             k,
@@ -1935,6 +2602,7 @@ impl MemoryStore {
                             conn,
                             &q,
                             &query_embedding,
+                            query_sparse.as_ref(),
                             &config,
                             &context_owned,
                             k,
@@ -1962,6 +2630,7 @@ impl MemoryStore {
                         conn,
                         &q,
                         &query_embedding,
+                        query_sparse.as_ref(),
                         &config,
                         &context_owned,
                         k,
@@ -1977,7 +2646,14 @@ impl MemoryStore {
             })
             .await?;
         if let Some(receipt) = &response.receipt {
-            self.persist_search_receipt(receipt).await?;
+            self.persist_search_receipt(
+                receipt,
+                query,
+                namespaces,
+                source_types,
+                context.replay_mode,
+            )
+            .await?;
         }
         Ok(response)
     }
@@ -1990,6 +2666,49 @@ impl MemoryStore {
         let receipt_id = receipt_id.to_string();
         self.with_read_conn(move |conn| db::get_search_receipt(conn, &receipt_id))
             .await
+    }
+
+    /// Return whether a durable receipt has opt-in inputs for complete replay.
+    pub async fn search_replay_inputs_available(
+        &self,
+        receipt_id: &str,
+    ) -> Result<bool, MemoryError> {
+        let receipt_id = receipt_id.to_string();
+        self.with_read_conn(move |conn| Ok(db::get_replay_inputs(conn, &receipt_id)?.is_some()))
+            .await
+    }
+
+    /// Replay a durable receipt using its opt-in stored query and filters.
+    pub async fn replay_search_from_stored_inputs(
+        &self,
+        receipt_id: &str,
+    ) -> Result<SearchReplayReportV1, MemoryError> {
+        self.get_search_receipt(receipt_id).await?.ok_or_else(|| {
+            MemoryError::SearchReceiptNotFound {
+                receipt_id: receipt_id.to_string(),
+            }
+        })?;
+        let replay_receipt_id = receipt_id.to_string();
+        let inputs = self
+            .with_read_conn(move |conn| db::get_replay_inputs(conn, &replay_receipt_id))
+            .await?
+            .ok_or_else(|| {
+                MemoryError::Other(format!(
+                    "search receipt '{receipt_id}' has no stored replay inputs"
+                ))
+            })?;
+        let namespace_refs: Option<Vec<&str>> = inputs
+            .namespaces
+            .as_ref()
+            .map(|values| values.iter().map(String::as_str).collect());
+        self.replay_search_receipt(
+            receipt_id,
+            &inputs.query_text,
+            None,
+            namespace_refs.as_deref(),
+            inputs.source_types.as_deref(),
+        )
+        .await
     }
 
     /// Replay a durable search receipt with caller-supplied query text and filters.
@@ -2005,6 +2724,27 @@ impl MemoryStore {
         namespaces: Option<&[&str]>,
         source_types: Option<&[SearchSourceType]>,
     ) -> Result<SearchReplayReportV1, MemoryError> {
+        let invalidation_id = receipt_id.to_string();
+        let invalidated = self
+            .with_read_conn(move |conn| {
+                conn.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM forgetting_artifact_invalidations
+                         WHERE surface_kind = 'search_receipt' AND artifact_id = ?1
+                     )",
+                    rusqlite::params![invalidation_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(MemoryError::from)
+            })
+            .await?;
+        if invalidated {
+            return Err(MemoryError::ForgettingClosureIncomplete {
+                detail: format!(
+                    "search receipt '{receipt_id}' was invalidated by selective forgetting"
+                ),
+            });
+        }
         let original_receipt = self.get_search_receipt(receipt_id).await?.ok_or_else(|| {
             MemoryError::SearchReceiptNotFound {
                 receipt_id: receipt_id.to_string(),
@@ -2012,6 +2752,7 @@ impl MemoryStore {
         })?;
 
         let vector_only = original_receipt.search_profile.starts_with("vector_only");
+        let fts_only = original_receipt.search_profile.starts_with("fts_only");
         let replay_top_k = top_k.or_else(|| Some(original_receipt.result_ids.len().max(1)));
         let replay_receipt_id = format!("{receipt_id}:replay:{}", uuid::Uuid::new_v4());
         let mut context = SearchContext::at(original_receipt.evaluation_time);
@@ -2037,6 +2778,15 @@ impl MemoryStore {
 
         let replay_response = if vector_only {
             self.search_vector_only_with_context(
+                query,
+                replay_top_k,
+                namespaces,
+                source_types,
+                context,
+            )
+            .await?
+        } else if fts_only {
+            self.search_fts_only_with_context(
                 query,
                 replay_top_k,
                 namespaces,
@@ -2089,8 +2839,12 @@ impl MemoryStore {
         text_a: &str,
         text_b: &str,
     ) -> Result<types::EmbeddingDisplacement, MemoryError> {
-        let emb_a = self.embed_text_internal(text_a).await?;
-        let emb_b = self.embed_text_internal(text_b).await?;
+        let emb_a = self
+            .embed_text_internal(text_a, EmbeddingPurpose::Query)
+            .await?;
+        let emb_b = self
+            .embed_text_internal(text_b, EmbeddingPurpose::Query)
+            .await?;
         Self::embedding_displacement_from_vecs(&emb_a, &emb_b)
     }
 
@@ -2138,13 +2892,41 @@ impl MemoryStore {
 
     /// Embed a single text via the configured provider.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
-        self.embed_text_internal(text).await
+        self.embed_query(text).await
     }
 
-    /// Embed multiple texts in a batch.
+    /// Embed retrieval text using the query role.
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed_text_internal(text, EmbeddingPurpose::Query)
+            .await
+    }
+
+    /// Embed stored content using the document role.
+    pub async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed_text_internal(text, EmbeddingPurpose::Document)
+            .await
+    }
+
+    /// Embed multiple stored texts in a batch.
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, MemoryError> {
+        self.embed_documents_batch(texts).await
+    }
+
+    /// Embed multiple stored texts using the document role.
+    pub async fn embed_documents_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<f32>>, MemoryError> {
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        self.embed_batch_internal(owned).await
+        self.embed_batch_internal(owned, EmbeddingPurpose::Document)
+            .await
+    }
+
+    /// Embed multiple retrieval texts using the query role.
+    pub async fn embed_queries_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, MemoryError> {
+        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        self.embed_batch_internal(owned, EmbeddingPurpose::Query)
+            .await
     }
 
     /// Get database statistics.
@@ -2232,28 +3014,33 @@ impl MemoryStore {
         let mut fact_count = 0usize;
         for batch in fact_contents.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_internal(texts).await?;
-            for embedding in &embeddings {
-                self.validate_embedding_dimensions(embedding)?;
-            }
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
-            let updates: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = batch
+            let updates: Vec<_> = batch
                 .iter()
                 .zip(embeddings.iter())
-                .map(|((id, _), emb)| {
+                .map(|((id, _), (emb, sparse, representation))| {
                     // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
                     let q8 = quantizer
                         .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
-                    (id.clone(), db::embedding_to_bytes(emb), q8)
+                    (
+                        id.clone(),
+                        db::embedding_to_bytes(emb),
+                        q8,
+                        sparse.clone(),
+                        representation.clone(),
+                    )
                 })
                 .collect();
 
             self.with_write_conn(move |conn| {
                 db::with_transaction(conn, |tx| {
-                    for (fid, bytes, q8) in &updates {
+                    for (fid, bytes, q8, sparse, representation) in &updates {
                         tx.execute(
                             "UPDATE facts SET embedding = ?1, embedding_q8 = ?2, updated_at = datetime('now') WHERE id = ?3",
                             rusqlite::params![bytes, q8.as_deref(), fid],
@@ -2266,6 +3053,18 @@ impl MemoryStore {
                             db::IndexOpKind::Upsert,
                         )?;
                         db::invalidate_derived_vector_artifact(tx, &format!("fact:{fid}"))?;
+                        if let Some((weights, representation)) =
+                            sparse.as_ref().zip(representation.as_deref())
+                        {
+                            db::store_sparse_vector(
+                                tx,
+                                &format!("fact:{fid}"),
+                                weights,
+                                representation,
+                            )?;
+                        } else {
+                            db::delete_sparse_vector(tx, &format!("fact:{fid}"))?;
+                        }
                     }
                     Ok(())
                 })
@@ -2293,28 +3092,33 @@ impl MemoryStore {
         let mut chunk_count = 0usize;
         for batch in chunk_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_internal(texts).await?;
-            for embedding in &embeddings {
-                self.validate_embedding_dimensions(embedding)?;
-            }
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
-            let updates: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = batch
+            let updates: Vec<_> = batch
                 .iter()
                 .zip(embeddings.iter())
-                .map(|((id, _), emb)| {
+                .map(|((id, _), (emb, sparse, representation))| {
                     // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
                     let q8 = quantizer
                         .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
-                    (id.clone(), db::embedding_to_bytes(emb), q8)
+                    (
+                        id.clone(),
+                        db::embedding_to_bytes(emb),
+                        q8,
+                        sparse.clone(),
+                        representation.clone(),
+                    )
                 })
                 .collect();
 
             self.with_write_conn(move |conn| {
                 db::with_transaction(conn, |tx| {
-                    for (cid, bytes, q8) in &updates {
+                    for (cid, bytes, q8, sparse, representation) in &updates {
                         tx.execute(
                             "UPDATE chunks SET embedding = ?1, embedding_q8 = ?2 WHERE id = ?3",
                             rusqlite::params![bytes, q8.as_deref(), cid],
@@ -2327,6 +3131,18 @@ impl MemoryStore {
                             db::IndexOpKind::Upsert,
                         )?;
                         db::invalidate_derived_vector_artifact(tx, &format!("chunk:{cid}"))?;
+                        if let Some((weights, representation)) =
+                            sparse.as_ref().zip(representation.as_deref())
+                        {
+                            db::store_sparse_vector(
+                                tx,
+                                &format!("chunk:{cid}"),
+                                weights,
+                                representation,
+                            )?;
+                        } else {
+                            db::delete_sparse_vector(tx, &format!("chunk:{cid}"))?;
+                        }
                     }
                     Ok(())
                 })
@@ -2354,28 +3170,33 @@ impl MemoryStore {
         let mut msg_count = 0usize;
         for batch in message_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
-            let embeddings = self.embed_batch_internal(texts).await?;
-            for embedding in &embeddings {
-                self.validate_embedding_dimensions(embedding)?;
-            }
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
-            let updates: Vec<(i64, Vec<u8>, Option<Vec<u8>>)> = batch
+            let updates: Vec<_> = batch
                 .iter()
                 .zip(embeddings.iter())
-                .map(|((id, _), emb)| {
+                .map(|((id, _), (emb, sparse, representation))| {
                     // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
                     let q8 = quantizer
                         .quantize(emb)
                         .map(|qv| quantize::pack_quantized(&qv))
                         .ok();
-                    (*id, db::embedding_to_bytes(emb), q8)
+                    (
+                        *id,
+                        db::embedding_to_bytes(emb),
+                        q8,
+                        sparse.clone(),
+                        representation.clone(),
+                    )
                 })
                 .collect();
 
             self.with_write_conn(move |conn| {
                 db::with_transaction(conn, |tx| {
-                    for (mid, bytes, q8) in &updates {
+                    for (mid, bytes, q8, sparse, representation) in &updates {
                         tx.execute(
                             "UPDATE messages SET embedding = ?1, embedding_q8 = ?2 WHERE id = ?3",
                             rusqlite::params![bytes, q8.as_deref(), mid],
@@ -2388,6 +3209,18 @@ impl MemoryStore {
                             db::IndexOpKind::Upsert,
                         )?;
                         db::invalidate_derived_vector_artifact(tx, &format!("msg:{mid}"))?;
+                        if let Some((weights, representation)) =
+                            sparse.as_ref().zip(representation.as_deref())
+                        {
+                            db::store_sparse_vector(
+                                tx,
+                                &format!("msg:{mid}"),
+                                weights,
+                                representation,
+                            )?;
+                        } else {
+                            db::delete_sparse_vector(tx, &format!("msg:{mid}"))?;
+                        }
                     }
                     Ok(())
                 })
@@ -2415,28 +3248,33 @@ impl MemoryStore {
         let mut episode_count = 0usize;
         for batch in episode_data.chunks(batch_size) {
             let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
-            let embeddings = self.embed_batch_internal(texts).await?;
-            for embedding in &embeddings {
-                self.validate_embedding_dimensions(embedding)?;
-            }
+            let embeddings = self
+                .embed_batch_with_sparse_internal(texts, EmbeddingPurpose::Document)
+                .await?;
 
             let quantizer = Quantizer::new(dims);
-            let updates: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = batch
+            let updates: Vec<_> = batch
                 .iter()
                 .zip(embeddings.iter())
-                .map(|((episode_id, _), embedding)| {
+                .map(|((episode_id, _), (embedding, sparse, representation))| {
                     // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
                     let q8 = quantizer
                         .quantize(embedding)
                         .map(|vector| quantize::pack_quantized(&vector))
                         .ok();
-                    (episode_id.clone(), db::embedding_to_bytes(embedding), q8)
+                    (
+                        episode_id.clone(),
+                        db::embedding_to_bytes(embedding),
+                        q8,
+                        sparse.clone(),
+                        representation.clone(),
+                    )
                 })
                 .collect();
 
             self.with_write_conn(move |conn| {
                 db::with_transaction(conn, |tx| {
-                    for (episode_id, bytes, q8) in &updates {
+                    for (episode_id, bytes, q8, sparse, representation) in &updates {
                         tx.execute(
                             "UPDATE episodes
                              SET embedding = ?1,
@@ -2456,6 +3294,14 @@ impl MemoryStore {
                             tx,
                             &episodes::episode_item_key(episode_id),
                         )?;
+                        let item_key = episodes::episode_item_key(episode_id);
+                        if let Some((weights, representation)) =
+                            sparse.as_ref().zip(representation.as_deref())
+                        {
+                            db::store_sparse_vector(tx, &item_key, weights, representation)?;
+                        } else {
+                            db::delete_sparse_vector(tx, &item_key)?;
+                        }
                     }
                     Ok(())
                 })
@@ -2685,6 +3531,204 @@ impl MemoryStore {
     ) -> Result<Vec<ProjectionEvidenceRef>, MemoryError> {
         self.with_read_conn(move |conn| projection_storage::query_evidence_refs(conn, &query))
             .await
+    }
+
+    /// Governed projection reads fail closed until imported rows have durable origin labels.
+    /// The ungoverned projection methods above remain the explicit storage compatibility surface;
+    /// no governed method delegates to them after authorization.
+    pub async fn query_claim_versions_governed(
+        &self,
+        query: ProjectionQuery,
+        request: GovernedAccessRequestV1,
+    ) -> Result<GovernedProjectionResponseV1<ProjectionClaimVersion>, MemoryError> {
+        let query_namespace = query.scope.namespace.clone();
+        let rows = if query_namespace == request.scope.namespace {
+            self.with_read_conn(move |conn| projection_storage::query_claim_versions(conn, &query))
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut decisions = Vec::new();
+        for row in &rows {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                row.claim_version_id.as_str(),
+                Some(&row.scope_key.namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        if query_namespace != request.scope.namespace {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                "projection:query",
+                Some(&query_namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        Ok(GovernedProjectionResponseV1 {
+            items: Vec::new(),
+            decisions,
+        })
+    }
+
+    pub async fn query_relation_versions_governed(
+        &self,
+        query: ProjectionQuery,
+        request: GovernedAccessRequestV1,
+    ) -> Result<GovernedProjectionResponseV1<ProjectionRelationVersion>, MemoryError> {
+        let query_namespace = query.scope.namespace.clone();
+        let rows = if query_namespace == request.scope.namespace {
+            self.with_read_conn(move |conn| {
+                projection_storage::query_relation_versions(conn, &query)
+            })
+            .await?
+        } else {
+            Vec::new()
+        };
+        let mut decisions = Vec::new();
+        for row in &rows {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                row.relation_version_id.as_str(),
+                Some(&row.scope_key.namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        if query_namespace != request.scope.namespace {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                "projection:query",
+                Some(&query_namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        Ok(GovernedProjectionResponseV1 {
+            items: Vec::new(),
+            decisions,
+        })
+    }
+
+    pub async fn query_episodes_governed(
+        &self,
+        query: ProjectionQuery,
+        request: GovernedAccessRequestV1,
+    ) -> Result<GovernedProjectionResponseV1<ProjectionEpisode>, MemoryError> {
+        let query_namespace = query.scope.namespace.clone();
+        let rows = if query_namespace == request.scope.namespace {
+            self.with_read_conn(move |conn| projection_storage::query_episode_rows(conn, &query))
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut decisions = Vec::new();
+        for row in &rows {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                row.episode_id.as_str(),
+                Some(&row.scope_key.namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        if query_namespace != request.scope.namespace {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                "projection:query",
+                Some(&query_namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        Ok(GovernedProjectionResponseV1 {
+            items: Vec::new(),
+            decisions,
+        })
+    }
+
+    pub async fn query_entity_aliases_governed(
+        &self,
+        query: ProjectionQuery,
+        request: GovernedAccessRequestV1,
+    ) -> Result<GovernedProjectionResponseV1<ProjectionEntityAlias>, MemoryError> {
+        let query_namespace = query.scope.namespace.clone();
+        let rows = if query_namespace == request.scope.namespace {
+            self.with_read_conn(move |conn| projection_storage::query_entity_aliases(conn, &query))
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut decisions = Vec::new();
+        for row in &rows {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                &format!(
+                    "entity_alias:{}:{}",
+                    row.canonical_entity_id.as_str(),
+                    row.alias_text
+                ),
+                Some(&row.scope_key.namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        if query_namespace != request.scope.namespace {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                "projection:query",
+                Some(&query_namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        Ok(GovernedProjectionResponseV1 {
+            items: Vec::new(),
+            decisions,
+        })
+    }
+
+    pub async fn query_evidence_refs_governed(
+        &self,
+        query: ProjectionQuery,
+        request: GovernedAccessRequestV1,
+    ) -> Result<GovernedProjectionResponseV1<ProjectionEvidenceRef>, MemoryError> {
+        let query_namespace = query.scope.namespace.clone();
+        let rows = if query_namespace == request.scope.namespace {
+            self.with_read_conn(move |conn| projection_storage::query_evidence_refs(conn, &query))
+                .await?
+        } else {
+            Vec::new()
+        };
+        let mut decisions = Vec::new();
+        for row in &rows {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                &format!(
+                    "evidence_ref:{}:{}",
+                    row.claim_id.as_str(),
+                    row.fetch_handle
+                ),
+                Some(&row.scope_key.namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        if query_namespace != request.scope.namespace {
+            decisions.push(origin_authority::evaluate_governed_access_v1(
+                "projection:query",
+                Some(&query_namespace),
+                None,
+                None,
+                &request,
+            ));
+        }
+        Ok(GovernedProjectionResponseV1 {
+            items: Vec::new(),
+            decisions,
+        })
     }
 
     /// Execute raw SQL. For testing only — not part of the stable public API.

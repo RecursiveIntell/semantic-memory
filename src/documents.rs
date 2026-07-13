@@ -16,8 +16,15 @@ use stack_ids::ScopeKey;
 use stack_ids::TraceCtx;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A single chunk to insert: `(content, embedding_bytes, q8_bytes, token_count_estimate)`.
-pub type ChunkRow = (String, Vec<u8>, Option<Vec<u8>>, usize);
+/// A chunk plus dense/optional sparse representations and token count.
+pub type ChunkRow = (
+    String,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    usize,
+    Option<crate::SparseWeights>,
+    Option<String>,
+);
 
 pub fn insert_document_with_chunks(
     conn: &Connection,
@@ -69,8 +76,13 @@ pub fn insert_document_with_chunks_and_ids(
             params![doc_id, title, source_path, namespace, metadata_str],
         )?;
 
-        for (chunk_index, ((content, embedding_bytes, q8_bytes, token_count), chunk_id)) in
-            chunks.iter().zip(chunk_ids.iter()).enumerate()
+        for (
+            chunk_index,
+            (
+                (content, embedding_bytes, q8_bytes, token_count, sparse, sparse_representation),
+                chunk_id,
+            ),
+        ) in chunks.iter().zip(chunk_ids.iter()).enumerate()
         {
             tx.execute(
                 "INSERT INTO chunks (id, document_id, chunk_index, content, token_count, embedding, embedding_q8)
@@ -104,6 +116,11 @@ pub fn insert_document_with_chunks_and_ids(
                 IndexOpKind::Upsert,
             )?;
             db::invalidate_derived_vector_artifact(tx, &format!("chunk:{chunk_id}"))?;
+            if let Some((weights, representation)) =
+                sparse.as_ref().zip(sparse_representation.as_deref())
+            {
+                db::store_sparse_vector(tx, &format!("chunk:{chunk_id}"), weights, representation)?;
+            }
         }
 
         Ok(())
@@ -383,16 +400,15 @@ impl MemoryStore {
         }
 
         let chunk_texts: Vec<String> = text_chunks.iter().map(|c| c.content.clone()).collect();
-        let embeddings = self.embed_batch_internal(chunk_texts).await?;
-        for embedding in &embeddings {
-            self.validate_embedding_dimensions(embedding)?;
-        }
+        let embeddings = self
+            .embed_batch_with_sparse_internal(chunk_texts, crate::EmbeddingPurpose::Document)
+            .await?;
 
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
         let chunks: Vec<ChunkRow> = text_chunks
             .iter()
             .zip(embeddings.iter())
-            .map(|(tc, emb)| {
+            .map(|(tc, (emb, sparse, sparse_representation))| {
                 // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
                 let q8 = quantizer
                     .quantize(emb)
@@ -403,6 +419,8 @@ impl MemoryStore {
                     db::embedding_to_bytes(emb),
                     q8,
                     tc.token_count_estimate,
+                    sparse.clone(),
+                    sparse_representation.clone(),
                 )
             })
             .collect();
@@ -500,16 +518,15 @@ impl MemoryStore {
         }
 
         let chunk_texts: Vec<String> = entries.iter().map(|entry| entry.content.clone()).collect();
-        let embeddings = self.embed_batch_internal(chunk_texts).await?;
-        for embedding in &embeddings {
-            self.validate_embedding_dimensions(embedding)?;
-        }
+        let embeddings = self
+            .embed_batch_with_sparse_internal(chunk_texts, crate::EmbeddingPurpose::Document)
+            .await?;
 
         let quantizer = Quantizer::new(self.inner.config.embedding.dimensions);
         let chunks: Vec<ChunkRow> = entries
             .iter()
             .zip(embeddings.iter())
-            .map(|(entry, emb)| {
+            .map(|(entry, (emb, sparse, sparse_representation))| {
                 let q8 = quantizer
                     .quantize(emb)
                     .map(|qv| quantize::pack_quantized(&qv))
@@ -521,6 +538,8 @@ impl MemoryStore {
                     entry
                         .token_count_estimate
                         .unwrap_or_else(|| entry.content.len().div_ceil(4).max(1)),
+                    sparse.clone(),
+                    sparse_representation.clone(),
                 )
             })
             .collect();

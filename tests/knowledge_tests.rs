@@ -1,14 +1,16 @@
 #![allow(deprecated)]
 #![allow(clippy::expect_used)]
 
+#[cfg(feature = "admin-ops")]
 use forge_memory_bridge::PROJECTION_IMPORT_BATCH_V1_SCHEMA;
-use semantic_memory::{
-    EpisodeMeta, EpisodeOutcome, MemoryConfig, MemoryStore, MockEmbedder, ProjectionQuery, Role,
-    VerificationStatus,
-};
+#[cfg(feature = "admin-ops")]
+use semantic_memory::{EpisodeMeta, EpisodeOutcome, ProjectionQuery, Role, VerificationStatus};
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder};
+#[cfg(feature = "admin-ops")]
 use stack_ids::ScopeKey;
 use tempfile::TempDir;
 
+#[cfg(feature = "admin-ops")]
 fn projection_batch_json(namespace: &str) -> String {
     let namespace = namespace.to_string();
     serde_json::json!({
@@ -82,6 +84,7 @@ fn projection_batch_json(namespace: &str) -> String {
     .to_string()
 }
 
+#[cfg(feature = "admin-ops")]
 fn episode_meta_for_delete_namespace() -> EpisodeMeta {
     EpisodeMeta {
         cause_ids: vec!["chunk-deleteme-doc".into()],
@@ -98,6 +101,7 @@ fn episode_meta_for_delete_namespace() -> EpisodeMeta {
     }
 }
 
+#[cfg(feature = "admin-ops")]
 fn namespaced_session_metadata(namespace: &str) -> serde_json::Value {
     serde_json::json!({
         "namespace": namespace,
@@ -297,6 +301,7 @@ async fn namespace_filtering_on_list_facts() {
     assert_eq!(facts_b.len(), 1);
 }
 
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn delete_namespace() {
     let (store, _tmp) = test_store();

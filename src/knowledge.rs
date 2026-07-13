@@ -35,6 +35,7 @@ pub fn insert_fact_with_fts(
         None,
         source,
         metadata,
+        None,
     )
 }
 
@@ -49,6 +50,7 @@ pub fn insert_fact_with_fts_q8(
     q8_bytes: Option<&[u8]>,
     source: Option<&str>,
     metadata: Option<&serde_json::Value>,
+    sparse: Option<(&crate::SparseWeights, &str)>,
 ) -> Result<(), MemoryError> {
     let metadata_str = metadata.map(|m| m.to_string());
     with_transaction(conn, |tx| {
@@ -85,6 +87,9 @@ pub fn insert_fact_with_fts_q8(
             PendingIndexOpKind::Upsert,
         )?;
         db::invalidate_derived_vector_artifact(tx, &format!("fact:{fact_id}"))?;
+        if let Some((weights, representation)) = sparse {
+            db::store_sparse_vector(tx, &format!("fact:{fact_id}"), weights, representation)?;
+        }
 
         Ok(())
     })
@@ -256,6 +261,7 @@ pub fn update_fact_with_fts(
 }
 
 /// Delete all namespace-scoped memory atomically and report every affected surface.
+#[cfg(feature = "admin-ops")]
 pub fn delete_namespace(
     conn: &Connection,
     namespace: &str,
@@ -664,32 +670,160 @@ pub fn list_fact_namespaces(conn: &Connection) -> Result<Vec<String>, MemoryErro
 }
 
 /// List facts within a namespace.
+#[allow(dead_code)] // retained as an internal compatibility seam for older callers
 pub fn list_facts(
     conn: &Connection,
     namespace: &str,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Fact>, MemoryError> {
+    list_facts_with_view(conn, namespace, limit, offset, &StateView::Current)
+}
+
+/// Authority state selected by a fact retrieval.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StateView {
+    Current,
+    HistoricalAt(String),
+    RecordedAsOf(String),
+    IncludeSuperseded,
+}
+
+pub(crate) fn fact_is_visible_with_view(
+    conn: &Connection,
+    fact_id: &str,
+    view: &StateView,
+) -> Result<bool, MemoryError> {
+    let forgotten: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM forgotten_facts WHERE fact_id = ?1)",
+        params![fact_id],
+        |row| row.get(0),
+    )?;
+    if forgotten {
+        return Ok(false);
+    }
+    let cutoff = match view {
+        StateView::HistoricalAt(value) | StateView::RecordedAsOf(value) => {
+            let parsed = chrono::DateTime::parse_from_rfc3339(value).map_err(|e| {
+                MemoryError::Other(format!("invalid StateView timestamp '{value}': {e}"))
+            })?;
+            Some(
+                parsed
+                    .with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M:%S%.6f")
+                    .to_string(),
+            )
+        }
+        _ => None,
+    };
+    let include_superseded = matches!(view, StateView::IncludeSuperseded);
+    let visible: i64 = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM facts f
+             WHERE f.id = ?1
+               AND (?2 IS NULL OR f.created_at <= ?2)
+               AND (?3 = 1 OR NOT EXISTS (
+                   SELECT 1 FROM graph_edges ge
+                   WHERE ge.target = 'fact:' || f.id
+                     AND ge.is_invalidated = 0
+                     AND COALESCE(
+                         json_extract(ge.edge_type, '$.relation'),
+                         json_extract(ge.edge_type, '$.entity.relation')
+                     ) IN ('supersedes', 'redacts')
+                     AND (?2 IS NULL OR COALESCE(ge.recorded_time, ge.recorded_at) <= ?2)
+               ))
+         )",
+        params![fact_id, cutoff, include_superseded],
+        |row| row.get(0),
+    )?;
+    Ok(visible != 0)
+}
+
+/// List facts under an explicit authority-state view. Inconsistent lineage is rejected.
+pub fn list_facts_with_view(
+    conn: &Connection,
+    namespace: &str,
+    limit: usize,
+    offset: usize,
+    view: &StateView,
+) -> Result<Vec<Fact>, MemoryError> {
+    let cutoff = match view {
+        StateView::HistoricalAt(value) | StateView::RecordedAsOf(value) => {
+            let parsed = chrono::DateTime::parse_from_rfc3339(value).map_err(|e| {
+                MemoryError::Other(format!("invalid StateView timestamp '{value}': {e}"))
+            })?;
+            Some(
+                parsed
+                    .with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M:%S%.6f")
+                    .to_string(),
+            )
+        }
+        _ => None,
+    };
+    let inconsistent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT target FROM graph_edges
+             WHERE is_invalidated = 0
+               AND COALESCE(
+                   json_extract(edge_type, '$.relation'),
+                   json_extract(edge_type, '$.entity.relation')
+               ) IN ('supersedes', 'redacts')
+               AND (?1 IS NULL OR COALESCE(recorded_time, recorded_at) <= ?1)
+             GROUP BY target HAVING COUNT(DISTINCT source) > 1
+         )",
+        params![cutoff.as_deref()],
+        |row| row.get(0),
+    )?;
+    if inconsistent != 0 {
+        return Err(MemoryError::Other(
+            "inconsistent fact lineage: multiple active heads".into(),
+        ));
+    }
+    let include_superseded = matches!(view, StateView::IncludeSuperseded);
     let mut stmt = conn.prepare(
         "SELECT id, namespace, content, source, created_at, updated_at, metadata
          FROM facts
          WHERE namespace = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM forgotten_facts ff WHERE ff.fact_id = facts.id
+           )
+           AND (?4 IS NULL OR created_at <= ?4)
+           AND (?5 = 1 OR NOT EXISTS (
+               SELECT 1 FROM graph_edges ge
+               WHERE ge.target = 'fact:' || facts.id
+                 AND ge.is_invalidated = 0
+                 AND COALESCE(
+                     json_extract(ge.edge_type, '$.relation'),
+                     json_extract(ge.edge_type, '$.entity.relation')
+                 ) IN ('supersedes', 'redacts')
+                 AND (?4 IS NULL OR COALESCE(ge.recorded_time, ge.recorded_at) <= ?4)
+           ))
          ORDER BY updated_at DESC
          LIMIT ?2 OFFSET ?3",
     )?;
 
     let facts = stmt
-        .query_map(params![namespace, limit as i64, offset as i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
-        })?
+        .query_map(
+            params![
+                namespace,
+                limit as i64,
+                offset as i64,
+                cutoff,
+                include_superseded
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .map(
@@ -716,7 +850,30 @@ pub fn list_facts(
 }
 
 impl MemoryStore {
+    /// Explicitly ungoverned compatibility write.
+    ///
+    /// This preserves the pre-authority raw storage API for migrations and local tooling. It does
+    /// not create an origin label and its output is therefore denied by every governed path.
+    pub async fn add_fact_raw_compat(
+        &self,
+        namespace: &str,
+        content: &str,
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        trace_ctx: Option<&TraceCtx>,
+    ) -> Result<Fact, MemoryError> {
+        let id = self
+            .add_fact_with_trace(namespace, content, source, metadata, trace_ctx)
+            .await?;
+        self.get_fact(&id)
+            .await?
+            .ok_or(MemoryError::FactNotFound(id))
+    }
+
     /// Store a fact with automatic embedding. Returns the fact ID (UUID v4).
+    ///
+    /// This is a non-authoritative storage primitive. Governed mutations must
+    /// use [`MemoryStore::authority`] so admission and lineage are enforced.
     pub async fn add_fact(
         &self,
         namespace: &str,
@@ -760,7 +917,9 @@ impl MemoryStore {
             return Ok(id);
         }
 
-        let embedding = self.embed_text_internal(content).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         let fact_id = uuid::Uuid::new_v4().to_string();
@@ -800,9 +959,12 @@ impl MemoryStore {
                 q8_bytes.as_deref(),
                 src.as_deref(),
                 meta.as_ref(),
+                sparse.as_ref().zip(sparse_representation.as_deref()),
             )
         })
         .await?;
+
+        self.clear_search_cache();
 
         #[cfg(feature = "hnsw")]
         self.sync_pending_hnsw_ops_best_effort("add_fact").await;
@@ -838,6 +1000,13 @@ impl MemoryStore {
         self.validate_content("fact.content", content)?;
         self.validate_embedding_dimensions(embedding)?;
         let embedding_bytes = db::embedding_to_bytes(embedding);
+        let sparse = self.inner.config.search.derive_sparse_from_dense.then(|| {
+            crate::SparseWeights::from_dense(
+                embedding,
+                self.inner.config.search.sparse_derive_top_k,
+                self.inner.config.search.sparse_derive_min_weight,
+            )
+        });
         let fact_id = uuid::Uuid::new_v4().to_string();
         let max_facts_per_namespace = self.inner.config.limits.max_facts_per_namespace;
 
@@ -875,9 +1044,14 @@ impl MemoryStore {
                 q8_bytes.as_deref(),
                 src.as_deref(),
                 meta.as_ref(),
+                sparse
+                    .as_ref()
+                    .map(|weights| (weights, "generic_dense_derived_sparse")),
             )
         })
         .await?;
+
+        self.clear_search_cache();
 
         #[cfg(feature = "hnsw")]
         self.sync_pending_hnsw_ops_best_effort("add_fact_with_embedding")
@@ -893,7 +1067,9 @@ impl MemoryStore {
     #[cfg(feature = "admin-ops")]
     pub async fn update_fact(&self, fact_id: &str, content: &str) -> Result<(), MemoryError> {
         self.validate_content("fact.content", content)?;
-        let embedding = self.embed_text_internal(content).await?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(content, crate::EmbeddingPurpose::Document)
+            .await?;
         self.validate_embedding_dimensions(&embedding)?;
         let embedding_bytes = db::embedding_to_bytes(&embedding);
         // INTENTIONAL: q8 quantization is an optional search optimization; missing q8 is non-fatal
@@ -905,7 +1081,16 @@ impl MemoryStore {
         let fid = fact_id.to_string();
         let ct = content.to_string();
         self.with_write_conn(move |conn| {
-            update_fact_with_fts(conn, &fid, &ct, &embedding_bytes, q8_bytes.as_deref())
+            update_fact_with_fts(conn, &fid, &ct, &embedding_bytes, q8_bytes.as_deref())?;
+            let item_key = format!("fact:{fid}");
+            if let Some((weights, representation)) =
+                sparse.as_ref().zip(sparse_representation.as_deref())
+            {
+                db::store_sparse_vector(conn, &item_key, weights, representation)?;
+            } else {
+                db::delete_sparse_vector(conn, &item_key)?;
+            }
+            Ok(())
         })
         .await?;
 
@@ -935,7 +1120,10 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Delete all memory in a namespace and return a per-surface report.
+    /// **DANGER**: physically deletes every truth-bearing row in a namespace.
+    /// This is admin-only and gated behind the `admin-ops` feature. Ordinary
+    /// callers must use governed supersession/forgetting flows instead.
+    #[cfg(feature = "admin-ops")]
     pub async fn delete_namespace(
         &self,
         namespace: &str,
@@ -960,6 +1148,11 @@ impl MemoryStore {
         self.with_read_conn(move |conn| get_fact(conn, &fid)).await
     }
 
+    /// Explicitly ungoverned compatibility read. Prefer `authority().get_fact_governed`.
+    pub async fn get_fact_raw_compat(&self, fact_id: &str) -> Result<Option<Fact>, MemoryError> {
+        self.get_fact(fact_id).await
+    }
+
     /// Get a fact's embedding vector.
     pub async fn get_fact_embedding(&self, fact_id: &str) -> Result<Option<Vec<f32>>, MemoryError> {
         let fid = fact_id.to_string();
@@ -967,15 +1160,27 @@ impl MemoryStore {
             .await
     }
 
-    /// List all facts in a namespace.
+    /// List all facts in a namespace using the default `Current` view.
     pub async fn list_facts(
         &self,
         namespace: &str,
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Fact>, MemoryError> {
+        self.list_facts_with_view(namespace, limit, offset, StateView::Current)
+            .await
+    }
+
+    /// List facts under an explicit bitemporal authority-state view.
+    pub async fn list_facts_with_view(
+        &self,
+        namespace: &str,
+        limit: usize,
+        offset: usize,
+        view: StateView,
+    ) -> Result<Vec<Fact>, MemoryError> {
         let ns = namespace.to_string();
-        self.with_read_conn(move |conn| list_facts(conn, &ns, limit, offset))
+        self.with_read_conn(move |conn| list_facts_with_view(conn, &ns, limit, offset, &view))
             .await
     }
 
@@ -983,5 +1188,118 @@ impl MemoryStore {
     pub async fn list_fact_namespaces(&self) -> Result<Vec<String>, MemoryError> {
         self.with_read_conn(move |conn| list_fact_namespaces(conn))
             .await
+    }
+}
+
+#[cfg(test)]
+mod state_view_regression_tests {
+    use super::*;
+    use crate::db::run_migrations;
+    use rusqlite::Connection;
+
+    fn seeded() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        for (id, content, created) in [
+            ("old", "same topic old", "2026-07-10 21:00:00"),
+            ("new", "same topic new", "2026-07-10 21:12:01"),
+        ] {
+            conn.execute(
+                "INSERT INTO facts(id, namespace, content, created_at, updated_at) VALUES (?1, 'n', ?2, ?3, ?3)",
+                params![id, content, created],
+            ).unwrap();
+        }
+        conn
+    }
+
+    fn supersedes(conn: &Connection, source: &str, target: &str, recorded: &str) {
+        conn.execute(
+            "INSERT INTO graph_edges(id, source, target, edge_type, weight, content_digest, recorded_at, valid_time, recorded_time)
+             VALUES (lower(hex(randomblob(16))), ?1, ?2, '{\"type\":\"entity\",\"relation\":\"supersedes\"}', 1, lower(hex(randomblob(16))), ?3, ?3, ?3)",
+            params![format!("fact:{source}"), format!("fact:{target}"), recorded],
+        ).unwrap();
+    }
+
+    fn supersedes_canonical(conn: &Connection, source: &str, target: &str, recorded: &str) {
+        conn.execute(
+            "INSERT INTO graph_edges(id, source, target, edge_type, weight, content_digest, recorded_at, valid_time, recorded_time)
+             VALUES (lower(hex(randomblob(16))), ?1, ?2, '{\"entity\":{\"relation\":\"supersedes\"}}', 1, lower(hex(randomblob(16))), ?3, ?3, ?3)",
+            params![format!("fact:{source}"), format!("fact:{target}"), recorded],
+        ).unwrap();
+    }
+
+    #[test]
+    fn historical_view_excludes_future_fact_and_reconstructs_pre_supersession_head() {
+        let conn = seeded();
+        supersedes(&conn, "new", "old", "2026-07-10 21:12:01");
+        let rows = list_facts_with_view(
+            &conn,
+            "n",
+            10,
+            0,
+            &StateView::HistoricalAt("2026-07-10T21:11:50Z".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            rows.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            ["old"]
+        );
+    }
+
+    #[test]
+    fn historical_view_preserves_pre_adjudication_conflict() {
+        let conn = seeded();
+        conn.execute(
+            "UPDATE facts SET created_at = '2026-07-10 21:10:00', updated_at = '2026-07-10 21:10:00' WHERE id = 'new'",
+            [],
+        )
+        .unwrap();
+        supersedes(&conn, "new", "old", "2026-07-10 21:12:01");
+
+        let rows = list_facts_with_view(
+            &conn,
+            "n",
+            10,
+            0,
+            &StateView::HistoricalAt("2026-07-10T21:11:50Z".into()),
+        )
+        .unwrap();
+        let ids = rows.iter().map(|fact| fact.id.as_str()).collect::<Vec<_>>();
+        assert!(
+            ids.contains(&"old"),
+            "prior observation must remain visible"
+        );
+        assert!(ids.contains(&"new"), "conflicting observation created before the cutoff must remain visible until adjudication");
+    }
+
+    #[test]
+    fn current_view_excludes_superseded_fact() {
+        let conn = seeded();
+        supersedes(&conn, "new", "old", "2026-07-10 21:12:01");
+        let rows = list_facts_with_view(&conn, "n", 10, 0, &StateView::Current).unwrap();
+        assert_eq!(
+            rows.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            ["new"]
+        );
+    }
+
+    #[test]
+    fn current_view_accepts_canonical_entity_edge_serialization() {
+        let conn = seeded();
+        supersedes_canonical(&conn, "new", "old", "2026-07-10 21:12:01");
+        let rows = list_facts_with_view(&conn, "n", 10, 0, &StateView::Current).unwrap();
+        assert_eq!(
+            rows.iter().map(|fact| fact.id.as_str()).collect::<Vec<_>>(),
+            vec!["new"]
+        );
+    }
+
+    #[test]
+    fn multiple_active_heads_fail_closed() {
+        let conn = seeded();
+        conn.execute("INSERT INTO facts(id, namespace, content, created_at, updated_at) VALUES ('other', 'n', 'same topic conflicting', '2026-07-10 21:13:00', '2026-07-10 21:13:00')", []).unwrap();
+        supersedes(&conn, "new", "old", "2026-07-10 21:12:01");
+        supersedes(&conn, "other", "old", "2026-07-10 21:13:00");
+        assert!(list_facts_with_view(&conn, "n", 10, 0, &StateView::Current).is_err());
     }
 }

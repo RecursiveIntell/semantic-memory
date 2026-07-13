@@ -1,14 +1,15 @@
 //! Database initialization, migrations, integrity checks, and durable sidecar state.
 
 use crate::config::{EmbeddingConfig, MemoryLimits, PoolConfig};
+use crate::embedder::SparseWeights;
 use crate::error::MemoryError;
 use crate::quantize::unpack_quantized;
 #[cfg(feature = "turbo-quant-codec")]
 use crate::types::{DerivedVectorArtifactGenerationV1, VectorArtifactBuildReceiptV1};
 use crate::types::{
     EpisodeOutcome, ProveKvPoolArtifactStatusV1, ProveKvPoolGenerationStatus,
-    ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1, Role, VectorSearchReceiptV1,
-    VerificationStatus,
+    ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1, Role, SearchSourceType,
+    SparseRankReceiptV1, VectorSearchReceiptV1, VerificationStatus,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -466,6 +467,427 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_digest
     ON graph_edges(content_digest) WHERE is_invalidated = 0;
 "#;
 
+/// V28 migration: bitemporal semantics for first-class graph edges.
+///
+/// `valid_time` is domain/business time. `recorded_time` is system knowledge
+/// time. Existing V27 edges are backfilled from `recorded_at`, preserving the
+/// original append-only insertion timestamp as their initial bitemporal point.
+const MIGRATION_V28: &str = "";
+
+fn run_migration_v28(conn: &Connection) -> Result<(), rusqlite::Error> {
+    add_column_if_missing(conn, "graph_edges", "valid_time", "TEXT")?;
+    add_column_if_missing(conn, "graph_edges", "recorded_time", "TEXT")?;
+    // Backfill missing bitemporal timestamps with recorded_at.
+    conn.execute(
+        "UPDATE graph_edges
+         SET valid_time = COALESCE(valid_time, recorded_at),
+             recorded_time = COALESCE(recorded_time, recorded_at)",
+        [],
+    )?;
+    // Canonicalize any RFC3339 values to fixed-width SQL microseconds so
+    // lexicographic ordering equals chronological ordering. Mixed formats
+    // can otherwise make as-of queries wrong.
+    conn.execute(
+        "UPDATE graph_edges
+         SET valid_time = format('%Y-%m-%d %H:%M:%f', valid_time),
+             recorded_time = format('%Y-%m-%d %H:%M:%f', recorded_time),
+             invalidated_at = CASE
+                 WHEN invalidated_at IS NULL THEN NULL
+                 ELSE format('%Y-%m-%d %H:%M:%f', invalidated_at)
+             END",
+        [],
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_graph_edges_bitemporal
+             ON graph_edges(valid_time, recorded_time);
+         CREATE INDEX IF NOT EXISTS idx_graph_edges_recorded_time
+             ON graph_edges(recorded_time);",
+    )?;
+    Ok(())
+}
+
+/// V29 migration: transactional authority state, lineage heads, operation journal, and receipts.
+const MIGRATION_V29: &str = r#"
+CREATE TABLE IF NOT EXISTS authority_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    retrieval_epoch INTEGER NOT NULL CHECK (retrieval_epoch >= 0)
+);
+INSERT OR IGNORE INTO authority_state (id, retrieval_epoch) VALUES (1, 0);
+
+CREATE TABLE IF NOT EXISTS authority_lineages (
+    lineage_id      TEXT PRIMARY KEY,
+    active_head_id  TEXT NOT NULL REFERENCES facts(id),
+    updated_epoch   INTEGER NOT NULL CHECK (updated_epoch >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS authority_versions (
+    fact_id         TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+    lineage_id      TEXT NOT NULL REFERENCES authority_lineages(lineage_id),
+    version         INTEGER NOT NULL CHECK (version > 0),
+    operation_kind  TEXT NOT NULL CHECK (operation_kind IN ('append', 'supersede', 'redact')),
+    is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    is_redacted     INTEGER NOT NULL DEFAULT 0 CHECK (is_redacted IN (0, 1)),
+    content_digest  TEXT NOT NULL,
+    UNIQUE (lineage_id, version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_one_active_head
+    ON authority_versions(lineage_id) WHERE is_active = 1;
+CREATE INDEX IF NOT EXISTS idx_authority_versions_lineage
+    ON authority_versions(lineage_id, version);
+
+CREATE TABLE IF NOT EXISTS operation_journal (
+    operation_id            TEXT PRIMARY KEY,
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    operation_kind          TEXT NOT NULL,
+    payload_digest          TEXT NOT NULL,
+    principal               TEXT NOT NULL,
+    caller_id               TEXT NOT NULL,
+    before_epoch            INTEGER NOT NULL,
+    after_epoch             INTEGER NOT NULL,
+    affected_ids_json       TEXT NOT NULL,
+    content_digest          TEXT NOT NULL,
+    committed_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operation_journal_idempotency
+    ON operation_journal(caller_idempotency_key);
+
+CREATE TABLE IF NOT EXISTS authority_receipts (
+    receipt_id              TEXT PRIMARY KEY,
+    operation_id            TEXT NOT NULL UNIQUE REFERENCES operation_journal(operation_id),
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    receipt_json             TEXT NOT NULL,
+    receipt_digest           TEXT NOT NULL,
+    created_at               TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_authority_receipts_operation
+    ON authority_receipts(operation_id);
+CREATE INDEX IF NOT EXISTS idx_authority_receipts_idempotency
+    ON authority_receipts(caller_idempotency_key);
+"#;
+
+/// V30 migration: immutable verification/quarantine records adjacent to authority state.
+const MIGRATION_V30: &str = r#"
+CREATE TABLE IF NOT EXISTS memory_transition_records (
+    record_id               TEXT PRIMARY KEY,
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    principal               TEXT NOT NULL,
+    caller_id               TEXT NOT NULL,
+    candidate_digest        TEXT NOT NULL,
+    candidate_json          TEXT NOT NULL,
+    verification_json       TEXT NOT NULL,
+    disposition             TEXT NOT NULL CHECK (disposition IN ('commit', 'quarantine')),
+    authority_receipt_id    TEXT REFERENCES authority_receipts(receipt_id),
+    created_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_transition_disposition
+    ON memory_transition_records(disposition, created_at);
+CREATE TRIGGER IF NOT EXISTS memory_transition_records_no_update
+BEFORE UPDATE ON memory_transition_records
+BEGIN
+    SELECT RAISE(ABORT, 'memory transition records are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS memory_transition_records_no_delete
+BEFORE DELETE ON memory_transition_records
+BEGIN
+    SELECT RAISE(ABORT, 'memory transition records are immutable');
+END;
+"#;
+
+/// V31 migration: immutable write-time origin labels and append-only revocations.
+const MIGRATION_V31: &str = r#"
+CREATE TABLE IF NOT EXISTS origin_authority_labels (
+    fact_id          TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+    label_json       TEXT NOT NULL,
+    label_digest     TEXT NOT NULL,
+    recorded_at      TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS origin_authority_labels_no_update
+BEFORE UPDATE ON origin_authority_labels
+BEGIN
+    SELECT RAISE(ABORT, 'origin authority labels are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS origin_authority_labels_no_delete
+BEFORE DELETE ON origin_authority_labels
+BEGIN
+    SELECT RAISE(ABORT, 'origin authority labels are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS origin_authority_revocations (
+    revocation_id           TEXT PRIMARY KEY,
+    fact_id                 TEXT NOT NULL REFERENCES facts(id),
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    principal               TEXT NOT NULL,
+    revocation_reference    TEXT NOT NULL,
+    revoked_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_origin_authority_revocations_fact
+    ON origin_authority_revocations(fact_id, revoked_at);
+CREATE TRIGGER IF NOT EXISTS origin_authority_revocations_no_update
+BEFORE UPDATE ON origin_authority_revocations
+BEGIN
+    SELECT RAISE(ABORT, 'origin authority revocations are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS origin_authority_revocations_no_delete
+BEFORE DELETE ON origin_authority_revocations
+BEGIN
+    SELECT RAISE(ABORT, 'origin authority revocations are append-only');
+END;
+"#;
+
+/// V32 migration: append-only selective-forgetting tombstones and closure receipts.
+const MIGRATION_V32: &str = r#"
+ALTER TABLE authority_state ADD COLUMN projection_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE authority_state ADD COLUMN cache_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE authority_state ADD COLUMN export_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE authority_state ADD COLUMN replay_epoch INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS forgotten_facts (
+    fact_id          TEXT PRIMARY KEY REFERENCES facts(id),
+    receipt_id       TEXT NOT NULL,
+    namespace        TEXT NOT NULL,
+    content_digest   TEXT NOT NULL,
+    forgotten_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forgotten_facts_namespace
+    ON forgotten_facts(namespace, forgotten_at);
+CREATE TRIGGER IF NOT EXISTS forgotten_facts_no_update
+BEFORE UPDATE ON forgotten_facts BEGIN
+    SELECT RAISE(ABORT, 'forgotten fact tombstones are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS forgotten_facts_no_delete
+BEFORE DELETE ON forgotten_facts BEGIN
+    SELECT RAISE(ABORT, 'forgotten fact tombstones are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS forgetting_artifact_invalidations (
+    surface_kind    TEXT NOT NULL,
+    artifact_id     TEXT NOT NULL,
+    receipt_id      TEXT NOT NULL,
+    invalidated_at  TEXT NOT NULL,
+    PRIMARY KEY(surface_kind, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forgetting_invalidations_receipt
+    ON forgetting_artifact_invalidations(receipt_id);
+CREATE TRIGGER IF NOT EXISTS forgetting_invalidations_no_update
+BEFORE UPDATE ON forgetting_artifact_invalidations BEGIN
+    SELECT RAISE(ABORT, 'forgetting invalidations are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS forgetting_invalidations_no_delete
+BEFORE DELETE ON forgetting_artifact_invalidations BEGIN
+    SELECT RAISE(ABORT, 'forgetting invalidations are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS forgetting_closure_receipts (
+    receipt_id              TEXT PRIMARY KEY,
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    payload_digest          TEXT NOT NULL,
+    receipt_json            TEXT NOT NULL,
+    receipt_digest          TEXT NOT NULL,
+    created_at              TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS forgetting_receipts_no_update
+BEFORE UPDATE ON forgetting_closure_receipts BEGIN
+    SELECT RAISE(ABORT, 'forgetting receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS forgetting_receipts_no_delete
+BEFORE DELETE ON forgetting_closure_receipts BEGIN
+    SELECT RAISE(ABORT, 'forgetting receipts are immutable');
+END;
+"#;
+
+/// V33 migration: append-only shadow policy proposals, versions, and promotion receipts.
+const MIGRATION_V33: &str = r#"
+CREATE TABLE IF NOT EXISTS shadow_policy_proposals (
+    proposal_id       TEXT PRIMARY KEY,
+    idempotency_key   TEXT NOT NULL UNIQUE,
+    principal         TEXT NOT NULL,
+    policy_kind       TEXT NOT NULL,
+    proposal_digest   TEXT NOT NULL,
+    proposal_json     TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_policy_proposals_principal
+    ON shadow_policy_proposals(principal, policy_kind, created_at);
+CREATE TRIGGER IF NOT EXISTS shadow_policy_proposals_no_update
+BEFORE UPDATE ON shadow_policy_proposals BEGIN
+    SELECT RAISE(ABORT, 'shadow policy proposals are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS shadow_policy_proposals_no_delete
+BEFORE DELETE ON shadow_policy_proposals BEGIN
+    SELECT RAISE(ABORT, 'shadow policy proposals are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS shadow_policy_versions (
+    principal          TEXT NOT NULL,
+    policy_kind        TEXT NOT NULL,
+    version            INTEGER NOT NULL CHECK (version > 0),
+    policy_json        TEXT NOT NULL,
+    policy_digest      TEXT NOT NULL,
+    proposal_id        TEXT NOT NULL REFERENCES shadow_policy_proposals(proposal_id),
+    activated_by       TEXT NOT NULL,
+    activated_at       TEXT NOT NULL,
+    PRIMARY KEY (principal, policy_kind, version)
+);
+CREATE TRIGGER IF NOT EXISTS shadow_policy_versions_no_update
+BEFORE UPDATE ON shadow_policy_versions BEGIN
+    SELECT RAISE(ABORT, 'shadow policy versions are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS shadow_policy_versions_no_delete
+BEFORE DELETE ON shadow_policy_versions BEGIN
+    SELECT RAISE(ABORT, 'shadow policy versions are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS shadow_active_policies (
+    principal          TEXT NOT NULL,
+    policy_kind        TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    policy_json        TEXT NOT NULL,
+    policy_digest      TEXT NOT NULL,
+    source_proposal_id TEXT NOT NULL,
+    activated_by       TEXT NOT NULL,
+    activated_at       TEXT NOT NULL,
+    PRIMARY KEY (principal, policy_kind),
+    FOREIGN KEY (principal, policy_kind, version)
+        REFERENCES shadow_policy_versions(principal, policy_kind, version)
+);
+
+CREATE TABLE IF NOT EXISTS shadow_policy_receipts (
+    receipt_id              TEXT PRIMARY KEY,
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    proposal_id             TEXT NOT NULL,
+    principal               TEXT NOT NULL,
+    policy_kind             TEXT NOT NULL,
+    evidence_digest         TEXT NOT NULL,
+    status                  TEXT NOT NULL,
+    receipt_json            TEXT NOT NULL,
+    receipt_digest          TEXT NOT NULL,
+    created_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_policy_receipts_proposal
+    ON shadow_policy_receipts(proposal_id, created_at);
+CREATE TRIGGER IF NOT EXISTS shadow_policy_receipts_no_update
+BEFORE UPDATE ON shadow_policy_receipts BEGIN
+    SELECT RAISE(ABORT, 'shadow policy receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS shadow_policy_receipts_no_delete
+BEFORE DELETE ON shadow_policy_receipts BEGIN
+    SELECT RAISE(ABORT, 'shadow policy receipts are immutable');
+END;
+"#;
+
+/// V34 migration: isolated, immutable procedural-memory artifacts and lifecycle receipts.
+///
+/// These tables deliberately have no FTS, vector, fact, claim, or authority-lineage bridge.
+/// Procedures can therefore only be reached through the governed procedural API.
+const MIGRATION_V34: &str = r#"
+CREATE TABLE IF NOT EXISTS procedural_memory_artifacts (
+    artifact_id        TEXT PRIMARY KEY,
+    principal          TEXT NOT NULL,
+    capability_domain  TEXT NOT NULL,
+    capability_name    TEXT NOT NULL,
+    action_kind        TEXT NOT NULL,
+    version            INTEGER NOT NULL CHECK (version > 0),
+    supersedes         TEXT,
+    artifact_digest    TEXT NOT NULL UNIQUE,
+    artifact_json      TEXT NOT NULL,
+    created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_memory_lookup
+    ON procedural_memory_artifacts(principal, capability_domain, capability_name, action_kind, version DESC);
+CREATE TRIGGER IF NOT EXISTS procedural_memory_artifacts_no_update
+BEFORE UPDATE ON procedural_memory_artifacts BEGIN
+    SELECT RAISE(ABORT, 'procedural memory artifacts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS procedural_memory_artifacts_no_delete
+BEFORE DELETE ON procedural_memory_artifacts BEGIN
+    SELECT RAISE(ABORT, 'procedural memory artifacts are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS procedural_memory_events (
+    event_id           TEXT PRIMARY KEY,
+    artifact_id        TEXT NOT NULL REFERENCES procedural_memory_artifacts(artifact_id),
+    disposition        TEXT NOT NULL,
+    reason_digest      TEXT NOT NULL,
+    test_receipt_json  TEXT,
+    prior_event_digest TEXT,
+    event_digest       TEXT NOT NULL UNIQUE,
+    created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_memory_events_artifact
+    ON procedural_memory_events(artifact_id, created_at, event_id);
+CREATE TRIGGER IF NOT EXISTS procedural_memory_events_no_update
+BEFORE UPDATE ON procedural_memory_events BEGIN
+    SELECT RAISE(ABORT, 'procedural memory events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS procedural_memory_events_no_delete
+BEFORE DELETE ON procedural_memory_events BEGIN
+    SELECT RAISE(ABORT, 'procedural memory events are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS procedural_memory_receipts (
+    receipt_id              TEXT PRIMARY KEY,
+    caller_idempotency_key  TEXT NOT NULL UNIQUE,
+    operation               TEXT NOT NULL,
+    payload_digest          TEXT NOT NULL,
+    artifact_id             TEXT NOT NULL,
+    receipt_json            TEXT NOT NULL,
+    receipt_digest          TEXT NOT NULL UNIQUE,
+    created_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_memory_receipts_artifact
+    ON procedural_memory_receipts(artifact_id, created_at);
+CREATE TRIGGER IF NOT EXISTS procedural_memory_receipts_no_update
+BEFORE UPDATE ON procedural_memory_receipts BEGIN
+    SELECT RAISE(ABORT, 'procedural memory receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS procedural_memory_receipts_no_delete
+BEFORE DELETE ON procedural_memory_receipts BEGIN
+    SELECT RAISE(ABORT, 'procedural memory receipts are immutable');
+END;
+"#;
+
+/// V35 migration: opt-in, privacy-sensitive inputs for complete search replay.
+const MIGRATION_V35: &str = r#"
+CREATE TABLE IF NOT EXISTS replay_inputs (
+    receipt_id TEXT PRIMARY KEY,
+    query_text TEXT NOT NULL,
+    namespaces_json TEXT,
+    source_types_json TEXT,
+    stored_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
+/// V36 migration: durable sparse vectors keyed by canonical search item ID.
+const MIGRATION_V36: &str = r#"
+CREATE TABLE IF NOT EXISTS sparse_vectors (
+    item_key TEXT PRIMARY KEY,
+    entries_json TEXT NOT NULL,
+    representation TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_fact
+AFTER DELETE ON facts BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'fact:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_chunk
+AFTER DELETE ON chunks BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'chunk:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_message
+AFTER DELETE ON messages BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'msg:' || OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS sparse_vectors_delete_episode
+AFTER DELETE ON episodes BEGIN
+    DELETE FROM sparse_vectors WHERE item_key = 'episode:' || OLD.episode_id;
+END;
+"#;
+
 /// Ordered list of migrations.
 #[allow(deprecated)]
 const MIGRATIONS: &[(u32, &str)] = &[
@@ -496,10 +918,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (25, MIGRATION_V25),
     (26, MIGRATION_V26),
     (27, MIGRATION_V27),
+    (28, MIGRATION_V28),
+    (29, MIGRATION_V29),
+    (30, MIGRATION_V30),
+    (31, MIGRATION_V31),
+    (32, MIGRATION_V32),
+    (33, MIGRATION_V33),
+    (34, MIGRATION_V34),
+    (35, MIGRATION_V35),
+    (36, MIGRATION_V36),
 ];
 
 /// Maximum schema version this build supports.
-pub const MAX_SCHEMA_VERSION: u32 = 27;
+pub const MAX_SCHEMA_VERSION: u32 = 36;
 
 /// Procedural migration for V9: rebuild episodes table with episode_id PK.
 fn run_migration_v9(conn: &Connection) -> Result<(), MemoryError> {
@@ -904,6 +1335,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
                     version,
                     reason: e.to_string(),
                 })?,
+                28 => run_migration_v28(tx).map_err(|e| MemoryError::MigrationFailed {
+                    version,
+                    reason: e.to_string(),
+                })?,
                 _ => tx
                     .execute_batch(sql)
                     .map_err(|e| MemoryError::MigrationFailed {
@@ -924,6 +1359,22 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MemoryError> {
 
         tracing::info!("Applied migration V{}", version);
     }
+
+    // Keep the authority surface self-healing if a database carries the V29
+    // marker but one of its idempotent tables was removed by an interrupted
+    // setup or an older repair tool.
+    with_transaction(conn, |tx| {
+        tx.execute_batch(MIGRATION_V29)
+            .map_err(MemoryError::Database)
+    })?;
+    with_transaction(conn, |tx| {
+        tx.execute_batch(MIGRATION_V30)
+            .map_err(MemoryError::Database)
+    })?;
+    with_transaction(conn, |tx| {
+        tx.execute_batch(MIGRATION_V31)
+            .map_err(MemoryError::Database)
+    })?;
 
     let final_version: u32 = conn
         .query_row(
@@ -1094,6 +1545,18 @@ struct StoredVectorSearchReceiptV1 {
     requested_candidates: u64,
     returned_candidates: u64,
     post_filter_candidates: u64,
+    #[serde(default)]
+    sparse_enabled: bool,
+    #[serde(default)]
+    sparse_weight: Option<f64>,
+    #[serde(default)]
+    sparse_query_nonzero_count: Option<u64>,
+    #[serde(default)]
+    sparse_candidate_count: Option<u64>,
+    #[serde(default)]
+    sparse_representations: Vec<String>,
+    #[serde(default)]
+    sparse_result_ranks: Vec<SparseRankReceiptV1>,
     fallback: Option<String>,
     exact_rerank: bool,
     result_ids: Vec<String>,
@@ -1765,6 +2228,18 @@ fn stored_search_receipt(
             receipt.post_filter_candidates,
             "post_filter_candidates",
         )?,
+        sparse_enabled: receipt.sparse_enabled,
+        sparse_weight: receipt.sparse_weight,
+        sparse_query_nonzero_count: receipt
+            .sparse_query_nonzero_count
+            .map(|value| receipt_count_to_u64(value, "sparse_query_nonzero_count"))
+            .transpose()?,
+        sparse_candidate_count: receipt
+            .sparse_candidate_count
+            .map(|value| receipt_count_to_u64(value, "sparse_candidate_count"))
+            .transpose()?,
+        sparse_representations: receipt.sparse_representations.clone(),
+        sparse_result_ranks: receipt.sparse_result_ranks.clone(),
         fallback: receipt.fallback.clone(),
         exact_rerank: receipt.exact_rerank,
         result_ids: receipt.result_ids.clone(),
@@ -1886,6 +2361,22 @@ fn search_receipt_from_stored(
             &stored.receipt_id,
             "post_filter_candidates",
         )?,
+        sparse_enabled: stored.sparse_enabled,
+        sparse_weight: stored.sparse_weight,
+        sparse_query_nonzero_count: stored
+            .sparse_query_nonzero_count
+            .map(|value| {
+                receipt_count_to_usize(value, &stored.receipt_id, "sparse_query_nonzero_count")
+            })
+            .transpose()?,
+        sparse_candidate_count: stored
+            .sparse_candidate_count
+            .map(|value| {
+                receipt_count_to_usize(value, &stored.receipt_id, "sparse_candidate_count")
+            })
+            .transpose()?,
+        sparse_representations: stored.sparse_representations,
+        sparse_result_ranks: stored.sparse_result_ranks,
         fallback: stored.fallback,
         exact_rerank: stored.exact_rerank,
         result_ids: stored.result_ids,
@@ -2001,6 +2492,102 @@ pub fn get_search_receipt(
     Ok(Some(receipt))
 }
 
+/// Privacy-sensitive inputs retained by explicit replay opt-in.
+pub(crate) struct ReplayInputs {
+    pub query_text: String,
+    pub namespaces: Option<Vec<String>>,
+    pub source_types: Option<Vec<SearchSourceType>>,
+}
+
+/// Persist the inputs needed to replay a durable search receipt.
+pub(crate) fn store_replay_inputs(
+    conn: &Connection,
+    receipt_id: &str,
+    query_text: &str,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+) -> Result<(), MemoryError> {
+    let namespaces_json = namespaces
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            MemoryError::Other(format!("failed to serialize replay namespaces: {error}"))
+        })?;
+    let source_types_json = source_types
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            MemoryError::Other(format!("failed to serialize replay source types: {error}"))
+        })?;
+
+    let existing: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT query_text, namespaces_json, source_types_json
+             FROM replay_inputs WHERE receipt_id = ?1",
+            params![receipt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing.0 == query_text
+            && existing.1.as_ref() == namespaces_json.as_ref()
+            && existing.2.as_ref() == source_types_json.as_ref()
+        {
+            return Ok(());
+        }
+        return Err(MemoryError::SearchReceiptConflict {
+            receipt_id: receipt_id.to_string(),
+        });
+    }
+
+    conn.execute(
+        "INSERT INTO replay_inputs
+            (receipt_id, query_text, namespaces_json, source_types_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![receipt_id, query_text, namespaces_json, source_types_json],
+    )?;
+    Ok(())
+}
+
+/// Load opt-in inputs for complete replay, if present.
+pub(crate) fn get_replay_inputs(
+    conn: &Connection,
+    receipt_id: &str,
+) -> Result<Option<ReplayInputs>, MemoryError> {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT query_text, namespaces_json, source_types_json
+             FROM replay_inputs WHERE receipt_id = ?1",
+            params![receipt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((query_text, namespaces_json, source_types_json)) = row else {
+        return Ok(None);
+    };
+    let namespaces = namespaces_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| MemoryError::CorruptData {
+            table: "replay_inputs",
+            row_id: receipt_id.to_string(),
+            detail: format!("invalid namespaces JSON: {error}"),
+        })?;
+    let source_types = source_types_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| MemoryError::CorruptData {
+            table: "replay_inputs",
+            row_id: receipt_id.to_string(),
+            detail: format!("invalid source types JSON: {error}"),
+        })?;
+    Ok(Some(ReplayInputs {
+        query_text,
+        namespaces,
+        source_types,
+    }))
+}
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -2074,6 +2661,133 @@ pub fn check_embedding_metadata(
 /// Encode an f32 slice as bytes for SQLite BLOB storage.
 pub fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
     encode_f32_le(embedding)
+}
+
+/// One durable sparse-vector row used by the sparse retrieval lane.
+#[derive(Debug, Clone)]
+pub(crate) struct SparseVectorRow {
+    pub item_key: String,
+    pub weights: SparseWeights,
+    pub representation: String,
+}
+
+/// Insert or replace the sparse representation for a canonical search item.
+pub(crate) fn store_sparse_vector(
+    conn: &Connection,
+    item_key: &str,
+    weights: &SparseWeights,
+    representation: &str,
+) -> Result<(), MemoryError> {
+    if item_key.split_once(':').is_none() || representation.trim().is_empty() {
+        return Err(MemoryError::InvalidConfig {
+            field: "sparse_vector",
+            reason: "item_key must be canonical and representation must not be empty".to_string(),
+        });
+    }
+    if weights
+        .entries
+        .iter()
+        .any(|(_, weight)| !weight.is_finite())
+    {
+        return Err(MemoryError::InvalidConfig {
+            field: "sparse_vector.entries",
+            reason: "sparse weights must be finite".to_string(),
+        });
+    }
+    let entries_json = serde_json::to_string(&weights.entries)
+        .map_err(|error| MemoryError::Other(format!("serialize sparse weights: {error}")))?;
+    conn.execute(
+        "INSERT INTO sparse_vectors (item_key, entries_json, representation, updated_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(item_key) DO UPDATE SET
+             entries_json = excluded.entries_json,
+             representation = excluded.representation,
+             updated_at = excluded.updated_at",
+        params![item_key, entries_json, representation],
+    )?;
+    Ok(())
+}
+
+/// Load a bounded set of durable sparse rows selected by sparse dot product.
+pub(crate) fn search_sparse_vectors(
+    conn: &Connection,
+    query: &SparseWeights,
+    candidate_limit: usize,
+    min_score: f64,
+) -> Result<Vec<(SparseVectorRow, f64)>, MemoryError> {
+    if query.is_empty() || candidate_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut sql = String::from("WITH query_sparse(dimension, weight) AS (VALUES ");
+    for index in 0..query.entries.len() {
+        if index > 0 {
+            sql.push(',');
+        }
+        let dimension_param = index * 2 + 1;
+        let weight_param = dimension_param + 1;
+        sql.push_str(&format!("(?{dimension_param}, ?{weight_param})"));
+    }
+    let min_score_param = query.entries.len() * 2 + 1;
+    let limit_param = min_score_param + 1;
+    sql.push_str(&format!(
+        ") SELECT sv.item_key, sv.entries_json, sv.representation,
+                  SUM(CAST(json_extract(entry.value, '$[1]') AS REAL) * query_sparse.weight) AS sparse_score
+           FROM sparse_vectors sv
+           JOIN json_each(sv.entries_json) AS entry
+           JOIN query_sparse
+             ON CAST(json_extract(entry.value, '$[0]') AS INTEGER) = query_sparse.dimension
+           GROUP BY sv.item_key
+           HAVING sparse_score >= ?{min_score_param}
+           ORDER BY sparse_score DESC, sv.item_key ASC
+           LIMIT ?{limit_param}"
+    ));
+
+    let mut values: Vec<rusqlite::types::Value> = Vec::with_capacity(query.entries.len() * 2 + 2);
+    for (dimension, weight) in &query.entries {
+        values.push((*dimension as i64).into());
+        values.push(f64::from(*weight).into());
+    }
+    values.push(min_score.into());
+    values.push((candidate_limit as i64).into());
+
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        let (item_key, entries_json, representation, score) = row?;
+        let entries: Vec<(usize, f32)> =
+            serde_json::from_str(&entries_json).map_err(|error| MemoryError::CorruptData {
+                table: "sparse_vectors",
+                row_id: item_key.clone(),
+                detail: format!("invalid sparse entries JSON: {error}"),
+            })?;
+        results.push((
+            SparseVectorRow {
+                item_key,
+                weights: SparseWeights::from_entries(entries),
+                representation,
+            },
+            score,
+        ));
+    }
+    Ok(results)
+}
+
+/// Remove a sparse vector explicitly (used for supersession cleanup).
+pub(crate) fn delete_sparse_vector(conn: &Connection, item_key: &str) -> Result<(), MemoryError> {
+    conn.execute(
+        "DELETE FROM sparse_vectors WHERE item_key = ?1",
+        params![item_key],
+    )?;
+    Ok(())
 }
 
 /// Encode f32 values as a stable little-endian persisted representation.

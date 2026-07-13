@@ -25,9 +25,44 @@
 
 use crate::error::MemoryError;
 use crate::types::{GraphEdge, GraphEdgeType};
-use chrono::Utc;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
+
+/// Canonical timestamp format used for all bitemporal graph-edge columns.
+///
+/// Fixed-width, lexicographically sortable, and unambiguous.
+const CANONICAL_TS_FMT: &str = "%Y-%m-%d %H:%M:%S%.6f";
+
+/// Normalize a caller-provided timestamp into the canonical sortable format.
+///
+/// Accepts:
+/// - `%Y-%m-%d %H:%M:%S%.6f` (canonical)
+/// - `%Y-%m-%d %H:%M:%S` (SQLite default)
+/// - RFC3339 / ISO 8601 (`2026-01-01T00:00:00Z`)
+///
+/// Returns `None` if the input cannot be parsed.
+pub(crate) fn canonicalize_timestamp(s: &str) -> Option<String> {
+    // Already canonical?
+    if NaiveDateTime::parse_from_str(s, CANONICAL_TS_FMT).is_ok() {
+        return Some(s.to_string());
+    }
+    // SQLite datetime format with seconds precision.
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.format(CANONICAL_TS_FMT).to_string());
+    }
+    // RFC3339 / ISO 8601.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.naive_utc().format(CANONICAL_TS_FMT).to_string());
+    }
+    None
+}
+
+/// Normalize a timestamp for storage. If parsing fails, returns the
+/// original input unchanged so the caller can decide whether to reject it.
+fn normalize_or_pass_through(s: &str) -> String {
+    canonicalize_timestamp(s).unwrap_or_else(|| s.to_string())
+}
 
 /// A stored graph edge row.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -57,6 +92,10 @@ pub struct StoredGraphEdge {
     pub invalidated_at: Option<String>,
     /// Invalidation reason.
     pub invalidation_reason: Option<String>,
+    /// Domain/business time this edge became valid.
+    pub valid_time: Option<String>,
+    /// System time this edge version was recorded.
+    pub recorded_time: Option<String>,
 }
 
 /// Parameters for creating a graph edge.
@@ -72,6 +111,10 @@ pub struct AddGraphEdgeParams {
     pub weight: f64,
     /// Optional metadata.
     pub metadata: Option<serde_json::Value>,
+    /// Optional domain/business time. Defaults to insertion time.
+    pub valid_time: Option<String>,
+    /// Optional system recorded time. Defaults to insertion time.
+    pub recorded_time: Option<String>,
 }
 
 /// Insert a graph edge. Idempotent on content_digest.
@@ -96,6 +139,8 @@ pub(crate) fn insert_graph_edge(
         &edge_type_json,
         params.weight,
         &metadata_json,
+        params.valid_time.as_deref(),
+        params.recorded_time.as_deref(),
     );
 
     // Check for existing edge with same digest (idempotent).
@@ -117,19 +162,39 @@ pub(crate) fn insert_graph_edge(
             weight: params.weight,
             metadata: metadata_json,
             content_digest,
-            recorded_at,
+            recorded_at: recorded_at.clone(),
             is_invalidated: false,
             invalidated_at: None,
             invalidation_reason: None,
+            valid_time: params
+                .valid_time
+                .as_deref()
+                .map(normalize_or_pass_through)
+                .or_else(|| Some(recorded_at.clone())),
+            recorded_time: params
+                .recorded_time
+                .as_deref()
+                .map(normalize_or_pass_through)
+                .or_else(|| Some(recorded_at.clone())),
         });
     }
 
     let id = uuid::Uuid::new_v4().to_string();
     let recorded_at = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let valid_time = params
+        .valid_time
+        .as_deref()
+        .map(normalize_or_pass_through)
+        .unwrap_or_else(|| recorded_at.clone());
+    let recorded_time = params
+        .recorded_time
+        .as_deref()
+        .map(normalize_or_pass_through)
+        .unwrap_or_else(|| recorded_at.clone());
 
     conn.execute(
-        "INSERT INTO graph_edges (id, source, target, edge_type, weight, metadata, content_digest, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO graph_edges (id, source, target, edge_type, weight, metadata, content_digest, recorded_at, valid_time, recorded_time)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             &id,
             &params.source,
@@ -139,6 +204,8 @@ pub(crate) fn insert_graph_edge(
             metadata_json.as_deref(),
             &content_digest,
             &recorded_at,
+            &valid_time,
+            &recorded_time,
         ],
     )
     .map_err(|e| MemoryError::Database(e))?;
@@ -156,6 +223,8 @@ pub(crate) fn insert_graph_edge(
         is_invalidated: false,
         invalidated_at: None,
         invalidation_reason: None,
+        valid_time: Some(valid_time),
+        recorded_time: Some(recorded_time),
     })
 }
 
@@ -167,7 +236,7 @@ pub(crate) fn list_graph_edges_for_node(
 ) -> Result<Vec<StoredGraphEdge>, MemoryError> {
     let mut stmt = conn.prepare(
         "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
-                is_invalidated, invalidated_at, invalidation_reason
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
          FROM graph_edges
          WHERE (source = ?1 OR target = ?1) AND is_invalidated = 0
          ORDER BY recorded_at ASC",
@@ -187,6 +256,8 @@ pub(crate) fn list_graph_edges_for_node(
                 is_invalidated: row.get::<_, i64>(8)? != 0,
                 invalidated_at: row.get(9)?,
                 invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -197,7 +268,7 @@ pub(crate) fn list_graph_edges_for_node(
 pub(crate) fn list_all_graph_edges(conn: &Connection) -> Result<Vec<StoredGraphEdge>, MemoryError> {
     let mut stmt = conn.prepare(
         "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
-                is_invalidated, invalidated_at, invalidation_reason
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
          FROM graph_edges
          WHERE is_invalidated = 0
          ORDER BY recorded_at ASC",
@@ -217,8 +288,68 @@ pub(crate) fn list_all_graph_edges(conn: &Connection) -> Result<Vec<StoredGraphE
                 is_invalidated: row.get::<_, i64>(8)? != 0,
                 invalidated_at: row.get(9)?,
                 invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
             })
         })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// List graph edges involving a node that were valid as of a domain time and
+/// known as of a recorded/system time. Unlike the live list APIs, this can
+/// return edges that are now invalidated if the invalidation happened after
+/// `as_of_recorded_time`.
+pub(crate) fn list_graph_edges_for_node_as_of(
+    conn: &Connection,
+    node_id: &str,
+    as_of_valid_time: &str,
+    as_of_recorded_time: &str,
+) -> Result<Vec<StoredGraphEdge>, MemoryError> {
+    // Normalize as-of inputs so mixed SQL/RFC3339 formats compare correctly.
+    let as_of_valid_time = canonicalize_timestamp(as_of_valid_time).ok_or_else(|| {
+        MemoryError::Other(format!(
+            "invalid as_of_valid_time timestamp: {as_of_valid_time}"
+        ))
+    })?;
+    let as_of_recorded_time = canonicalize_timestamp(as_of_recorded_time).ok_or_else(|| {
+        MemoryError::Other(format!(
+            "invalid as_of_recorded_time timestamp: {as_of_recorded_time}"
+        ))
+    })?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
+         FROM graph_edges
+         WHERE (source = ?1 OR target = ?1)
+           AND COALESCE(valid_time, recorded_at) <= ?2
+           AND COALESCE(recorded_time, recorded_at) <= ?3
+           AND (is_invalidated = 0 OR invalidated_at IS NULL OR invalidated_at > ?3)
+         ORDER BY COALESCE(recorded_time, recorded_at) ASC, id ASC",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![node_id, as_of_valid_time, as_of_recorded_time],
+            |row| {
+                Ok(StoredGraphEdge {
+                    id: row.get(0)?,
+                    source: row.get(1)?,
+                    target: row.get(2)?,
+                    edge_type: row.get(3)?,
+                    edge_type_parsed: None,
+                    weight: row.get(4)?,
+                    metadata: row.get(5)?,
+                    content_digest: row.get(6)?,
+                    recorded_at: row.get(7)?,
+                    is_invalidated: row.get::<_, i64>(8)? != 0,
+                    invalidated_at: row.get(9)?,
+                    invalidation_reason: row.get(10)?,
+                    valid_time: row.get(11)?,
+                    recorded_time: row.get(12)?,
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -292,7 +423,8 @@ pub(crate) fn invalidate_graph_edge(
     edge_id: &str,
     reason: &str,
 ) -> Result<(), MemoryError> {
-    let invalidated_at = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let invalidated_at =
+        normalize_or_pass_through(&Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string());
     let count = conn.execute(
         "UPDATE graph_edges SET is_invalidated = 1, invalidated_at = ?1, invalidation_reason = ?2
          WHERE id = ?3 AND is_invalidated = 0",
@@ -345,7 +477,7 @@ pub(crate) fn stored_outgoing_edges(
 ) -> Result<Vec<GraphEdge>, MemoryError> {
     let mut stmt = conn.prepare(
         "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
-                is_invalidated, invalidated_at, invalidation_reason
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
          FROM graph_edges
          WHERE source = ?1 AND is_invalidated = 0
          ORDER BY recorded_at ASC",
@@ -365,6 +497,8 @@ pub(crate) fn stored_outgoing_edges(
                 is_invalidated: row.get::<_, i64>(8)? != 0,
                 invalidated_at: row.get(9)?,
                 invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -379,7 +513,7 @@ pub(crate) fn stored_incoming_edges(
 ) -> Result<Vec<GraphEdge>, MemoryError> {
     let mut stmt = conn.prepare(
         "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
-                is_invalidated, invalidated_at, invalidation_reason
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
          FROM graph_edges
          WHERE target = ?1 AND is_invalidated = 0
          ORDER BY recorded_at ASC",
@@ -399,6 +533,8 @@ pub(crate) fn stored_incoming_edges(
                 is_invalidated: row.get::<_, i64>(8)? != 0,
                 invalidated_at: row.get(9)?,
                 invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -446,6 +582,8 @@ fn compute_edge_digest(
     edge_type_json: &str,
     weight: f64,
     metadata_json: &Option<String>,
+    explicit_valid_time: Option<&str>,
+    explicit_recorded_time: Option<&str>,
 ) -> String {
     let mut builder = stack_ids::DigestBuilder::new();
     builder.update(source.as_bytes());
@@ -455,5 +593,144 @@ fn compute_edge_digest(
     if let Some(meta) = metadata_json {
         builder.update(meta.as_bytes());
     }
+    if let Some(valid_time) = explicit_valid_time {
+        builder.update(valid_time.as_bytes());
+    }
+    if let Some(recorded_time) = explicit_recorded_time {
+        builder.update(recorded_time.as_bytes());
+    }
     builder.finalize().0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::run_migrations;
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    fn migrated_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn graph_edges_have_bitemporal_columns_after_migration() {
+        let conn = migrated_conn();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(graph_edges)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(columns.contains(&"valid_time".to_string()));
+        assert!(columns.contains(&"recorded_time".to_string()));
+    }
+
+    #[test]
+    fn graph_edges_as_of_filters_valid_and_recorded_time() {
+        let conn = migrated_conn();
+        let old_edge = AddGraphEdgeParams {
+            source: "fact:a".to_string(),
+            target: "fact:b".to_string(),
+            edge_type: GraphEdgeType::Entity {
+                relation: "supports".to_string(),
+            },
+            weight: 1.0,
+            metadata: Some(json!({"version": "old"})),
+            valid_time: Some("2026-01-01T00:00:00Z".to_string()),
+            recorded_time: Some("2026-01-02T00:00:00Z".to_string()),
+        };
+        let future_edge = AddGraphEdgeParams {
+            source: "fact:a".to_string(),
+            target: "fact:c".to_string(),
+            edge_type: GraphEdgeType::Entity {
+                relation: "supports".to_string(),
+            },
+            weight: 1.0,
+            metadata: Some(json!({"version": "future"})),
+            valid_time: Some("2026-03-01T00:00:00Z".to_string()),
+            recorded_time: Some("2026-03-02T00:00:00Z".to_string()),
+        };
+
+        insert_graph_edge(&conn, &old_edge).unwrap();
+        insert_graph_edge(&conn, &future_edge).unwrap();
+
+        let visible = list_graph_edges_for_node_as_of(
+            &conn,
+            "fact:a",
+            "2026-02-01T00:00:00Z",
+            "2026-02-02T00:00:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].target, "fact:b");
+        // Stored RFC3339 values must be canonicalized to fixed-width SQL format.
+        assert_eq!(
+            visible[0].valid_time.as_deref(),
+            Some("2026-01-01 00:00:00.000000")
+        );
+        assert_eq!(
+            visible[0].recorded_time.as_deref(),
+            Some("2026-01-02 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn graph_edges_as_of_handles_mixed_timestamp_formats() {
+        // Edge inserted with canonical SQL timestamp; query with RFC3339.
+        let conn = migrated_conn();
+        let edge = AddGraphEdgeParams {
+            source: "fact:x".to_string(),
+            target: "fact:y".to_string(),
+            edge_type: GraphEdgeType::Semantic {
+                cosine_similarity: 0.9,
+            },
+            weight: 1.0,
+            metadata: None,
+            valid_time: Some("2026-01-01 00:00:00.000000".to_string()),
+            recorded_time: Some("2026-01-01 00:00:00.000000".to_string()),
+        };
+        insert_graph_edge(&conn, &edge).unwrap();
+
+        let visible = list_graph_edges_for_node_as_of(
+            &conn,
+            "fact:x",
+            "2026-01-01T23:59:59Z",
+            "2026-01-01T23:59:59Z",
+        )
+        .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].target, "fact:y");
+    }
+
+    #[test]
+    fn graph_edges_as_of_rejects_invalid_timestamp() {
+        let conn = migrated_conn();
+        let edge = AddGraphEdgeParams {
+            source: "fact:x".to_string(),
+            target: "fact:y".to_string(),
+            edge_type: GraphEdgeType::Semantic {
+                cosine_similarity: 0.9,
+            },
+            weight: 1.0,
+            metadata: None,
+            valid_time: None,
+            recorded_time: None,
+        };
+        insert_graph_edge(&conn, &edge).unwrap();
+
+        let err = list_graph_edges_for_node_as_of(
+            &conn,
+            "fact:x",
+            "not-a-timestamp",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid as_of_valid_time"));
+    }
 }

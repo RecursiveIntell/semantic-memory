@@ -1,6 +1,8 @@
 #![cfg(feature = "hnsw")]
 
-use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, SearchSourceType};
+#[cfg(feature = "admin-ops")]
+use semantic_memory::SearchSourceType;
+use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder};
 use tempfile::TempDir;
 
 fn test_store() -> (MemoryStore, TempDir) {
@@ -15,6 +17,7 @@ fn test_store() -> (MemoryStore, TempDir) {
 }
 
 /// 7.1 - Add 10 facts, delete 3, verify only 7 remain via search/stats.
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn deleted_ratio_computation() {
     let (store, _tmp) = test_store();
@@ -59,6 +62,7 @@ async fn deleted_ratio_computation() {
 }
 
 /// 7.2 - Add 20 facts, delete 10, compact, verify search returns correct results.
+#[cfg(feature = "admin-ops")]
 #[tokio::test]
 async fn compact_reduces_tombstones() {
     let (store, _tmp) = test_store();

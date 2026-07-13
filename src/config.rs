@@ -180,6 +180,32 @@ pub struct SearchConfig {
     /// Weight for vector similarity in RRF fusion.
     pub vector_weight: f64,
 
+    /// Weight for sparse dot-product ranking in RRF fusion.
+    /// Defaults to 0.0 so existing BM25+dense behavior is unchanged.
+    #[serde(default = "default_zero")]
+    pub sparse_weight: f64,
+
+    /// Maximum sparse candidates admitted to fusion.
+    #[serde(default = "default_sparse_top_k")]
+    pub sparse_top_k: usize,
+
+    /// Minimum sparse dot-product score admitted to fusion.
+    #[serde(default = "default_zero")]
+    pub sparse_min_score: f64,
+
+    /// Explicitly allow dense-only embedders to derive generic sparse weights.
+    /// This is disabled by default and the result must not be described as SPLADE.
+    #[serde(default)]
+    pub derive_sparse_from_dense: bool,
+
+    /// Maximum dense dimensions retained by explicit generic sparse derivation.
+    #[serde(default = "default_sparse_derive_top_k")]
+    pub sparse_derive_top_k: usize,
+
+    /// Minimum absolute dense value retained by generic sparse derivation.
+    #[serde(default = "default_sparse_derive_min_weight")]
+    pub sparse_derive_min_weight: f32,
+
     /// Weight for late interaction (ColBERT MaxSim) in RRF fusion.
     /// Defaults to 0.0 (disabled). Set to 1.0 to enable as 3rd RRF signal.
     #[serde(default = "default_zero")]
@@ -250,8 +276,8 @@ pub struct SearchConfig {
     /// Matryoshka candidate-stage embedding dimensions for 2-stage search.
     /// When set to Some(dim) and the `matryoshka` feature is enabled, the query
     /// embedding is truncated to `dim` dimensions for candidate retrieval, then
-    /// reranked with the full embedding. Defaults to Some(64).
-    /// Set to None to disable 2-stage matryoshka search.
+    /// reranked with the full embedding. Disabled by default because it requires
+    /// a compatible truncated-vector index; callers opt in explicitly.
     #[serde(default = "default_candidate_dims")]
     pub candidate_dims: Option<usize>,
 
@@ -295,8 +321,20 @@ const fn default_zero() -> f64 {
     0.0
 }
 
+const fn default_sparse_top_k() -> usize {
+    50
+}
+
+const fn default_sparse_derive_top_k() -> usize {
+    128
+}
+
+const fn default_sparse_derive_min_weight() -> f32 {
+    0.01
+}
+
 const fn default_candidate_dims() -> Option<usize> {
-    Some(64)
+    None
 }
 
 impl Default for SearchConfig {
@@ -304,6 +342,12 @@ impl Default for SearchConfig {
         Self {
             bm25_weight: 1.0,
             vector_weight: 1.0,
+            sparse_weight: 0.0,
+            sparse_top_k: default_sparse_top_k(),
+            sparse_min_score: 0.0,
+            derive_sparse_from_dense: false,
+            sparse_derive_top_k: default_sparse_derive_top_k(),
+            sparse_derive_min_weight: default_sparse_derive_min_weight(),
             late_interaction_weight: 0.15,
             bm25_k1: 1.2,
             bm25_b: 0.75,
@@ -349,6 +393,12 @@ impl SearchConfig {
             self.default_top_k = 1;
         }
         self.candidate_pool_size = self.candidate_pool_size.max(self.default_top_k);
+        if self.sparse_top_k == 0 {
+            self.sparse_top_k = 1;
+        }
+        if self.sparse_derive_top_k == 0 {
+            self.sparse_derive_top_k = 1;
+        }
         if !self.rrf_k.is_finite() || self.rrf_k <= 0.0 {
             return Err(MemoryError::InvalidConfig {
                 field: "search.rrf_k",
@@ -365,6 +415,24 @@ impl SearchConfig {
             return Err(MemoryError::InvalidConfig {
                 field: "search.vector_weight",
                 reason: "vector_weight must be finite and >= 0".to_string(),
+            });
+        }
+        if !self.sparse_weight.is_finite() || self.sparse_weight < 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.sparse_weight",
+                reason: "sparse_weight must be finite and >= 0".to_string(),
+            });
+        }
+        if !self.sparse_min_score.is_finite() {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.sparse_min_score",
+                reason: "sparse_min_score must be finite".to_string(),
+            });
+        }
+        if !self.sparse_derive_min_weight.is_finite() || self.sparse_derive_min_weight < 0.0 {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.sparse_derive_min_weight",
+                reason: "sparse_derive_min_weight must be finite and >= 0".to_string(),
             });
         }
         if !self.recency_weight.is_finite() || self.recency_weight < 0.0 {

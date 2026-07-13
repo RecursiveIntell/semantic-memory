@@ -1017,8 +1017,15 @@ fn semantic_candidates<F>(
 where
     F: Fn(String) -> String,
 {
+    // SQL-level LIMIT bounds the query plan, not just the Rust iterator.
+    // Without LIMIT, SQLite prepares a full-table-scan plan even though we
+    // break early in the iterator. With LIMIT, SQLite can short-circuit.
     let sql = format!(
-        "SELECT {id_column}, {embedding_column} FROM {table} WHERE {embedding_column} IS NOT NULL"
+        "SELECT {id_column}, {embedding_column}
+         FROM {table}
+         WHERE {embedding_column} IS NOT NULL
+         LIMIT {limit}",
+        limit = max_edges_per_node
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |row| {
@@ -1026,10 +1033,7 @@ where
     })?;
 
     let mut decoded = Vec::new();
-    for (idx, row) in rows.enumerate() {
-        if idx >= max_edges_per_node {
-            break;
-        }
+    for row in rows {
         let (row_id, blob) = row?;
         if let Ok(embedding) = db::bytes_to_embedding(&blob) {
             decoded.push((key_fn(row_id), embedding));
