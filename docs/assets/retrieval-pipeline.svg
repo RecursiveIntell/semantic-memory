@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">semantic-memory default hybrid retrieval pipeline</title>
+  <desc id="desc">A staged retrieval diagram. A query feeds lexical and dense lanes, with sparse and Matryoshka stages explicitly optional. Ranked lists enter reciprocal-rank fusion, then state visibility, deduplication and diversity. Results may include explanations and an optional execution receipt.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17304A" stroke-width="1" opacity="0.45"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64748B"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="630" rx="24" fill="#07111F"/>
+  <rect width="1200" height="630" rx="24" fill="url(#grid)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="56" y="62" fill="#E2E8F0" font-size="27" font-weight="700">DEFAULT HYBRID RETRIEVAL / DECLARED LANES</text>
+    <text x="56" y="91" fill="#94A3B8" font-size="14">solid = default path · dashed = opt-in/conditional · a receipt records what actually ran</text>
+
+    <!-- arrows behind nodes -->
+    <g fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M202 300H276"/>
+      <path d="M202 300C238 300 236 186 276 186"/>
+      <path d="M202 300C238 300 236 414 276 414" stroke-dasharray="7 7"/>
+      <path d="M446 186H536"/>
+      <path d="M446 300H536"/>
+      <path d="M446 414H536" stroke-dasharray="7 7"/>
+      <path d="M706 186C750 186 746 300 786 300"/>
+      <path d="M706 300H786"/>
+      <path d="M706 414C750 414 746 300 786 300" stroke-dasharray="7 7"/>
+      <path d="M936 300H1008"/>
+      <path d="M1070 354V438"/>
+    </g>
+
+    <!-- Query -->
+    <rect x="56" y="246" width="146" height="108" rx="54" fill="#172033" stroke="#A78BFA" stroke-width="2"/>
+    <text x="129" y="292" text-anchor="middle" fill="#DDD6FE" font-size="13" font-weight="700">QUERY</text>
+    <text x="129" y="319" text-anchor="middle" fill="#C4B5FD" font-size="12">text + context</text>
+
+    <!-- Lane inputs -->
+    <rect x="276" y="134" width="170" height="104" rx="12" fill="#102333" stroke="#22D3EE" stroke-width="2"/>
+    <text x="296" y="166" fill="#67E8F9" font-size="12" font-weight="700">LEXICAL</text>
+    <text x="296" y="194" fill="#ECFEFF" font-size="17">FTS5 / BM25</text>
+    <text x="296" y="218" fill="#94A3B8" font-size="11">facts · chunks · episodes</text>
+
+    <rect x="276" y="248" width="170" height="104" rx="12" fill="#10271F" stroke="#34D399" stroke-width="2"/>
+    <text x="296" y="280" fill="#6EE7B7" font-size="12" font-weight="700">DENSE</text>
+    <text x="296" y="308" fill="#ECFDF5" font-size="17">query embedding</text>
+    <text x="296" y="332" fill="#94A3B8" font-size="11">backend selected by policy</text>
+
+    <rect x="276" y="362" width="170" height="104" rx="12" fill="#2A2312" stroke="#FBBF24" stroke-width="2" stroke-dasharray="7 6"/>
+    <text x="296" y="394" fill="#FDE68A" font-size="12" font-weight="700">OPTIONAL</text>
+    <text x="296" y="422" fill="#FEF3C7" font-size="17">sparse query</text>
+    <text x="296" y="446" fill="#94A3B8" font-size="11">requires weights + representation</text>
+
+    <!-- Ranked lists -->
+    <rect x="536" y="134" width="170" height="104" rx="12" fill="#112335" stroke="#38BDF8" stroke-width="2"/>
+    <text x="556" y="166" fill="#7DD3FC" font-size="12" font-weight="700">RANKED LIST A</text>
+    <text x="556" y="194" fill="#E0F2FE" font-size="16">BM25 candidates</text>
+    <text x="556" y="218" fill="#94A3B8" font-size="11">raw score + 1-based rank</text>
+
+    <rect x="536" y="248" width="170" height="104" rx="12" fill="#11271F" stroke="#34D399" stroke-width="2"/>
+    <text x="556" y="280" fill="#6EE7B7" font-size="12" font-weight="700">RANKED LIST B</text>
+    <text x="556" y="308" fill="#ECFDF5" font-size="16">vector candidates</text>
+    <text x="556" y="332" fill="#94A3B8" font-size="11">exactness/fallback disclosed</text>
+
+    <rect x="536" y="362" width="170" height="104" rx="12" fill="#2A2312" stroke="#FBBF24" stroke-width="2" stroke-dasharray="7 6"/>
+    <text x="556" y="394" fill="#FDE68A" font-size="12" font-weight="700">RANKED LIST C</text>
+    <text x="556" y="422" fill="#FEF3C7" font-size="16">sparse candidates</text>
+    <text x="556" y="446" fill="#94A3B8" font-size="11">representation + config guarded</text>
+
+    <!-- Fusion -->
+    <rect x="786" y="236" width="150" height="128" rx="12" fill="#171D31" stroke="#A78BFA" stroke-width="2"/>
+    <text x="806" y="270" fill="#C4B5FD" font-size="12" font-weight="700">FUSION</text>
+    <text x="806" y="302" fill="#EDE9FE" font-size="18">weighted RRF</text>
+    <text x="806" y="328" fill="#DDD6FE" font-size="12">lane weights</text>
+    <text x="806" y="348" fill="#DDD6FE" font-size="12">configured k</text>
+
+    <!-- Filter/output -->
+    <rect x="1008" y="236" width="136" height="128" rx="12" fill="#162318" stroke="#84CC16" stroke-width="2"/>
+    <text x="1028" y="270" fill="#BEF264" font-size="12" font-weight="700">COMPILE</text>
+    <text x="1028" y="298" fill="#ECFCCB" font-size="14">state visibility</text>
+    <text x="1028" y="321" fill="#ECFCCB" font-size="14">deduplication</text>
+    <text x="1028" y="344" fill="#ECFCCB" font-size="14">diversity</text>
+
+    <rect x="970" y="438" width="174" height="104" rx="12" fill="#2A1328" stroke="#F472B6" stroke-width="2"/>
+    <text x="990" y="470" fill="#F9A8D4" font-size="12" font-weight="700">RESULT ENVELOPE</text>
+    <text x="990" y="498" fill="#FCE7F3" font-size="15">results · explanation</text>
+    <text x="990" y="522" fill="#FBCFE8" font-size="12">optional receipt</text>
+
+    <rect x="56" y="478" width="822" height="38" rx="10" fill="#211E13" stroke="#FBBF24" stroke-dasharray="7 6"/>
+    <text x="76" y="502" fill="#FDE68A" font-size="11">MATRYOSHKA: separate truncated-query candidate attempt → exact f32 rerank → replace full vector outcome only when usable</text>
+
+    <rect x="56" y="528" width="822" height="56" rx="10" fill="#101A28" stroke="#334155"/>
+    <text x="76" y="551" fill="#CBD5E1" font-size="12" font-weight="700">NOT AUTOMATIC IN search()</text>
+    <text x="76" y="572" fill="#94A3B8" font-size="12">routing · graph expansion · decoder · community · topology · other research/orchestration modules</text>
+  </g>
+</svg>

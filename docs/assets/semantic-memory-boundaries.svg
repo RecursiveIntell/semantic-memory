@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">semantic-memory system and trust boundaries</title>
+  <desc id="desc">A left-to-right architecture showing caller writes and governed authority entering authoritative SQLite, rebuildable projections supporting retrieval, and optional receipts accompanying results. A boundary note states that claim trust and action permission belong outside this crate.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17304A" stroke-width="1" opacity="0.45"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="630" rx="24" fill="#07111F"/>
+  <rect width="1200" height="630" rx="24" fill="url(#grid)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="56" y="62" fill="#E2E8F0" font-size="27" font-weight="700">SEMANTIC MEMORY / TRUST BOUNDARIES</text>
+    <text x="56" y="91" fill="#94A3B8" font-size="14">canonical state stays in SQLite · acceleration remains rebuildable · receipts expose execution</text>
+
+    <!-- Connections render behind boxes. -->
+    <g fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M246 202H334"/>
+      <path d="M522 202H610"/>
+      <path d="M798 202H886"/>
+      <path d="M704 268V350"/>
+      <path d="M980 268V350"/>
+    </g>
+    <path d="M151 268V315H610V288" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
+    <path d="M704 350V289" fill="none" stroke="#22D3EE" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
+
+    <!-- Caller -->
+    <rect x="56" y="136" width="190" height="132" rx="12" fill="#0F1D2E" stroke="#94A3B8" stroke-width="2"/>
+    <text x="76" y="168" fill="#CBD5E1" font-size="13" font-weight="700">CALLER</text>
+    <text x="76" y="197" fill="#E2E8F0" font-size="16">facts · documents</text>
+    <text x="76" y="221" fill="#E2E8F0" font-size="16">messages · episodes</text>
+    <text x="76" y="248" fill="#94A3B8" font-size="12">compatibility or governed API</text>
+
+    <text x="270" y="337" fill="#94A3B8" font-size="11">compatibility API / ungoverned</text>
+
+    <!-- Authority -->
+    <rect x="334" y="136" width="188" height="132" rx="12" fill="#152315" stroke="#84CC16" stroke-width="2"/>
+    <text x="354" y="168" fill="#BEF264" font-size="13" font-weight="700">GOVERNED SURFACE</text>
+    <text x="354" y="198" fill="#ECFCCB" font-size="16">MemoryAuthority</text>
+    <text x="354" y="222" fill="#D9F99D" font-size="13">origin · permits · transitions</text>
+    <text x="354" y="248" fill="#94A3B8" font-size="12">trusted issuer required</text>
+
+    <!-- SQLite -->
+    <rect x="610" y="124" width="188" height="164" rx="12" fill="#10271F" stroke="#34D399" stroke-width="2.5"/>
+    <text x="630" y="158" fill="#6EE7B7" font-size="13" font-weight="700">AUTHORITATIVE</text>
+    <text x="630" y="191" fill="#ECFDF5" font-size="20" font-weight="700">SQLite + WAL</text>
+    <text x="630" y="220" fill="#A7F3D0" font-size="13">content · time · lineage</text>
+    <text x="630" y="244" fill="#A7F3D0" font-size="13">raw f32 · ledgers · receipts</text>
+    <text x="630" y="269" fill="#94A3B8" font-size="12">source of truth</text>
+
+    <!-- Retrieval -->
+    <rect x="886" y="136" width="244" height="132" rx="12" fill="#102333" stroke="#22D3EE" stroke-width="2"/>
+    <text x="906" y="168" fill="#67E8F9" font-size="13" font-weight="700">RETRIEVAL</text>
+    <text x="906" y="198" fill="#ECFEFF" font-size="16">FTS5 + vector candidates</text>
+    <text x="906" y="222" fill="#CFFAFE" font-size="13">fact state view · RRF · dedupe</text>
+    <text x="906" y="248" fill="#94A3B8" font-size="12">actual route recorded when receipted</text>
+
+    <!-- Projections -->
+    <rect x="610" y="350" width="188" height="128" rx="12" fill="#122433" stroke="#38BDF8" stroke-width="2" stroke-dasharray="7 6"/>
+    <text x="630" y="382" fill="#7DD3FC" font-size="13" font-weight="700">REBUILDABLE</text>
+    <text x="630" y="412" fill="#E0F2FE" font-size="16">FTS · vector sidecar</text>
+    <text x="630" y="436" fill="#BAE6FD" font-size="13">sparse · derived artifacts</text>
+    <text x="630" y="461" fill="#94A3B8" font-size="12">acceleration, never canonical</text>
+
+    <!-- Receipt -->
+    <rect x="886" y="350" width="244" height="128" rx="12" fill="#2A1328" stroke="#F472B6" stroke-width="2"/>
+    <text x="906" y="382" fill="#F9A8D4" font-size="13" font-weight="700">OPTIONAL WITNESS</text>
+    <text x="906" y="412" fill="#FCE7F3" font-size="16">VectorSearchReceiptV1</text>
+    <text x="906" y="436" fill="#FBCFE8" font-size="13">backend · exactness · fallback</text>
+    <text x="906" y="461" fill="#94A3B8" font-size="12">execution evidence, not truth proof</text>
+
+    <!-- External boundary -->
+    <rect x="56" y="522" width="1074" height="62" rx="12" fill="#121A27" stroke="#FBBF24" stroke-width="1.5"/>
+    <text x="78" y="548" fill="#FDE68A" font-size="13" font-weight="700">OUTSIDE THIS CRATE</text>
+    <text x="78" y="570" fill="#CBD5E1" font-size="13">claim-ledger verification · MCP transport policy · agent framing · downstream action authorization</text>
+
+    <!-- Legend -->
+    <g font-size="11">
+      <circle cx="68" cy="612" r="5" fill="#34D399"/><text x="80" y="616" fill="#94A3B8">canonical</text>
+      <circle cx="178" cy="612" r="5" fill="#22D3EE"/><text x="190" y="616" fill="#94A3B8">derived</text>
+      <circle cx="274" cy="612" r="5" fill="#F472B6"/><text x="286" y="616" fill="#94A3B8">receipt</text>
+      <circle cx="370" cy="612" r="5" fill="#FBBF24"/><text x="382" y="616" fill="#94A3B8">external authority boundary</text>
+    </g>
+  </g>
+</svg>

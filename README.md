@@ -1,80 +1,64 @@
 # semantic-memory
 
-`semantic-memory` is a local-first Rust library for durable hybrid retrieval. SQLite is the authoritative store for facts, documents and chunks, conversations, episodes, embeddings, search receipts, and optional sparse representations. Vector indexes and derived vector artifacts accelerate retrieval; they do not become the source of truth and can be reconciled from SQLite.
+Local-first hybrid retrieval for Rust, with SQLite as authoritative state and receipts for execution evidence.
 
-The normal retrieval API searches facts, document chunks, and episodes. Conversation search is available separately, or messages can be selected explicitly with `SearchSourceType::Messages`.
+![semantic-memory system and trust boundaries](docs/assets/semantic-memory-boundaries.svg)
 
-## Production retrieval
+`semantic-memory` stores facts, documents and chunks, conversations, episodes, embeddings, temporal state, authority ledgers, and search receipts in SQLite. FTS indexes, vector sidecars, sparse representations, and compressed candidate artifacts accelerate retrieval; they do not replace canonical state and can be reconciled from SQLite.
 
-For a hybrid query, the active pipeline is:
+> **Status:** research-grade library with a tested default retrieval contract. Feature-gated research and orchestration modules are not implicit guarantees of `MemoryStore::search()` behavior.
 
-```mermaid
-flowchart LR
-    Q[Query] --> E[Embed query]
-    Q --> F[FTS5 BM25]
-    E --> D[Dense vector candidates]
-    E -. sparse enabled and representation available .-> S[Durable sparse candidates]
-    D -. matryoshka feature and candidate_dims .-> M[Coarse prefix candidates]
-    M --> R[Full-dimension f32 rerank]
-    F --> X[Ranked candidate lists]
-    D --> X
-    S --> X
-    R --> X
-    X --> RRF[Weighted reciprocal-rank fusion]
-    RRF --> V[Visibility, deduplication, diversity]
-    V --> O[Results and optional receipt]
+| Contract fact | Current value |
+| --- | --- |
+| Crate version | `0.5.10` |
+| Minimum Rust version | `1.75` |
+| Default Cargo feature | `usearch-backend` |
+| Maximum schema version | `36` |
+| License | Apache-2.0 |
+
+## What the crate owns
+
+| Surface | Contract |
+| --- | --- |
+| Canonical storage | SQLite content, raw f32 embeddings, temporal fields, lineage, authority records, and durable receipts |
+| Default retrieval | FTS5/BM25 plus dense-vector candidates, weighted reciprocal-rank fusion, current-state visibility, deduplication, and diversity |
+| State semantics | Current, historical, and supersession views for facts, plus separately invoked transition and state-resolution APIs |
+| Recovery | Integrity checks and reconciliation from canonical SQLite state |
+| Governed mutation | Capability-gated append, supersession, redaction, forgetting, export, and replay through `MemoryStore::authority()` |
+| Execution evidence | Optional search receipts that disclose backend, exactness, candidates, fallback, degradation, and result identity |
+
+## What the crate does not own
+
+- **Claim truth.** A search receipt records retrieval execution; it is not a claim-ledger verification decision.
+- **Agent action permission.** Recall authority does not grant permission to assert a memory or act on it.
+- **MCP transport policy.** See [`semantic-memory-mcp`](https://github.com/RecursiveIntell/semantic-memory-mcp) for transport, tool profiles, and application-level authority composition.
+- **Automatic activation of every feature.** Compiling routing, graph, topology, community, decoder, or compression modules does not make the normal search path invoke them.
+- **Native SPLADE or native ColBERT.** Dense-derived sparse values and the current late-interaction proxy must not be presented as those systems.
+
+## Install
+
+```toml
+[dependencies]
+semantic-memory = "0.5.10"
+tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-The baseline lanes are SQLite FTS5/BM25 and dense-vector retrieval. Their ranked lists are fused with weighted Reciprocal Rank Fusion (RRF). `SearchConfig` controls the BM25, dense-vector, sparse, and recency weights, the RRF constant, candidate pool, minimum similarity, and result limits. `search_explained()` and `search_explained_with_context()` return the live per-result ranks, raw scores, lane contributions, configured weights, and whether a vector result was reranked from authoritative f32 data.
+The default build enables `usearch-backend`. For an exact pure-Rust backend without the C++ bridge:
 
-In the standard `MemoryStore` pipeline, the disabled derived-backend policy uses authoritative brute-force f32 scoring and reports `brute_force_f32`. The default Cargo feature, `usearch-backend`, supplies the default implementation of the public `VectorIndex` API; it does not by itself make ordinary `MemoryStore::search` approximate. With the `hnsw` feature, the store can use HNSW candidates unless `ExactnessProfile::PreferExact` requests the exact reference path. The receipt records the backend actually used, candidate counts, fallback/degradation information, and whether exact f32 reranking occurred. Derived TurboQuant and proveKV paths are candidate-only policies and require exact f32 rerank.
-
-### Optional retrieval lanes and stages
-
-- **Durable sparse lane.** The sparse lane participates only when `SearchConfig::sparse_weight > 0` and the query embedder supplies sparse weights (or the caller has explicitly enabled dense-derived sparse weights). It reads persisted sparse vectors, ranks by sparse dot product, and adds a third RRF contribution. Dense-derived sparse weights are deliberately opt-in and are not native SPLADE. Receipts record sparse enablement, representation labels, candidate counts, and sparse ranks.
-- **Matryoshka coarse/full rerank.** With the `matryoshka` feature and a valid `candidate_dims` setting, the pipeline retrieves coarse candidates from a truncated query embedding, then reranks them using the full embedding against SQLite f32 rows. If the coarse stage produces no usable candidates, the full-dimension outcome is retained and the condition is recorded as a degradation. Without that feature, the configured `candidate_dims` value does not activate this stage.
-- **Late interaction.** The `late-interaction` feature exposes ColBERT-style primitives. The production hybrid branch only fuses a late-interaction lane when that feature is compiled, the sparse lane is not active, and `late_interaction_weight > 0`. Its current source path computes a proxy from dense candidate vectors; it does not make token-level, persistent multi-vector retrieval available through `MemoryStore::search`. Do not describe this crate as providing native ColBERT retrieval unless an application wires such representations and indexes itself.
-- **Routing.** The `routing` feature provides deterministic query profiling and a `RetrievalRouter` that can choose BM25, dense/rerank, graph, decoder, and discord stages or decline retrieval for a short query. It is an orchestration module: the standard `MemoryStore::search*` APIs do not automatically invoke it. Applications or integration code must apply routing decisions and ensure the corresponding feature-gated stage exists.
-
-## Durable state and recovery
-
-```mermaid
-flowchart TB
-    W[Write: fact, document/chunk, message, or episode] --> SQL[(SQLite authoritative state)]
-    SQL --> FTS[FTS5 indexes]
-    SQL --> E[Raw f32 embeddings]
-    E --> VS[Vector sidecar or derived candidate artifact]
-    SQL --> SV[V36 sparse_vectors, when present]
-    Q[Context-aware search] --> SR[V18 search receipt]
-    SR --> RI[V35 replay_inputs, only with StoreInputs]
-    Q --> SQL
-    VS --> Q
-    SV --> Q
-    SQL -. reconcile/rebuild .-> FTS
-    SQL -. reconcile/rebuild .-> VS
+```toml
+[dependencies]
+semantic-memory = { version = "0.5.10", default-features = false, features = ["brute-force"] }
 ```
-
-The store uses SQLite with WAL and pooled readers; writes serialize through a writer connection. Sidecar mutations are journaled so a committed SQLite write remains durable even if its acceleration-sidecar update is pending. `verify_integrity(VerifyMode::Quick | VerifyMode::Full)` reports malformed or drifting stored/indexed state. `reconcile(ReconcileAction::ReportOnly | ReconcileAction::RebuildFts | ReconcileAction::ReEmbed)` can report, rebuild FTS, or re-embed authoritative rows.
-
-### Receipts, replay, and the V35 privacy boundary
-
-Context-aware search APIs accept `SearchContext`. With `ReceiptMode::ExplainOnly` or `ReceiptMode::ReturnReceipt`, the store persists a `VectorSearchReceiptV1` containing a request/receipt ID, deterministic evaluation time, search profile, query-embedding digest, backend and exactness evidence, candidate/result IDs, fallbacks, degradations, and sparse-lane evidence where applicable. The persisted receipt receives a canonical BLAKE3 digest.
-
-V35 adds the `replay_inputs` table. Query text, namespace filters, and source-type filters are **not** retained by default: `ReplayMode::NoReplay` leaves the receipt with digests and requires the caller to supply inputs to `replay_search_receipt`. `ReplayMode::StoreInputs` is an explicit privacy boundary that stores those inputs alongside the receipt, enabling `replay_search_from_stored_inputs`. A receipt therefore demonstrates the recorded execution evidence; it does not imply that complete replay inputs were retained.
-
-V36 adds `sparse_vectors`, keyed by canonical item IDs such as `fact:<id>` and `chunk:<id>`. It persists entries and a representation label, is updated during embedding/re-embedding flows, and has cleanup triggers for deleted facts, chunks, messages, and episodes. The sparse lane is still disabled unless its search configuration and a usable query representation enable it.
-
-Receipts can show whether a result came from an approximate candidate backend, a brute-force f32 path, or a candidate path followed by exact rerank. They are execution evidence, not a claim-ledger trust decision: `semantic-memory` does not own claim-ledger trust. The MCP integration is responsible for that boundary.
 
 ## Quick start
 
-This example uses the deterministic `MockEmbedder`, so it does not require an embedding service. `MemoryStore::open()` instead selects `OllamaEmbedder` unless the crate is compiled with `candle-embedder`, in which case it selects `CandleEmbedder`.
+This example uses the deterministic `MockEmbedder`, so it needs no network service or downloaded model.
 
 ```rust
 use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, MockEmbedder};
 use std::path::PathBuf;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), semantic_memory::MemoryError> {
     let config = MemoryConfig {
         base_dir: PathBuf::from("memory-example"),
@@ -84,97 +68,202 @@ async fn main() -> Result<(), semantic_memory::MemoryError> {
         },
         ..Default::default()
     };
-    let store = MemoryStore::open_with_embedder(config, Box::new(MockEmbedder::new(768)))?;
+
+    let store = MemoryStore::open_with_embedder(
+        config,
+        Box::new(MockEmbedder::new(768)),
+    )?;
 
     store
         .add_fact("general", "Rust was first released in 2015", None, None)
         .await?;
 
     let results = store
-        .search("when was Rust released", Some(5), Some(&["general"]), None)
+        .search(
+            "when was Rust released",
+            Some(5),
+            Some(&["general"]),
+            None,
+        )
         .await?;
+
     for result in results {
         println!("{:.4} {}", result.score, result.content);
     }
+
     Ok(())
 }
 ```
 
-To receive and retain a replay-capable receipt, opt in at the call site:
+`MemoryStore::open()` selects `OllamaEmbedder` unless the crate is compiled with `candle-embedder`, in which case it selects `CandleEmbedder`. Use `open_with_embedder` to inject another provider or a deterministic fixture.
+
+## Choose the retrieval API deliberately
+
+| Need | API | Notes |
+| --- | --- | --- |
+| Default hybrid retrieval | `search` | Facts, document chunks, and searchable episodes; current state; receipt disabled by default |
+| Explicit context and receipt | `search_with_context` | Caller-supplied or wall-clock-initialized evaluation time, receipt/replay mode, exactness profile, request identity, and budgets |
+| Historical or superseded view | `search_with_view` | Caller chooses `StateView`; never relabels a current search as historical |
+| Lexical only | `search_fts_only` / `search_fts_only_with_context` | No query embedding required |
+| Vector only | `search_vector_only` / `search_vector_only_with_context` | Supports `ExactnessProfile::PreferExact` through context |
+| Per-lane score evidence | `search_explained` / `search_explained_with_context` | Returns BM25, vector, sparse, and recency fields with RRF contributions; the late-interaction proxy is not separately attributed |
+| Conversation retrieval | `search_conversations` | Separate session/message search surface |
+| Governed read/search | `MemoryStore::authority()` | Enforces origin and capability contracts independently of relevance score |
+
+Messages are not part of the normal hybrid source set unless selected with `SearchSourceType::Messages`. Conversation search is available separately.
+
+## Default hybrid retrieval contract
+
+![semantic-memory default hybrid retrieval pipeline](docs/assets/retrieval-pipeline.svg)
+
+The baseline lanes are SQLite FTS5/BM25 and dense-vector retrieval. Their ranked lists are fused with weighted Reciprocal Rank Fusion (RRF). `SearchConfig` controls lane weights, RRF constant, candidate pool size, minimum similarity, result limits, recency behavior, and optional stages.
+
+### Dense retrieval and exactness
+
+The active backend is a runtime fact, not a README promise. When receipts are enabled, `candidate_backend`, `fallback`, `exact_rerank`, candidate counts, and `degradations` report what actually happened.
+
+- `DerivedVectorBackendPolicy::Disabled` selects the non-derived vector policy. With `hnsw` compiled, ordinary search can use HNSW candidates; without that candidate path it uses authoritative SQLite-backed f32 scoring.
+- `ExactnessProfile::PreferExact` requests the exact reference path.
+- HNSW can supply candidates when the `hnsw` feature is compiled and exactness does not require the reference path.
+- TurboQuant and proveKV/poly-kv policies are candidate-only. Their final ranking requires authoritative f32 reranking.
+- The default `usearch-backend` feature supplies the public `VectorIndex` implementation; enabling it does not by itself make ordinary `MemoryStore::search()` approximate.
+- The `brute-force` feature satisfies the crate's backend feature guard for ordinary exact search; it is not a separate implementation of `VectorIndex::new()`.
+
+### Optional lanes and stages
+
+| Stage | Activation | Boundaries |
+| --- | --- | --- |
+| Durable sparse | `sparse_weight > 0` plus a usable query sparse representation | Dense-derived sparse is opt-in and is not native SPLADE |
+| Matryoshka coarse/full rerank | `matryoshka`, valid `candidate_dims`, compatible reduced-dimension representation, and non-`PreferExact` context | A separate truncated-query candidate attempt may replace the full result only after exact f32 rerank; it is off by default, and not every failed attempt is currently surfaced as a degradation |
+| Late interaction | `late-interaction` plus positive weight, when sparse is inactive | The non-HNSW detailed hybrid branch applies a proxy over single dense vectors; it is not persistent token-level ColBERT and is not fused by the HNSW hybrid branch |
+| Routing | `routing` feature and explicit application integration | The router can recommend stages; `search*` does not invoke it automatically |
+| Recency | Configured half-life and weight | Evaluation-time semantics disable ordinary cache reuse |
+| Result compression | Explicit `compress_results` configuration | Compressed text is a derived response projection, not replacement source content |
+
+### Cache boundary
+
+Result caching is intentionally narrow. Only ordinary, unfiltered, current-state searches with default exactness, no receipt, no replay, no request/trace/budget identity, and no recency half-life are cache eligible. Historical, explained, exact, replay-bearing, receipt-bearing, filtered, or governed requests execute independently. Cache entries are also bound to the authority retrieval epoch.
+
+## Durability, recovery, and replay privacy
+
+![semantic-memory durability and recovery model](docs/assets/durability-recovery.svg)
+
+The store uses SQLite WAL with pooled readers and a serialized writer. Under the `hnsw` feature, pending sidecar operations are journaled and replayed so a committed SQLite write remains authoritative while HNSW synchronization is pending. The default standalone usearch `VectorIndex` does not share that `MemoryStore` HNSW lifecycle.
+
+- `verify_integrity(VerifyMode::Quick | VerifyMode::Full)` reports malformed or drifting state.
+- `reconcile(ReconcileAction::ReportOnly | ReconcileAction::RebuildFts | ReconcileAction::ReEmbed)` reports or rebuilds derived state from SQLite.
+- Sidecar and derived-artifact failures must not silently become canonical state.
+- Search receipts receive canonical BLAKE3 digests when persisted.
+
+### Receipts and replay
 
 ```rust
-use semantic_memory::{ReceiptMode, ReplayMode, SearchContext};
+use semantic_memory::{MemoryStore, ReceiptMode, ReplayMode, SearchContext};
 
-let context = SearchContext {
-    receipt_mode: ReceiptMode::ReturnReceipt,
-    replay_mode: ReplayMode::StoreInputs,
-    ..SearchContext::default()
-};
-let response = store
-    .search_with_context("when was Rust released", Some(5), None, None, context)
-    .await?;
+async fn replayable_search(store: &MemoryStore) -> Result<(), semantic_memory::MemoryError> {
+    let context = SearchContext {
+        receipt_mode: ReceiptMode::ReturnReceipt,
+        replay_mode: ReplayMode::StoreInputs,
+        ..SearchContext::default()
+    };
 
-if let Some(receipt) = response.receipt {
-    let report = store
-        .replay_search_from_stored_inputs(&receipt.receipt_id)
+    let response = store
+        .search_with_context(
+            "when was Rust released",
+            Some(5),
+            None,
+            None,
+            context,
+        )
         .await?;
-    println!("same result IDs: {}", report.result_ids_match);
+
+    if let Some(receipt) = response.receipt {
+        let report = store
+            .replay_search_from_stored_inputs(&receipt.receipt_id)
+            .await?;
+        println!("same result IDs: {}", report.result_ids_match);
+    }
+
+    Ok(())
 }
 ```
 
-Use `search_fts_only`, `search_vector_only`, and their `_with_context` variants when a single retrieval family is required. Use `search_explained` or `search_explained_with_context` when component score evidence is required.
+`ReplayMode::NoReplay` is the default privacy boundary. Query text, namespace filters, and source-type filters are not retained; receipts keep their digests. `ReplayMode::StoreInputs` explicitly retains those inputs in the V35 `replay_inputs` table and enables `replay_search_from_stored_inputs`.
+
+A receipt can establish that a named backend, exactness route, fallback, degradation set, and pre-visibility result identity were recorded. Receipt result IDs are assembled before later `StateView` and forgetting filters, so do not equate them universally with the final governed caller-visible list. A receipt does **not** establish that a result is true, safe to assert, or authorized for downstream action.
+
+## Temporal truth and governed mutation
+
+Normal fact reads use `StateView::Current`, which excludes superseded facts. Historical fact reconstruction is explicit through `StateView` and bitemporal fields. Chunks and messages do not receive an equivalent authority-state filter in the normal hybrid result pass, while episodes and imported projections use their own validity/invalidation handling. If the fact store cannot establish one coherent current head, state-aware resolution fails closed rather than selecting an arbitrary version.
+
+`MemoryStore::authority()` exposes a capability-gated surface for trusted integrations. Governed mutations require an authority permit issued inside the trust boundary; ordinary downstream code is not intended to mint its own authority. The surface covers:
+
+- append and supersession;
+- redaction and selective forgetting;
+- governed direct reads, search, and graph traversal;
+- export and replay;
+- immutable origin-authority labels and revocations;
+- transition verification, quarantine, and rollback references where declared by the operation.
+
+The compatibility API remains available for ordinary local use. Raw compatibility reads and writes are not equivalent to governed reads: they do not apply the same origin, revocation, scope, purpose, and state decisions. Do not infer a typed transition receipt from a method unless its return contract declares one. Graph utility operations return domain objects and do not universally produce governance receipts.
+
+Hard delete and in-place truth mutation are disabled by default. The `admin-ops` feature exposes administrative operations; use supersession for normal correction workflows.
+
+## Embedding identity and purpose
+
+The committed embedding contract distinguishes `EmbeddingPurpose::Query` from `EmbeddingPurpose::Document`. Query and document text receive different role prefixes, and purpose/profile identity participates in embedding caches and durable dirty-metadata checks. Custom embedders, imported vectors, re-embedding workflows, and benchmark fixtures must preserve that asymmetry or explicitly disclose a different profile.
+
+The SciFact fixture records its own supplied vectors and refuses unknown query text so evaluation cannot silently cross into another embedding provider.
 
 ## Cargo features
 
-The default feature set is `usearch-backend`. At least one vector backend (`usearch-backend`, `hnsw`, or `brute-force`) must be enabled.
+At least one vector backend (`usearch-backend`, `hnsw`, or `brute-force`) must be enabled.
+
+### Storage, retrieval, and embedding
 
 | Feature | Current effect |
 | --- | --- |
-| `usearch-backend` | Default implementation of the public `VectorIndex` backend. |
-| `hnsw` | Alternative HNSW backend. |
-| `brute-force` | Pure-Rust exact brute-force backend. |
-| `candle-embedder` | Enables the in-process Candle embedder; `MemoryStore::open()` selects it. |
-| `turbo-quant-codec` | Enables TurboQuant derived-vector artifacts and the candidate-only TurboQuant policy. |
-| `poly-kv-codec` | Enables the proveKV/poly-kv candidate-only policy. |
-| `matryoshka` | Enables the coarse truncated-embedding/full-rerank stage. |
-| `late-interaction` | Exposes late-interaction primitives and permits the guarded proxy fusion branch. |
-| `routing` | Exposes adaptive query-routing types and logic. |
-| `benchmark` | Enables the routing benchmark harness; depends on `routing`. |
-| `rl-routing` | Enables receipt-driven routing-policy persistence; depends on `routing`. |
-| `provenance` | Enables semiring provenance storage. |
-| `temporal` | Enables temporal field provenance; depends on `provenance`. |
-| `multiscale` | Enables the staged multiscale scheduling module. |
-| `discord` | Enables second-order graph-neighbor retrieval. |
-| `decoder` | Enables contradiction decoder and related detection modules. |
-| `subtraction` | Enables lawful subtraction. |
-| `compression-governor` | Enables vector-importance compression governance. |
-| `topology` | Enables persistent-homology/topological analysis. |
-| `community` | Enables community detection. |
-| `subgraph-pruning` | Enables reasoning-subgraph pruning; depends on `subtraction`. |
-| `integration` | Enables the cross-feature integration set: provenance, temporal, multiscale, discord, decoder, subtraction, compression-governor, routing, topology, community, subgraph-pruning, and matryoshka. |
-| `admin-ops` | Enables administrative hard-delete/update operations. |
-| `testing` | Enables integration tests that are explicitly gated in Cargo metadata. |
+| `default` | Enables `usearch-backend` |
+| `usearch-backend` | Default public `VectorIndex` implementation through usearch 2.25 |
+| `hnsw` | Opt-in legacy `hnsw_rs` candidate backend |
+| `brute-force` | Enables ordinary pure-Rust exact f32 search without an ANN dependency; not a standalone `VectorIndex::new()` implementation |
+| `candle-embedder` | In-process Candle embedder; changes the `MemoryStore::open()` default |
+| `turbo-quant-codec` | TurboQuant derived artifacts and candidate-only policy |
+| `poly-kv-codec` | proveKV/poly-kv candidate-only pool policy |
+| `matryoshka` | Coarse truncated-embedding candidate stage followed by full rerank |
+| `late-interaction` | Late-interaction primitives and the guarded proxy fusion branch |
 
-Features in the last two groups are not evidence that a standard `search()` call executes their research or orchestration algorithms. Use the production pipeline above as the contract for normal retrieval, and explicitly integrate feature-gated modules where desired.
+### Governance and operations
 
-## Governed memory capabilities
+| Feature | Current effect |
+| --- | --- |
+| `provenance` | Semiring provenance storage |
+| `temporal` | Temporal field provenance; depends on `provenance` |
+| `subtraction` | Lawful subtraction engine |
+| `subgraph-pruning` | Reasoning-subgraph pruning; depends on `subtraction` |
+| `compression-governor` | Importance-based compression governance |
+| `admin-ops` | Administrative hard-delete and in-place update operations |
+| `testing` | Explicitly gated conformance and authority test targets |
 
-Beyond the compatibility search/write API, `MemoryStore::authority()` exposes the governed authority surface. It supports append, supersede, redact, selective forgetting, governed direct reads/search/graph traversal, export, and replay. Origin-authority labels and revocations are immutable ledgered state; recall authority does not imply permission to assert or act on recalled content.
+### Research and orchestration
 
-Additional public subsystems are intentionally separate from the default hybrid-search pipeline:
+| Feature | Current effect |
+| --- | --- |
+| `routing` | Deterministic query profiling and route recommendations |
+| `benchmark` | Routing benchmark harness; depends on `routing` |
+| `rl-routing` | Receipt-driven routing-policy persistence; depends on `routing` |
+| `multiscale` | Staged multiscale retrieval scheduling |
+| `discord` | Second-order graph-neighbor retrieval |
+| `decoder` | Contradiction decoder and related analysis |
+| `topology` | Persistent-homology/topological analysis |
+| `community` | Community detection |
+| `integration` | Compile-time bundle of cross-feature modules; not a runtime switch for `search()` |
 
-- **State-aware retrieval:** `StateView`, historical/transition/trajectory resolution, premise status, answer disposition, dependency-state receipts, and governed `resolve_memory` variants.
-- **Evidence-gap retrieval:** bounded evidence packets, terminal outcomes, ablation receipts, and state-aware reranking.
-- **Selective forgetting:** canonical/derived closure planning, explicit governed elevation, and immutable forgetting receipts.
-- **Shadow policies:** proposals, evaluation windows, promotion gates, active policy versions, and promotion receipts.
-- **Procedural memory:** governed procedure artifacts, validation, retrieval, lifecycle permits, and test receipts.
-- **Projection import V3:** governed import and reads for projected claims, relations, episodes, entities, and evidence. Legacy V10 import APIs are deprecated compatibility surfaces.
+A feature flag proves that code is compiled, not that a default search request exercised it. Use receipts, explained results, tests, or application-level traces for runtime claims.
 
-These APIs have their own authority and receipt contracts. Utility operations such as adding a graph edge return their domain objects and do not universally emit typed receipts; do not generalize receipt guarantees beyond the APIs that declare them.
+## Selected schema milestones, V18–V36
 
-## Schema history
-
-`MAX_SCHEMA_VERSION` is 36. Migrations are monotonic; feature-gated Rust APIs may be disabled even when their compatibility tables/columns exist.
+`MAX_SCHEMA_VERSION` is `36`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
 
 | Version | Durable addition |
 | ---: | --- |
@@ -195,26 +284,69 @@ These APIs have their own authority and receipt contracts. Utility operations su
 | V35 | Opt-in replay inputs |
 | V36 | Sparse vectors and deletion cleanup triggers |
 
-## SciFact evaluation
+Projection-import compatibility APIs are migration surfaces. New integrations should use the current batch-import seam and preserve source export time, transformation time, importer commit time, scope, and temporal fields separately.
 
-The canonical [BEIR SciFact evaluation guide](docs/evaluation/scifact/README.md) evaluates the production FTS-only, exact-f32 vector-only, and baseline hybrid APIs against the official SciFact test corpus. In its frozen held-out run, it measured:
+## Evaluation
 
-| Mode | nDCG@10 | Recall@10 | Mean latency |
-| --- | ---: | ---: | ---: |
-| FTS-only | 0.631895 | 0.743667 | 9.726 ms |
-| Vector-only | 0.604407 | 0.744000 | 15.700 ms |
-| Hybrid | 0.673977 | 0.811750 | 23.845 ms |
+![BEIR SciFact evaluation workflow](docs/assets/scifact-evaluation.svg)
 
-These measurements are scoped to that executable, the recorded corpus, all-minilm dense embeddings, persisted store, frozen configuration, and deterministic held-out split. They are retrieval-quality and local-latency evidence, not a claim of general-domain superiority. The canonical baseline disables dense-derived sparse retrieval, proxy late interaction, Matryoshka candidate truncation, recency, graph retrieval, and derived-vector candidate backends; SciFact ingestion creates no graph edges. It therefore does not evaluate native sparse/SPLADE, token-level late interaction, Matryoshka quality, graph retrieval, or model quality.
+The [BEIR SciFact evaluation guide](docs/evaluation/scifact/README.md) runs the checked-in retrieval APIs in three frozen modes:
 
-The evaluator emits raw per-query JSONL plus aggregate, provenance, backend, and exactness receipts. Its independent validator recomputes metrics and checks split membership, hashes, rankings, result distributions, and executable identity when available. Freeze configuration on the calibration split before interpreting held-out results.
+1. FTS-only;
+2. vector-only with `PreferExact`;
+3. baseline hybrid with explained results.
 
-## Production-wired and feature-gated surfaces
+The repository includes the builder, runner, independent validator, and tests. It does **not** check in a frozen score artifact, so this README intentionally makes no numeric quality or latency claim. Publish measurements only with the raw per-query JSONL, aggregate receipt, corpus hashes, executable identity, configuration, split definition, and validator result from the same run.
 
-Production-wired storage and retrieval include SQLite/FTS5, durable raw embeddings, configured vector backends, hybrid RRF, result explanation, context-aware receipts and replay, sparse persistence and its opt-in lane, sidecar reconciliation, graph storage/view, and bitemporal/state visibility filtering.
+The SciFact harness does not evaluate general-domain quality, graph retrieval, native sparse/SPLADE retrieval, token-level late interaction, Matryoshka quality, or model quality.
 
-Feature-gated or research/orchestration surfaces include routing and routing benchmarks, RL routing, multiscale scheduling, discord retrieval, decoder/contradiction workflows, provenance and temporal modules, subtraction and subgraph pruning, compression governance, topology, community detection, Matryoshka, late-interaction primitives, and optional vector codecs. Their presence in the crate does not silently change the normal retrieval contract.
+## Verification
 
-## Examples and evaluation harness
+From the workspace root:
 
-The `examples/` directory contains basic search, conversation memory, hybrid-retrieval recall-gate, benchmark, SciFact evaluator, index rebuild, and codec benchmark examples. The SciFact runner and its receipt validator are documented in [docs/evaluation/scifact](docs/evaluation/scifact/README.md).
+```bash
+cargo fmt --package semantic-memory -- --check
+cargo check -p semantic-memory --all-targets
+cargo test -p semantic-memory --all-targets
+cargo clippy -p semantic-memory --all-targets -- -D warnings
+```
+
+Backend-specific examples:
+
+```bash
+cargo test -p semantic-memory --no-default-features --features brute-force --all-targets
+cargo test -p semantic-memory --no-default-features --features hnsw --all-targets --no-run
+```
+
+## Examples
+
+| Example | Purpose |
+| --- | --- |
+| `basic_search.rs` | Minimal fact insertion and hybrid retrieval |
+| `conversation_memory.rs` | Session/message persistence and recall |
+| `hybrid_retrieval_recall_gate.rs` | Hybrid retrieval with an explicit recall gate |
+| `scifact_retrieval_eval.rs` | Receipt-bearing official SciFact evaluation |
+| `rebuild_hnsw.rs` | HNSW rebuild flow |
+| `real_bench.rs` / `run_bench.rs` | Local benchmark harnesses; results are environment-scoped |
+| `turboquant_benchmark_gate.rs` | Candidate-codec benchmark gate |
+
+## Public claim boundary
+
+Defensible from current source and tests:
+
+- local-first SQLite-backed authoritative state;
+- rebuildable lexical/vector/sparse/derived projections;
+- default hybrid retrieval with explained score components;
+- explicit current/historical fact views;
+- optional durable search receipts and opt-in replay inputs;
+- capability-gated authority APIs and administrative-operation feature gates;
+- experimental and feature-gated retrieval/governance modules.
+
+Not established merely by this README or by compiling the crate:
+
+- production certification or secure autonomous administration;
+- universal truth verification;
+- permission to act on recalled content;
+- superiority over other retrieval systems;
+- native SPLADE, native ColBERT, or universal lossless compression;
+- performance outside a named, reproducible benchmark receipt.
