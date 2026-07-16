@@ -102,14 +102,12 @@ fn make_multi_record_envelope(id: &str) -> ImportEnvelope {
 
 // ─── Envelope Validation Tests ─────────────────────────────────
 
-#[tokio::test]
-async fn rejects_empty_envelope_id() {
-    let (store, _dir) = test_store();
-    let mut env = make_envelope("", "ns");
-    env.envelope_id = EnvelopeId::new("");
-    let err = store.import_envelope(&env).await.unwrap_err();
-    assert_eq!(err.kind(), "import_invalid");
-    assert!(err.to_string().contains("envelope_id"));
+#[test]
+#[should_panic(expected = "invalid ID; use a lifecycle constructor: Empty")]
+fn rejects_empty_envelope_id() {
+    // EnvelopeId is an opaque lifecycle ID: malformed empty identifiers are
+    // rejected at construction and cannot reach the legacy importer.
+    let _ = EnvelopeId::new("");
 }
 
 #[tokio::test]
@@ -1114,7 +1112,8 @@ async fn canonical_batch_reports_historical_digest_migration_conflict_explicitly
     assert_eq!(imported.status, "complete");
 
     let mut replay = make_canonical_batch_value("cb-migrate", "claim-migrate", "Migration content");
-    replay["content_digest"] = serde_json::json!("digest-cb-migrate-historical");
+    let historical_digest = ContentDigest::compute_str("digest-cb-migrate-historical");
+    replay["content_digest"] = serde_json::json!(historical_digest);
 
     let err = store
         .import_projection_batch_json_compat(&replay.to_string())
@@ -1131,7 +1130,7 @@ async fn canonical_batch_reports_historical_digest_migration_conflict_explicitly
         .iter()
         .find(|entry| {
             entry.source_envelope_id == "cb-migrate"
-                && entry.content_digest == "digest-cb-migrate-historical"
+                && entry.content_digest == historical_digest.hex()
         })
         .expect("historical replay should leave an explicit failed receipt");
     assert_eq!(failed.status, "failed");
@@ -1152,7 +1151,7 @@ async fn canonical_batch_rollback_on_second_bad_record() {
         "source_envelope_id": "cb-rollback",
         "schema_version": "projection_import_batch_v1",
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-rollback",
+        "content_digest": ContentDigest::compute_str("digest-rollback"),
         "source_authority": "forge",
         "scope_key": { "namespace": "canonical-ns" },
         "records": [
@@ -1443,7 +1442,7 @@ async fn canonical_batch_rejects_overlapping_preferred_claims_in_batch() {
         "source_envelope_id": "cb-pref-overlap-batch",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-pref-overlap-batch",
+        "content_digest": ContentDigest::compute_str("digest-pref-overlap-batch"),
         "source_authority": "forge",
         "scope_key": { "namespace": "canonical-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -1509,7 +1508,7 @@ async fn canonical_batch_rejects_overlapping_preferred_claim_with_existing_prefe
         "source_envelope_id": "cb-pref-existing-base",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-pref-existing-base",
+        "content_digest": ContentDigest::compute_str("digest-pref-existing-base"),
         "source_authority": "forge",
         "scope_key": { "namespace": "canonical-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -1545,7 +1544,7 @@ async fn canonical_batch_rejects_overlapping_preferred_claim_with_existing_prefe
         "source_envelope_id": "cb-pref-existing-overlap",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-pref-existing-overlap",
+        "content_digest": ContentDigest::compute_str("digest-pref-existing-overlap"),
         "source_authority": "forge",
         "scope_key": { "namespace": "canonical-ns" },
         "source_exported_at": "2026-03-08T00:00:00Z",
@@ -1588,7 +1587,7 @@ async fn canonical_batch_rejects_overlapping_preferred_relations_in_batch() {
         "source_envelope_id": "cb-pref-rel-overlap-batch",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-pref-rel-overlap-batch",
+        "content_digest": ContentDigest::compute_str("digest-pref-rel-overlap-batch"),
         "source_authority": "forge",
         "scope_key": { "namespace": "canonical-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
