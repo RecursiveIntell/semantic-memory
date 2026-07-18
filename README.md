@@ -10,7 +10,7 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 | Contract fact | Current value |
 | --- | --- |
-| Crate version | `0.5.10` |
+| Crate version | `0.5.12` |
 | Minimum Rust version | `1.75` |
 | Default Cargo feature | `usearch-backend` |
 | Maximum schema version | `36` |
@@ -39,7 +39,7 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 ```toml
 [dependencies]
-semantic-memory = "0.5.10"
+semantic-memory = "0.5.12"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -47,7 +47,7 @@ The default build enables `usearch-backend`. For an exact pure-Rust backend with
 
 ```toml
 [dependencies]
-semantic-memory = { version = "0.5.10", default-features = false, features = ["brute-force"] }
+semantic-memory = { version = "0.5.12", default-features = false, features = ["brute-force"] }
 ```
 
 ## Quick start

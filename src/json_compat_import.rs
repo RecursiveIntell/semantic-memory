@@ -11,6 +11,8 @@ use stack_ids::ContentDigest;
 pub(crate) const EXPORT_ENVELOPE_V1_JSON_COMPAT: &str = "export_envelope_v1";
 pub(crate) const EXPORT_ENVELOPE_V2_JSON_COMPAT: &str = "export_envelope_v2";
 pub(crate) const JSON_COMPAT_DEFAULT_TIMESTAMP: &str = "1970-01-01T00:00:00Z";
+pub(crate) const JSON_COMPAT_MAX_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const JSON_COMPAT_MAX_RECORDS: usize = 50_000;
 
 pub(crate) fn json_compat_invalid(reason: impl Into<String>) -> MemoryError {
     MemoryError::ImportInvalid {
@@ -22,7 +24,11 @@ pub(crate) fn build_json_compat_failure_log_row(
     batch_json: &str,
     imported_at: String,
 ) -> projection_storage::ProjectionImportLogRow {
-    let parsed = serde_json::from_str::<serde_json::Value>(batch_json).ok();
+    let parsed = if batch_json.len() > JSON_COMPAT_MAX_BYTES {
+        None
+    } else {
+        serde_json::from_str::<serde_json::Value>(batch_json).ok()
+    };
     let root = parsed.as_ref().and_then(|value| value.as_object());
     let scope_key = root
         .and_then(|obj| obj.get("scope_key"))
@@ -159,11 +165,30 @@ pub(crate) fn build_json_compat_failure_log_row(
 pub(crate) fn decode_projection_batch_json_compat(
     batch_json: &str,
 ) -> Result<ProjectionImportBatchV2, MemoryError> {
+    if batch_json.len() > JSON_COMPAT_MAX_BYTES {
+        return Err(json_compat_invalid(format!(
+            "json payload exceeds {} bytes limit",
+            JSON_COMPAT_MAX_BYTES
+        )));
+    }
+
     let mut value: serde_json::Value =
         serde_json::from_str(batch_json).map_err(|e| json_compat_invalid(e.to_string()))?;
     let root = value
         .as_object_mut()
         .ok_or_else(|| json_compat_invalid("top-level payload must be an object"))?;
+
+    let records_len = root
+        .get("records")
+        .and_then(|value| value.as_array())
+        .map(|records| records.len())
+        .unwrap_or(0);
+
+    if records_len > JSON_COMPAT_MAX_RECORDS {
+        return Err(json_compat_invalid(format!(
+            "records vector exceeds compatibility cap ({records_len} > {JSON_COMPAT_MAX_RECORDS})"
+        )));
+    }
 
     let original_schema_version = root
         .get("schema_version")

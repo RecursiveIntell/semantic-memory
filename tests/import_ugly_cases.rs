@@ -47,7 +47,7 @@ async fn a1_same_envelope_id_different_digest_both_accepted() {
     let batch_a = serde_json::json!({
         "source_envelope_id": "env1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest_a",
+        "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-a1-1" },
@@ -83,7 +83,7 @@ async fn a1_same_envelope_id_different_digest_both_accepted() {
     let batch_b = serde_json::json!({
         "source_envelope_id": "env1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest_b",
+        "content_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-a1-2" },
@@ -137,7 +137,7 @@ async fn a1_same_triple_is_idempotent_noop() {
     let batch = serde_json::json!({
         "source_envelope_id": "env1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest_a",
+        "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-idem" },
@@ -204,7 +204,7 @@ async fn a3_duplicate_claim_version_id_causes_rollback() {
     let batch1 = serde_json::json!({
         "source_envelope_id": "env-rollback-1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-rollback-1",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000001",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-rb1" },
@@ -241,7 +241,7 @@ async fn a3_duplicate_claim_version_id_causes_rollback() {
     let batch2 = serde_json::json!({
         "source_envelope_id": "env-rollback-2",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-rollback-2",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000002",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-rb2" },
@@ -329,7 +329,7 @@ async fn a5_unknown_schema_version_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-schema-unknown",
         "schema_version": "future_schema_v99",
-        "content_digest": "digest-schema-unk",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000003",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-schema" },
@@ -399,7 +399,7 @@ async fn a5_known_schema_version_accepted() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-schema-known",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-schema-known",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000004",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-schema-ok" },
@@ -456,7 +456,7 @@ async fn b3_superseding_claim_both_versions_exist() {
     let batch1 = serde_json::json!({
         "source_envelope_id": "env-contra-1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-contra-1",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000005",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-contra-1" },
@@ -492,7 +492,7 @@ async fn b3_superseding_claim_both_versions_exist() {
     let batch2 = serde_json::json!({
         "source_envelope_id": "env-contra-2",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-contra-2",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000006",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-contra-2" },
@@ -567,7 +567,7 @@ async fn idempotency_second_import_returns_duplicate() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-idempotent",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-idempotent",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000007",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-idem" },
@@ -662,7 +662,7 @@ async fn episode_import_populates_episode_links() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-episode",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-episode",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000008",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-episode" },
@@ -742,7 +742,7 @@ async fn mixed_record_types_all_counted_correctly() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-mixed",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-mixed",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000009",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "trace_ctx": { "trace_id": "trace-mixed" },
@@ -861,7 +861,7 @@ async fn empty_records_array_imports_as_zero_count() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-empty",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-empty",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000a",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -899,7 +899,7 @@ async fn claim_missing_required_fields_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-minimal",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-minimal",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000b",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -932,7 +932,7 @@ async fn claim_with_all_required_fields_imports() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-complete",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-complete",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000c",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -970,7 +970,7 @@ async fn claim_missing_claim_version_id_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-no-cvid",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-no-cvid",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000d",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1001,7 +1001,7 @@ async fn relation_missing_required_fields_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-rv-bad",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-rv-bad",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000e",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1028,7 +1028,7 @@ async fn episode_with_no_causes_imports() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-ep-nocause",
         "schema_version": "export_envelope_v1",
-        "content_digest": "digest-ep-nocause",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000000f",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -1072,7 +1072,7 @@ async fn i007_claim_missing_claim_state_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-no-state",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d1",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000010",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1108,7 +1108,7 @@ async fn i007_claim_missing_freshness_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-no-fresh",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d2",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000011",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1144,7 +1144,7 @@ async fn i007_claim_missing_preferred_open_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-no-pref",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d3",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000012",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1180,7 +1180,7 @@ async fn i007_relation_missing_freshness_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-rv-no-fresh",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d4",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000013",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1214,7 +1214,7 @@ async fn i007_relation_missing_preferred_open_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-rv-no-pref",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d5",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000014",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1249,7 +1249,7 @@ async fn i008_alias_missing_recorded_at_is_importer_stamped() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-alias-no-ts",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d6",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000015",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -1289,7 +1289,7 @@ async fn i008_evidence_missing_recorded_at_is_importer_stamped() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-ev-no-ts",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d7",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000016",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -1326,7 +1326,7 @@ async fn i008_episode_missing_recorded_at_is_importer_stamped() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-ep-no-ts",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d8",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000017",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "source_exported_at": "2024-01-01T00:00:00Z",
@@ -1369,7 +1369,7 @@ async fn i011_different_scope_dimensions_can_coexist_as_preferred_open() {
     let batch1 = serde_json::json!({
         "source_envelope_id": "env-scope-1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-scope-1",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000018",
         "source_authority": "forge",
         "scope_key": { "namespace": "test", "domain": "code", "workspace_id": "ws1" },
         "records": [{
@@ -1398,7 +1398,7 @@ async fn i011_different_scope_dimensions_can_coexist_as_preferred_open() {
     let batch2 = serde_json::json!({
         "source_envelope_id": "env-scope-2",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-scope-2",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000019",
         "source_authority": "forge",
         "scope_key": { "namespace": "test", "domain": "code", "workspace_id": "ws2" },
         "records": [{
@@ -1434,7 +1434,7 @@ async fn i011_same_full_scope_duplicate_preferred_open_fails() {
     let batch1 = serde_json::json!({
         "source_envelope_id": "env-dup-pref-1",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-dup-pref-1",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001a",
         "source_authority": "forge",
         "scope_key": { "namespace": "test", "domain": "code", "workspace_id": "ws1" },
         "records": [{
@@ -1463,7 +1463,7 @@ async fn i011_same_full_scope_duplicate_preferred_open_fails() {
     let batch2 = serde_json::json!({
         "source_envelope_id": "env-dup-pref-2",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-dup-pref-2",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001b",
         "source_authority": "forge",
         "scope_key": { "namespace": "test", "domain": "code", "workspace_id": "ws1" },
         "records": [{
@@ -1496,7 +1496,7 @@ async fn sm003_alias_missing_confidence_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm003-conf",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm003-1",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001c",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1527,7 +1527,7 @@ async fn sm003_alias_missing_merge_decision_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm003-md",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm003-2",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001d",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1558,7 +1558,7 @@ async fn sm003_evidence_missing_source_authority_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm003-sa",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm003-3",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001e",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1587,7 +1587,7 @@ async fn sm003_episode_missing_confidence_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm003-ec",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm003-4",
+        "content_digest": "000000000000000000000000000000000000000000000000000000000000001f",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1620,7 +1620,7 @@ async fn sm003_v1_canonical_defaults_accepted() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm003-defaults",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm003-5",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000020",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [
@@ -1664,7 +1664,7 @@ async fn sm004_invalid_review_state_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm004-rs",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm004-1",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000021",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1697,7 +1697,7 @@ async fn sm004_invalid_merge_decision_is_rejected() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm004-md",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm004-2",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000022",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [{
@@ -1730,7 +1730,7 @@ async fn sm004_valid_merge_decision_variants_accepted() {
     let batch = serde_json::json!({
         "source_envelope_id": "env-sm004-valid",
         "schema_version": "export_envelope_v1",
-        "content_digest": "d-sm004-3",
+        "content_digest": "0000000000000000000000000000000000000000000000000000000000000023",
         "source_authority": "forge",
         "scope_key": { "namespace": "test" },
         "records": [

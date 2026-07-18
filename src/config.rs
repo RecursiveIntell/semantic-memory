@@ -329,6 +329,11 @@ const fn default_sparse_derive_top_k() -> usize {
     128
 }
 
+const MAX_SEARCH_CANDIDATE_POOL_SIZE: usize = 2_000;
+const MAX_SEARCH_DEFAULT_TOP_K: usize = 200;
+const MAX_SPARSE_TOP_K: usize = 1_000;
+const MAX_SPARSE_DERIVE_TOP_K: usize = 1_000;
+
 const fn default_sparse_derive_min_weight() -> f32 {
     0.01
 }
@@ -386,19 +391,13 @@ impl SearchConfig {
     fn normalize_and_validate(&mut self, embedding_dimensions: usize) -> Result<(), MemoryError> {
         #[cfg(not(feature = "turbo-quant-codec"))]
         let _ = embedding_dimensions;
-        if self.candidate_pool_size == 0 {
-            self.candidate_pool_size = 1;
-        }
-        if self.default_top_k == 0 {
-            self.default_top_k = 1;
-        }
+        self.candidate_pool_size = self
+            .candidate_pool_size
+            .clamp(1, MAX_SEARCH_CANDIDATE_POOL_SIZE);
+        self.default_top_k = self.default_top_k.clamp(1, MAX_SEARCH_DEFAULT_TOP_K);
         self.candidate_pool_size = self.candidate_pool_size.max(self.default_top_k);
-        if self.sparse_top_k == 0 {
-            self.sparse_top_k = 1;
-        }
-        if self.sparse_derive_top_k == 0 {
-            self.sparse_derive_top_k = 1;
-        }
+        self.sparse_top_k = self.sparse_top_k.clamp(1, MAX_SPARSE_TOP_K);
+        self.sparse_derive_top_k = self.sparse_derive_top_k.clamp(1, MAX_SPARSE_DERIVE_TOP_K);
         if !self.rrf_k.is_finite() || self.rrf_k <= 0.0 {
             return Err(MemoryError::InvalidConfig {
                 field: "search.rrf_k",

@@ -1877,6 +1877,38 @@ impl MemoryStore {
         self.with_read_conn(graph_edges::list_all_graph_edges).await
     }
 
+    /// List stored graph edges with a hard cap.
+    ///
+    /// This is intended for non-querying control-plane reads (health, telemetry,
+    /// and bounded graph reasoning). Use `list_graph_edges_for_neighborhood`
+    /// or targeted filters for workflows that must see complete graph context.
+    pub async fn list_all_graph_edges_with_limit(
+        &self,
+        max_rows: usize,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        if max_rows == 0 {
+            return Ok(Vec::new());
+        }
+        self.with_read_conn(move |conn| {
+            graph_edges::list_all_graph_edges_with_limit(conn, max_rows)
+        })
+        .await
+    }
+
+    /// List graph edges involving a node (as source or target), excluding
+    /// invalidated edges, capped by `max_rows`.
+    pub async fn list_graph_edges_for_node_with_limit(
+        &self,
+        node_id: &str,
+        max_rows: usize,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        let node_id = node_id.to_string();
+        self.with_read_conn(move |conn| {
+            graph_edges::list_graph_edges_for_node_with_limit(conn, &node_id, max_rows)
+        })
+        .await
+    }
+
     /// List graph edges within N hops of the given seed node IDs.
     ///
     /// Performs a BFS expansion from the seeds, loading only edges in

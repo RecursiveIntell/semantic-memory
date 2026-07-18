@@ -799,7 +799,10 @@ impl CandleEmbedder {
     ) -> Result<Self, MemoryError> {
         let device = candle_core::Device::Cpu;
         let dimensions = config.dimensions;
-        let max_seq_len = 8192; // nomic-embed-text supports up to 8192 tokens
+        // Windowed pooling bounds the CPU-only transformer's quadratic attention
+        // work without discarding the tail of long factual records. Each window
+        // is individually normalized, then token-weighted and normalized again.
+        let max_seq_len = 512;
 
         // Download model files from HuggingFace Hub (cached after first download).
         // We download individual files rather than a snapshot to keep the API

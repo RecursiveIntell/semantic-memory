@@ -46,7 +46,7 @@ mod tests {
             "source_envelope_id": "env-derivation",
             "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
             "export_schema_version": "export_envelope_v1",
-            "content_digest": "digest-derivation",
+            "content_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "source_authority": "forge",
             "scope_key": { "namespace": "test-ns" },
             "source_exported_at": "2026-03-07T00:00:00Z",
