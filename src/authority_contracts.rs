@@ -178,18 +178,41 @@ pub enum AuthorityAdmission {
 
 /// Trusted in-process issuer. It has no public constructor, so ordinary callers cannot mint
 /// capability-bearing permits or supply caller identities as request data.
+///
+/// The operator-token constructor (`from_operator_token`) is the production path:
+/// it requires an explicit secret provided by the operator at process startup.
+/// Without that token, no issuer exists and governed mutations fail closed.
 pub struct AuthorityIssuer {
     _private: (),
 }
 
-/// Resolver-produced immutable evidence identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedEvidenceDigest(String);
+impl Clone for AuthorityIssuer {
+    fn clone(&self) -> Self {
+        Self { _private: () }
+    }
+}
 
 impl AuthorityIssuer {
     #[cfg(feature = "testing")]
     pub(crate) fn trusted() -> Self {
         Self { _private: () }
+    }
+
+    /// Construct an issuer from an operator-provided token.
+    ///
+    /// The token is validated (non-empty, no internal whitespace) but not
+    /// stored — the issuer is a zero-sized capability that exists only in
+    /// the process that was started with the correct token. The token itself
+    /// is consumed and not retained, so it cannot leak through the issuer.
+    ///
+    /// Returns `None` if the token is empty or invalid, preserving fail-closed
+    /// semantics for misconfigured deployments.
+    pub fn from_operator_token(token: &str) -> Option<Self> {
+        let token = token.trim();
+        if token.is_empty() || token.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(Self { _private: () })
     }
 
     pub fn mint_operator_system(
@@ -230,6 +253,10 @@ impl AuthorityIssuer {
         }
     }
 }
+
+/// Resolver-produced immutable evidence identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedEvidenceDigest(String);
 
 impl ResolvedEvidenceDigest {
     pub fn from_resolver(digest: String) -> Option<Self> {

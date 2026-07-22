@@ -27,6 +27,14 @@ pub struct MemoryConfig {
     /// Resource limits.
     pub limits: MemoryLimits,
 
+    /// Optional device identity for mutation journaling.
+    #[serde(default)]
+    pub journal_device_id: Option<String>,
+
+    /// Optional store identity for mutation journaling.
+    #[serde(default)]
+    pub journal_store_id: Option<String>,
+
     /// Custom token counter. None = use EstimateTokenCounter (chars / 4).
     #[serde(skip)]
     pub token_counter: Option<Arc<dyn TokenCounter>>,
@@ -46,6 +54,8 @@ impl std::fmt::Debug for MemoryConfig {
             .field("chunking", &self.chunking)
             .field("pool", &self.pool)
             .field("limits", &self.limits)
+            .field("journal_device_id", &self.journal_device_id)
+            .field("journal_store_id", &self.journal_store_id)
             .field(
                 "token_counter",
                 &self.token_counter.as_ref().map(|_| "custom"),
@@ -65,6 +75,8 @@ impl Default for MemoryConfig {
             chunking: ChunkingConfig::default(),
             pool: PoolConfig::default(),
             limits: MemoryLimits::default(),
+            journal_device_id: None,
+            journal_store_id: None,
             token_counter: None,
             #[cfg(feature = "hnsw")]
             hnsw: crate::hnsw::HnswConfig::default(),

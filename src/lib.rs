@@ -92,6 +92,7 @@ pub(crate) mod db;
 /// Bounded evidence-gap retrieval and state-aware reranking over existing authority/search paths.
 pub mod evidence_gap;
 mod forgetting;
+pub mod journal;
 mod procedural_memory;
 pub mod transition_contracts;
 mod transition_verifier;
@@ -159,7 +160,7 @@ pub(crate) mod knowledge;
 pub mod origin_authority;
 pub use authority::MemoryAuthority;
 pub use authority_contracts::{
-    AuthorityAdmission, AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit,
+    AuthorityAdmission, AuthorityFaultStage, AuthorityIssuer, AuthorityOperationKind, AuthorityPermit,
     AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, CapabilityManifestV1, Confidence,
     CosineSimilarity, InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1,
     NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1,
