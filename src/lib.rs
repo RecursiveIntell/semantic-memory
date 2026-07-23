@@ -160,11 +160,11 @@ pub(crate) mod knowledge;
 pub mod origin_authority;
 pub use authority::MemoryAuthority;
 pub use authority_contracts::{
-    AuthorityAdmission, AuthorityFaultStage, AuthorityIssuer, AuthorityOperationKind, AuthorityPermit,
-    AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, CapabilityManifestV1, Confidence,
-    CosineSimilarity, InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1,
-    NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1,
-    StageOutcomeV1, SupersessionReceiptV1,
+    AuthorityAdmission, AuthorityFaultStage, AuthorityIssuer, AuthorityOperationKind,
+    AuthorityPermit, AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1,
+    CapabilityManifestV1, Confidence, CosineSimilarity, InjectionDecisionV1, InjectionDisposition,
+    MemoryEnvelopeV1, NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1,
+    RetrievalWitnessV1, StageOutcomeV1, SupersessionReceiptV1,
 };
 pub use forgetting::{
     ForgettingClosureReceiptV1, ForgettingClosureRequestV1, ForgettingDispositionV1,
