@@ -45,12 +45,6 @@ pub mod governed {
                 "governed fib-quant encoding is unavailable: no runtime encoder is registered"
                     .to_string(),
             ),
-            // Keep compatibility with newer quant-governor enums without
-            // relabeling an unsupported profile as raw or compressed bytes.
-            _ => Err(
-                "governed codec profile is unavailable: no runtime encoder is registered"
-                    .to_string(),
-            ),
         }
     }
 

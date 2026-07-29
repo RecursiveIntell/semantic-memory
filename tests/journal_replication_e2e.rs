@@ -7,15 +7,19 @@
 //! MockEmbedder or MemoryStore needed, because the journal operates
 //! at the connection level and the payload is canonical JSON.
 
+#![allow(deprecated)]
+
 use rusqlite::Connection;
 use semantic_memory::journal::{
     append_journal_entry, export_contiguous, replay_journal_entry, ReplayOutcome, MIGRATION_V37,
+    MIGRATION_V38,
 };
 
 /// Create a fresh in-memory DB with the mutation_journal table.
 fn fresh_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(MIGRATION_V37).unwrap();
+    conn.execute_batch(MIGRATION_V38).unwrap();
     conn
 }
 
@@ -135,7 +139,7 @@ fn full_replication_cycle() {
     assert_eq!(replica_count, 3);
 
     // Verify content matches
-    for (fid, ns, content) in &facts {
+    for (fid, _ns, content) in &facts {
         let replica_content: String = replica
             .query_row(
                 "SELECT content FROM facts WHERE id = ?1",
@@ -240,13 +244,9 @@ fn conflicting_payload_is_rejected_by_idempotency() {
     )
     .unwrap();
 
-    // Must be AlreadyApplied — the sequence was already seen.
-    // The tampered payload is NOT applied because the journal already
-    // has this sequence number.
-    assert_eq!(
-        outcome_tamper,
-        ReplayOutcome::AlreadyApplied { sequence: 1 }
-    );
+    // Same stream position with changed bytes is a typed conflict, never
+    // successful idempotency. The tampered closure must not execute.
+    assert_eq!(outcome_tamper, ReplayOutcome::Conflict { sequence: 1 });
 
     // Content must still be A, not B
     let content: String = replica

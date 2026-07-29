@@ -1021,6 +1021,12 @@ fn vector_search_with_backend(
             source_types,
             session_ids,
         ),
+        DerivedVectorBackendPolicy::FibQuantCandidateOnly => Err(MemoryError::NotImplemented(
+            "FibQuant candidate generation is not implemented in this build".to_string(),
+        )),
+        DerivedVectorBackendPolicy::PerDimCandidateOnly => Err(MemoryError::NotImplemented(
+            "per-dimension candidate generation is not implemented in this build".to_string(),
+        )),
     }
 }
 

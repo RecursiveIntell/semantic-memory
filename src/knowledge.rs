@@ -52,7 +52,7 @@ pub fn insert_fact_with_fts_q8(
     source: Option<&str>,
     metadata: Option<&serde_json::Value>,
     sparse: Option<(&crate::SparseWeights, &str)>,
-    journal: Option<(&str, &str)>,
+    journal: Option<(&str, &str, u64)>,
 ) -> Result<(), MemoryError> {
     let metadata_str = metadata.map(|m| m.to_string());
     with_transaction(conn, |tx| {
@@ -92,20 +92,23 @@ pub fn insert_fact_with_fts_q8(
         if let Some((weights, representation)) = sparse {
             db::store_sparse_vector(tx, &format!("fact:{fact_id}"), weights, representation)?;
         }
-        if let Some((device_id, store_id)) = journal {
-            let payload = serde_json::json!({
-                "fact_id": fact_id,
-                "namespace": namespace,
-                "content": content,
-                "source": source,
-                "metadata": metadata,
-            });
-            crate::journal::append_journal_entry(
+        if let Some((device_id, store_id, stream_epoch)) = journal {
+            let payload =
+                crate::journal::encode_fact_create_payload(&crate::journal::FactCreatePayloadV1 {
+                    fact_id: fact_id.to_string(),
+                    namespace: namespace.to_string(),
+                    content: content.to_string(),
+                    source: source.map(str::to_string),
+                    metadata: metadata.cloned(),
+                })?;
+            crate::journal::append_verified_in_tx(
                 tx,
                 device_id,
                 store_id,
-                "add_fact",
-                payload.to_string().as_bytes(),
+                stream_epoch,
+                crate::journal::FACT_CREATE_OPERATION,
+                crate::journal::FACT_CREATE_PAYLOAD_SCHEMA,
+                &payload,
             )?;
         }
 
@@ -955,13 +958,7 @@ impl MemoryStore {
         let fid = fact_id.clone();
         let src = source.map(|s| s.to_string());
         let meta = merge_trace_ctx(metadata, trace_ctx);
-        let journal = self
-            .inner
-            .config
-            .journal_device_id
-            .as_deref()
-            .zip(self.inner.config.journal_store_id.as_deref())
-            .map(|(device_id, store_id)| (device_id.to_string(), store_id.to_string()));
+        let journal = self.replication_journal_identity();
         self.with_write_conn(move |conn| {
             let current_count: usize = conn.query_row(
                 "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
@@ -985,9 +982,9 @@ impl MemoryStore {
                 src.as_deref(),
                 meta.as_ref(),
                 sparse.as_ref().zip(sparse_representation.as_deref()),
-                journal
-                    .as_ref()
-                    .map(|(device_id, store_id)| (device_id.as_str(), store_id.as_str())),
+                journal.as_ref().map(|(device_id, store_id, stream_epoch)| {
+                    (device_id.as_str(), store_id.as_str(), *stream_epoch)
+                }),
             )
         })
         .await?;
@@ -1050,13 +1047,7 @@ impl MemoryStore {
         let fid = fact_id.clone();
         let src = source.map(|s| s.to_string());
         let meta = merge_trace_ctx(metadata, trace_ctx);
-        let journal = self
-            .inner
-            .config
-            .journal_device_id
-            .as_deref()
-            .zip(self.inner.config.journal_store_id.as_deref())
-            .map(|(device_id, store_id)| (device_id.to_string(), store_id.to_string()));
+        let journal = self.replication_journal_identity();
         self.with_write_conn(move |conn| {
             let current_count: usize = conn.query_row(
                 "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
@@ -1082,9 +1073,9 @@ impl MemoryStore {
                 sparse
                     .as_ref()
                     .map(|weights| (weights, "generic_dense_derived_sparse")),
-                journal
-                    .as_ref()
-                    .map(|(device_id, store_id)| (device_id.as_str(), store_id.as_str())),
+                journal.as_ref().map(|(device_id, store_id, stream_epoch)| {
+                    (device_id.as_str(), store_id.as_str(), *stream_epoch)
+                }),
             )
         })
         .await?;
