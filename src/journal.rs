@@ -28,6 +28,38 @@ pub struct FactCreatePayloadV1 {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Closed receiver-side representation of one verified fact-create record.
+///
+/// This type contains only fields owned by semantic-memory's V38 journal
+/// contract. Transport authentication and signatures are deliberately owned by
+/// the caller (for example Mnemes); semantic-memory revalidates the canonical
+/// operation, schema, payload, digest chain, and stream ordering before apply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactCreateReplicaEnvelopeV1 {
+    pub home_device_id: String,
+    pub store_id: String,
+    pub stream_epoch: u64,
+    pub sequence: i64,
+    pub operation_kind: String,
+    pub payload_schema: String,
+    pub payload: Vec<u8>,
+    pub payload_digest: [u8; 32],
+    pub predecessor_digest: [u8; 32],
+    pub envelope_digest: [u8; 32],
+}
+
+/// Durable receiver decision for a fact-create record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplicaApplyOutcome {
+    Applied { sequence: i64, fact_id: String },
+    Duplicate { sequence: i64 },
+    Fork { sequence: i64 },
+    Gap { expected: i64, received: i64 },
+    EpochConflict { active: u64, received: u64 },
+}
+
 pub fn encode_fact_create_payload(payload: &FactCreatePayloadV1) -> Result<Vec<u8>, MemoryError> {
     serde_json::to_vec(payload)
         .map_err(|error| MemoryError::DigestError(format!("fact-create payload encoding: {error}")))
@@ -132,6 +164,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_sequence_v38
     ON mutation_journal(home_device_id, store_id, stream_epoch, sequence);
 "#;
 
+/// V39 receiver-side stream, inbox, and durable ACK projection.
+///
+/// These tables live in the semantic shard so fact state, stream advancement,
+/// inbox evidence, and the ACK decision commit in one SQLite transaction.
+pub const MIGRATION_V39: &str = r#"
+CREATE TABLE IF NOT EXISTS replication_inbox_streams (
+    home_device_id TEXT NOT NULL,
+    store_id TEXT NOT NULL,
+    stream_epoch INTEGER NOT NULL CHECK(stream_epoch > 0),
+    next_sequence INTEGER NOT NULL DEFAULT 1 CHECK(next_sequence > 0),
+    head_digest BLOB NOT NULL CHECK(length(head_digest) = 32),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(home_device_id, store_id)
+);
+CREATE TABLE IF NOT EXISTS replication_inbox (
+    home_device_id TEXT NOT NULL,
+    store_id TEXT NOT NULL,
+    stream_epoch INTEGER NOT NULL CHECK(stream_epoch > 0),
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    operation_kind TEXT NOT NULL,
+    payload_schema TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    payload_digest BLOB NOT NULL CHECK(length(payload_digest) = 32),
+    predecessor_digest BLOB NOT NULL CHECK(length(predecessor_digest) = 32),
+    envelope_digest BLOB NOT NULL CHECK(length(envelope_digest) = 32),
+    fact_id TEXT NOT NULL,
+    record_state TEXT NOT NULL DEFAULT 'applied_v1'
+        CHECK(record_state = 'applied_v1'),
+    applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(home_device_id, store_id, stream_epoch, sequence)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_replication_inbox_envelope
+    ON replication_inbox(home_device_id, store_id, envelope_digest);
+"#;
+
 fn validate_stream_identity(
     home_device_id: &str,
     store_id: &str,
@@ -155,6 +222,84 @@ fn validate_stream_identity(
         }
     }
     Ok(())
+}
+
+/// Validate a receiver envelope and decode its strict canonical payload.
+pub fn validate_fact_create_replica_envelope(
+    envelope: &FactCreateReplicaEnvelopeV1,
+) -> Result<FactCreatePayloadV1, MemoryError> {
+    validate_stream_identity(
+        &envelope.home_device_id,
+        &envelope.store_id,
+        envelope.stream_epoch,
+    )?;
+    if envelope.sequence < 1 {
+        return Err(MemoryError::InvalidConfig {
+            field: "replication.sequence",
+            reason: "must be positive".to_string(),
+        });
+    }
+    if envelope.operation_kind != FACT_CREATE_OPERATION
+        || envelope.payload_schema != FACT_CREATE_PAYLOAD_SCHEMA
+    {
+        return Err(MemoryError::NotImplemented(format!(
+            "replication operation/schema not admitted: {}/{}",
+            envelope.operation_kind, envelope.payload_schema
+        )));
+    }
+    let expected_payload_digest = payload_digest(&envelope.payload);
+    if envelope.payload_digest != expected_payload_digest {
+        return Err(MemoryError::DigestError(
+            "fact-create replica payload digest mismatch".to_string(),
+        ));
+    }
+    let expected_envelope_digest = envelope_digest(
+        &envelope.home_device_id,
+        &envelope.store_id,
+        envelope.stream_epoch,
+        envelope.sequence,
+        &envelope.operation_kind,
+        &envelope.payload_schema,
+        &envelope.predecessor_digest,
+        &envelope.payload_digest,
+    );
+    if envelope.envelope_digest != expected_envelope_digest {
+        return Err(MemoryError::DigestError(
+            "fact-create replica envelope digest mismatch".to_string(),
+        ));
+    }
+    let payload: FactCreatePayloadV1 =
+        serde_json::from_slice(&envelope.payload).map_err(|error| MemoryError::CorruptData {
+            table: "replication_inbox",
+            row_id: envelope.sequence.to_string(),
+            detail: format!("invalid fact-create payload: {error}"),
+        })?;
+    if uuid::Uuid::parse_str(&payload.fact_id).is_err() {
+        return Err(MemoryError::CorruptData {
+            table: "replication_inbox",
+            row_id: envelope.sequence.to_string(),
+            detail: "fact-create payload fact_id must be a UUID".to_string(),
+        });
+    }
+    if payload.namespace.is_empty()
+        || payload.namespace.trim() != payload.namespace
+        || payload.namespace.chars().any(char::is_control)
+    {
+        return Err(MemoryError::CorruptData {
+            table: "replication_inbox",
+            row_id: envelope.sequence.to_string(),
+            detail: "fact-create namespace is empty, untrimmed, or contains control characters"
+                .to_string(),
+        });
+    }
+    if payload.content.is_empty() {
+        return Err(MemoryError::CorruptData {
+            table: "replication_inbox",
+            row_id: envelope.sequence.to_string(),
+            detail: "fact-create content is empty".to_string(),
+        });
+    }
+    Ok(payload)
 }
 
 fn digest_from_blob(column: usize, bytes: Vec<u8>) -> Result<[u8; 32], rusqlite::Error> {
@@ -367,10 +512,23 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportStatus {
+    /// The requested device/store/epoch has no verified stream. This is distinct
+    /// from [`ExportStatus::End`], which means an existing stream has no more
+    /// records at or after the requested sequence. Added in the V39 contract;
+    /// direct callers must handle it explicitly.
+    Empty,
+    /// The requested verified stream exists and has no more records at or after
+    /// the requested sequence.
     End,
     More,
-    Gap { expected: i64, found: Option<i64> },
-    Corrupt { sequence: i64, reason: String },
+    Gap {
+        expected: i64,
+        found: Option<i64>,
+    },
+    Corrupt {
+        sequence: i64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -429,7 +587,7 @@ pub fn export_verified_contiguous(
         return Ok(VerifiedExportBatch {
             entries: Vec::new(),
             next_sequence: start_sequence,
-            status: ExportStatus::End,
+            status: ExportStatus::Empty,
         });
     };
 
@@ -440,14 +598,8 @@ pub fn export_verified_contiguous(
             .query_row(
                 "SELECT envelope_digest FROM mutation_journal
                  WHERE home_device_id = ?1 AND store_id = ?2 AND stream_epoch = ?3
-                   AND sequence = ?4 AND record_state = ?5",
-                rusqlite::params![
-                    home_device_id,
-                    store_id,
-                    epoch,
-                    start_sequence - 1,
-                    VERIFIED_RECORD_STATE,
-                ],
+                   AND sequence = ?4",
+                rusqlite::params![home_device_id, store_id, epoch, start_sequence - 1],
                 |row| row.get(0),
             )
             .optional()?;
@@ -467,8 +619,8 @@ pub fn export_verified_contiguous(
     let mut stmt = conn.prepare(&format!(
         "SELECT {ENTRY_SELECT} FROM mutation_journal
          WHERE home_device_id = ?1 AND store_id = ?2 AND stream_epoch = ?3
-           AND sequence >= ?4 AND record_state = ?5
-         ORDER BY sequence ASC LIMIT ?6"
+           AND sequence >= ?4
+         ORDER BY sequence ASC LIMIT ?5"
     ))?;
     let rows = stmt.query_map(
         rusqlite::params![
@@ -476,7 +628,6 @@ pub fn export_verified_contiguous(
             store_id,
             epoch,
             start_sequence,
-            VERIFIED_RECORD_STATE,
             (limit + 1) as i64,
         ],
         row_to_entry,

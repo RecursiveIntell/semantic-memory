@@ -929,10 +929,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (36, MIGRATION_V36),
     (37, crate::journal::MIGRATION_V37),
     (38, crate::journal::MIGRATION_V38),
+    (39, crate::journal::MIGRATION_V39),
 ];
 
 /// Maximum schema version this build supports.
-pub const MAX_SCHEMA_VERSION: u32 = 38;
+pub const MAX_SCHEMA_VERSION: u32 = 39;
 
 /// Procedural migration for V9: rebuild episodes table with episode_id PK.
 fn run_migration_v9(conn: &Connection) -> Result<(), MemoryError> {

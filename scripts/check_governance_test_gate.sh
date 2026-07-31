@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-output="$(cargo test --features testing -- --list 2>&1)"
+output="$(cargo test -p semantic-memory --features testing -- --list 2>&1)"
 required=(
   authority_transactions
   transition_compiler
