@@ -223,9 +223,8 @@ pub mod matryoshka;
 /// Multiscale retrieval scheduling pipeline (staged search with budgets).
 #[cfg(feature = "multiscale")]
 pub mod pipeline;
-/// Compatibility-only legacy import surface.
-///
-/// This module exists only for migration compatibility with pre-V11 import paths.
+#[cfg(feature = "poly-kv-codec")]
+pub mod poly_kv_backend;
 #[deprecated(
     since = "0.6.0",
     note = "Legacy V10 import path is migration-only. Use `import_projection_batch()` with `ProjectionImportBatchV3` on the canonical lane."
