@@ -12,7 +12,7 @@ use crate::error::MemoryError;
 use crate::quantize::{self, Quantizer};
 use crate::types::{Fact, NamespaceDeleteReport};
 use crate::{merge_trace_ctx, MemoryStore};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use stack_ids::TraceCtx;
 
 /// Insert a fact and its FTS entry in a transaction.
@@ -36,6 +36,7 @@ pub fn insert_fact_with_fts(
         source,
         metadata,
         None,
+        None,
     )
 }
 
@@ -51,6 +52,7 @@ pub fn insert_fact_with_fts_q8(
     source: Option<&str>,
     metadata: Option<&serde_json::Value>,
     sparse: Option<(&crate::SparseWeights, &str)>,
+    journal: Option<(&str, &str, u64)>,
 ) -> Result<(), MemoryError> {
     let metadata_str = metadata.map(|m| m.to_string());
     with_transaction(conn, |tx| {
@@ -89,6 +91,25 @@ pub fn insert_fact_with_fts_q8(
         db::invalidate_derived_vector_artifact(tx, &format!("fact:{fact_id}"))?;
         if let Some((weights, representation)) = sparse {
             db::store_sparse_vector(tx, &format!("fact:{fact_id}"), weights, representation)?;
+        }
+        if let Some((device_id, store_id, stream_epoch)) = journal {
+            let payload =
+                crate::journal::encode_fact_create_payload(&crate::journal::FactCreatePayloadV1 {
+                    fact_id: fact_id.to_string(),
+                    namespace: namespace.to_string(),
+                    content: content.to_string(),
+                    source: source.map(str::to_string),
+                    metadata: metadata.cloned(),
+                })?;
+            crate::journal::append_verified_in_tx(
+                tx,
+                device_id,
+                store_id,
+                stream_epoch,
+                crate::journal::FACT_CREATE_OPERATION,
+                crate::journal::FACT_CREATE_PAYLOAD_SCHEMA,
+                &payload,
+            )?;
         }
 
         Ok(())
@@ -937,6 +958,7 @@ impl MemoryStore {
         let fid = fact_id.clone();
         let src = source.map(|s| s.to_string());
         let meta = merge_trace_ctx(metadata, trace_ctx);
+        let journal = self.replication_journal_identity();
         self.with_write_conn(move |conn| {
             let current_count: usize = conn.query_row(
                 "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
@@ -960,6 +982,9 @@ impl MemoryStore {
                 src.as_deref(),
                 meta.as_ref(),
                 sparse.as_ref().zip(sparse_representation.as_deref()),
+                journal.as_ref().map(|(device_id, store_id, stream_epoch)| {
+                    (device_id.as_str(), store_id.as_str(), *stream_epoch)
+                }),
             )
         })
         .await?;
@@ -1022,6 +1047,7 @@ impl MemoryStore {
         let fid = fact_id.clone();
         let src = source.map(|s| s.to_string());
         let meta = merge_trace_ctx(metadata, trace_ctx);
+        let journal = self.replication_journal_identity();
         self.with_write_conn(move |conn| {
             let current_count: usize = conn.query_row(
                 "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
@@ -1047,6 +1073,9 @@ impl MemoryStore {
                 sparse
                     .as_ref()
                     .map(|weights| (weights, "generic_dense_derived_sparse")),
+                journal.as_ref().map(|(device_id, store_id, stream_epoch)| {
+                    (device_id.as_str(), store_id.as_str(), *stream_epoch)
+                }),
             )
         })
         .await?;
@@ -1058,6 +1087,395 @@ impl MemoryStore {
             .await;
 
         Ok(fact_id)
+    }
+
+    /// Apply one closed, verified fact-create envelope to a replica shard.
+    ///
+    /// The exact canonical fact ID, semantic row, FTS/index bookkeeping,
+    /// receiver inbox, stream head, and durable duplicate evidence commit in a
+    /// single SQLite transaction. The caller cannot provide SQL or a replay
+    /// callback. Transport authentication must be completed before this owner
+    /// API is called; this method independently validates semantic-memory's
+    /// canonical payload and digest-chain contract.
+    pub async fn apply_verified_fact_create(
+        &self,
+        envelope: crate::journal::FactCreateReplicaEnvelopeV1,
+    ) -> Result<crate::journal::ReplicaApplyOutcome, MemoryError> {
+        use crate::journal::{
+            validate_fact_create_replica_envelope, ReplicaApplyOutcome, GENESIS_PREDECESSOR,
+        };
+
+        let payload = validate_fact_create_replica_envelope(&envelope)?;
+
+        // Fast-path terminal stream decisions before embedding. The write
+        // transaction below repeats every check authoritatively, so this is an
+        // optimization rather than a trust boundary. It ensures a retry can
+        // recover a durable Duplicate ACK even while the embedding provider is
+        // unavailable.
+        let preflight_device_id = envelope.home_device_id.clone();
+        let preflight_store_id = envelope.store_id.clone();
+        let preflight_epoch =
+            i64::try_from(envelope.stream_epoch).map_err(|_| MemoryError::InvalidConfig {
+                field: "replication.stream_epoch",
+                reason: "does not fit SQLite INTEGER".to_string(),
+            })?;
+        let preflight_stream_epoch = envelope.stream_epoch;
+        let preflight_sequence = envelope.sequence;
+        let preflight_envelope_digest = envelope.envelope_digest;
+        let preflight_predecessor_digest = envelope.predecessor_digest;
+        let preflight = self
+            .with_read_conn(move |conn| {
+                let existing_digest: Option<Vec<u8>> = conn
+                    .query_row(
+                        "SELECT envelope_digest FROM replication_inbox
+                         WHERE home_device_id = ?1 AND store_id = ?2
+                           AND stream_epoch = ?3 AND sequence = ?4",
+                        rusqlite::params![
+                            &preflight_device_id,
+                            &preflight_store_id,
+                            preflight_epoch,
+                            preflight_sequence,
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing_digest) = existing_digest {
+                    return if existing_digest.as_slice() == preflight_envelope_digest.as_slice() {
+                        Ok(Some(ReplicaApplyOutcome::Duplicate {
+                            sequence: preflight_sequence,
+                        }))
+                    } else {
+                        Ok(Some(ReplicaApplyOutcome::Fork {
+                            sequence: preflight_sequence,
+                        }))
+                    };
+                }
+
+                let stream: Option<(i64, i64, Vec<u8>)> = conn
+                    .query_row(
+                        "SELECT stream_epoch, next_sequence, head_digest
+                         FROM replication_inbox_streams
+                         WHERE home_device_id = ?1 AND store_id = ?2",
+                        rusqlite::params![&preflight_device_id, &preflight_store_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+                let Some((active_epoch, expected, head_bytes)) = stream else {
+                    return if preflight_sequence > 1 {
+                        Ok(Some(ReplicaApplyOutcome::Gap {
+                            expected: 1,
+                            received: preflight_sequence,
+                        }))
+                    } else if preflight_predecessor_digest != GENESIS_PREDECESSOR {
+                        Ok(Some(ReplicaApplyOutcome::Fork {
+                            sequence: preflight_sequence,
+                        }))
+                    } else {
+                        Ok(None)
+                    };
+                };
+                let active = u64::try_from(active_epoch).map_err(|_| MemoryError::CorruptData {
+                    table: "replication_inbox_streams",
+                    row_id: format!("{preflight_device_id}/{preflight_store_id}"),
+                    detail: "active stream epoch is negative".to_string(),
+                })?;
+                if active != preflight_stream_epoch {
+                    return Ok(Some(ReplicaApplyOutcome::EpochConflict {
+                        active,
+                        received: preflight_stream_epoch,
+                    }));
+                }
+                if preflight_sequence > expected {
+                    return Ok(Some(ReplicaApplyOutcome::Gap {
+                        expected,
+                        received: preflight_sequence,
+                    }));
+                }
+                if preflight_sequence < expected {
+                    return Ok(Some(ReplicaApplyOutcome::Fork {
+                        sequence: preflight_sequence,
+                    }));
+                }
+                let head: [u8; 32] =
+                    head_bytes
+                        .try_into()
+                        .map_err(|bytes: Vec<u8>| MemoryError::CorruptData {
+                            table: "replication_inbox_streams",
+                            row_id: format!("{preflight_device_id}/{preflight_store_id}"),
+                            detail: format!("head digest must be 32 bytes, got {}", bytes.len()),
+                        })?;
+                if preflight_predecessor_digest != head {
+                    return Ok(Some(ReplicaApplyOutcome::Fork {
+                        sequence: preflight_sequence,
+                    }));
+                }
+                Ok(None)
+            })
+            .await?;
+        if let Some(outcome) = preflight {
+            return Ok(outcome);
+        }
+
+        self.validate_content("fact.content", &payload.content)?;
+        let (embedding, sparse, sparse_representation) = self
+            .embed_text_with_sparse_internal(&payload.content, crate::EmbeddingPurpose::Document)
+            .await?;
+        self.validate_embedding_dimensions(&embedding)?;
+        let embedding_bytes = db::embedding_to_bytes(&embedding);
+        let q8_bytes = Quantizer::new(self.inner.config.embedding.dimensions)
+            .quantize(&embedding)
+            .map(|value| quantize::pack_quantized(&value))
+            .ok();
+        let max_facts_per_namespace = self.inner.config.limits.max_facts_per_namespace;
+        let applied_fact_id = payload.fact_id.clone();
+
+        let outcome = self
+            .with_write_conn(move |conn| {
+                let epoch = i64::try_from(envelope.stream_epoch).map_err(|_| {
+                    MemoryError::InvalidConfig {
+                        field: "replication.stream_epoch",
+                        reason: "does not fit SQLite INTEGER".to_string(),
+                    }
+                })?;
+                let next_sequence =
+                    envelope
+                        .sequence
+                        .checked_add(1)
+                        .ok_or_else(|| MemoryError::CorruptData {
+                            table: "replication_inbox",
+                            row_id: envelope.sequence.to_string(),
+                            detail: "sequence overflow".to_string(),
+                        })?;
+
+                // SAFETY: semantic-memory owns the single writer connection;
+                // all receiver state below must share this outer transaction.
+                let tx = conn.unchecked_transaction()?;
+
+                let existing_digest: Option<Vec<u8>> = tx
+                    .query_row(
+                        "SELECT envelope_digest FROM replication_inbox
+                         WHERE home_device_id = ?1 AND store_id = ?2
+                           AND stream_epoch = ?3 AND sequence = ?4",
+                        rusqlite::params![
+                            &envelope.home_device_id,
+                            &envelope.store_id,
+                            epoch,
+                            envelope.sequence,
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing_digest) = existing_digest {
+                    return if existing_digest.as_slice() == envelope.envelope_digest.as_slice() {
+                        Ok(ReplicaApplyOutcome::Duplicate {
+                            sequence: envelope.sequence,
+                        })
+                    } else {
+                        Ok(ReplicaApplyOutcome::Fork {
+                            sequence: envelope.sequence,
+                        })
+                    };
+                }
+
+                let stream: Option<(i64, i64, Vec<u8>)> = tx
+                    .query_row(
+                        "SELECT stream_epoch, next_sequence, head_digest
+                         FROM replication_inbox_streams
+                         WHERE home_device_id = ?1 AND store_id = ?2",
+                        rusqlite::params![&envelope.home_device_id, &envelope.store_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+
+                let (expected, expected_predecessor, create_stream) =
+                    if let Some((active_epoch, expected, head_bytes)) = stream {
+                        let active =
+                            u64::try_from(active_epoch).map_err(|_| MemoryError::CorruptData {
+                                table: "replication_inbox_streams",
+                                row_id: format!(
+                                    "{}/{}",
+                                    envelope.home_device_id, envelope.store_id
+                                ),
+                                detail: "active stream epoch is negative".to_string(),
+                            })?;
+                        if active != envelope.stream_epoch {
+                            return Ok(ReplicaApplyOutcome::EpochConflict {
+                                active,
+                                received: envelope.stream_epoch,
+                            });
+                        }
+                        let head: [u8; 32] = head_bytes.try_into().map_err(|bytes: Vec<u8>| {
+                            MemoryError::CorruptData {
+                                table: "replication_inbox_streams",
+                                row_id: format!(
+                                    "{}/{}",
+                                    envelope.home_device_id, envelope.store_id
+                                ),
+                                detail: format!(
+                                    "head digest must be 32 bytes, got {}",
+                                    bytes.len()
+                                ),
+                            }
+                        })?;
+                        (expected, head, false)
+                    } else {
+                        (1, GENESIS_PREDECESSOR, true)
+                    };
+
+                if envelope.sequence > expected {
+                    return Ok(ReplicaApplyOutcome::Gap {
+                        expected,
+                        received: envelope.sequence,
+                    });
+                }
+                if envelope.sequence < expected
+                    || envelope.predecessor_digest != expected_predecessor
+                {
+                    return Ok(ReplicaApplyOutcome::Fork {
+                        sequence: envelope.sequence,
+                    });
+                }
+
+                let existing_fact: Option<(String, String, Option<String>, Option<String>)> = tx
+                    .query_row(
+                        "SELECT namespace, content, source, metadata FROM facts WHERE id = ?1",
+                        [&payload.fact_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()?;
+                if let Some((namespace, content, source, metadata_raw)) = existing_fact {
+                    let metadata = metadata_raw
+                        .map(|raw| {
+                            serde_json::from_str::<serde_json::Value>(&raw).map_err(|error| {
+                                MemoryError::CorruptData {
+                                    table: "facts",
+                                    row_id: payload.fact_id.clone(),
+                                    detail: format!("invalid stored metadata JSON: {error}"),
+                                }
+                            })
+                        })
+                        .transpose()?;
+                    if namespace != payload.namespace
+                        || content != payload.content
+                        || source != payload.source
+                        || metadata != payload.metadata
+                    {
+                        return Ok(ReplicaApplyOutcome::Fork {
+                            sequence: envelope.sequence,
+                        });
+                    }
+                } else {
+                    let current_count: usize = tx.query_row(
+                        "SELECT COUNT(*) FROM facts WHERE namespace = ?1",
+                        [&payload.namespace],
+                        |row| row.get(0),
+                    )?;
+                    if current_count >= max_facts_per_namespace {
+                        return Err(MemoryError::NamespaceFull {
+                            namespace: payload.namespace.clone(),
+                            count: current_count,
+                            limit: max_facts_per_namespace,
+                        });
+                    }
+                    insert_fact_in_tx(
+                        &tx,
+                        &payload.fact_id,
+                        &payload.namespace,
+                        &payload.content,
+                        &embedding_bytes,
+                        q8_bytes.as_deref(),
+                        payload.source.as_deref(),
+                        payload.metadata.as_ref(),
+                    )?;
+                    if let Some((weights, representation)) =
+                        sparse.as_ref().zip(sparse_representation.as_deref())
+                    {
+                        db::store_sparse_vector(
+                            &tx,
+                            &format!("fact:{}", payload.fact_id),
+                            weights,
+                            representation,
+                        )?;
+                    }
+                }
+
+                if create_stream {
+                    tx.execute(
+                        "INSERT INTO replication_inbox_streams
+                         (home_device_id, store_id, stream_epoch, next_sequence, head_digest)
+                         VALUES (?1, ?2, ?3, 1, ?4)",
+                        rusqlite::params![
+                            &envelope.home_device_id,
+                            &envelope.store_id,
+                            epoch,
+                            GENESIS_PREDECESSOR.as_slice(),
+                        ],
+                    )?;
+                }
+
+                tx.execute(
+                    "INSERT INTO replication_inbox
+                     (home_device_id, store_id, stream_epoch, sequence,
+                      operation_kind, payload_schema, payload, payload_digest,
+                      predecessor_digest, envelope_digest, fact_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        &envelope.home_device_id,
+                        &envelope.store_id,
+                        epoch,
+                        envelope.sequence,
+                        &envelope.operation_kind,
+                        &envelope.payload_schema,
+                        &envelope.payload,
+                        envelope.payload_digest.as_slice(),
+                        envelope.predecessor_digest.as_slice(),
+                        envelope.envelope_digest.as_slice(),
+                        &payload.fact_id,
+                    ],
+                )?;
+
+                let advanced = tx.execute(
+                    "UPDATE replication_inbox_streams
+                     SET next_sequence = ?4, head_digest = ?5, updated_at = datetime('now')
+                     WHERE home_device_id = ?1 AND store_id = ?2 AND stream_epoch = ?3
+                       AND next_sequence = ?6 AND head_digest = ?7",
+                    rusqlite::params![
+                        &envelope.home_device_id,
+                        &envelope.store_id,
+                        epoch,
+                        next_sequence,
+                        envelope.envelope_digest.as_slice(),
+                        envelope.sequence,
+                        expected_predecessor.as_slice(),
+                    ],
+                )?;
+                if advanced != 1 {
+                    return Err(MemoryError::Other(
+                        "replication inbox stream allocator lost ownership".to_string(),
+                    ));
+                }
+                tx.commit()?;
+                Ok(ReplicaApplyOutcome::Applied {
+                    sequence: envelope.sequence,
+                    fact_id: payload.fact_id,
+                })
+            })
+            .await?;
+
+        if matches!(
+            &outcome,
+            crate::journal::ReplicaApplyOutcome::Applied { .. }
+        ) {
+            self.clear_search_cache();
+            #[cfg(feature = "hnsw")]
+            self.sync_pending_hnsw_ops_best_effort("apply_verified_fact_create")
+                .await;
+        }
+        debug_assert!(
+            !matches!(&outcome, crate::journal::ReplicaApplyOutcome::Applied { fact_id, .. } if fact_id != &applied_fact_id),
+            "receiver returned a fact ID different from the validated payload"
+        );
+        Ok(outcome)
     }
 
     /// **DANGER**: This physically mutates/deletes a truth-bearing row.

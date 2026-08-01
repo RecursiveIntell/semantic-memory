@@ -1,92 +1,98 @@
 //! poly-kv bridge for semantic-memory integration.
 //!
-//! Gated behind the `poly-kv-codec` feature.
+//! This module is gated behind `poly-kv-codec`. `poly-kv` represents a
+//! model-specific KV cache, while semantic-memory stores standalone embeddings.
+//! The bridge therefore refuses to manufacture a KV pool from embeddings: doing
+//! so would attach a misleading compressed-KV receipt to data with no KV shape,
+//! model fingerprint, tokenizer fingerprint, or exact fallback.
 
 use crate::error::MemoryError;
 
-/// Build a SharedKVPool from (key, embedding) pairs.
+/// Returns a typed rejection because arbitrary semantic embeddings are not
+/// sufficient input to construct a truthful `poly_kv::SharedKvPool`.
+///
+/// A real pool must be built by `poly-kv` from authenticated `ExactKvBlock`s,
+/// shape metadata, model/tokenizer fingerprints, and an exact fallback.
 pub fn build_pool_from_embeddings(
-    embeddings: &[(String, Vec<f32>)],
-    embedding_dim: usize,
-    seed: u64,
-) -> Result<(poly_kv::SharedKVPool, poly_kv::PoolBuildReceipt), MemoryError> {
-    let shape = poly_kv::KvTensorShape {
-        attention_type: poly_kv::AttentionType::MHA,
-        num_layers: 1,
-        num_heads: 1,
-        num_kv_heads: 1,
-        head_dim: embedding_dim,
-        hidden_size: embedding_dim,
-    };
-
-    let (pool, receipt) = poly_kv::SharedKVPool::build(embeddings, &shape, seed)
-        .map_err(|e| MemoryError::Other(format!("poly-kv pool build failed: {e}")))?;
-
-    Ok((pool, receipt))
+    _embeddings: &[(String, Vec<f32>)],
+    _embedding_dim: usize,
+    _seed: u64,
+) -> Result<(poly_kv::SharedKvPool, poly_kv::PoolBuildReceiptV1), MemoryError> {
+    Err(MemoryError::Other(
+        "cannot build a poly-kv KV-cache pool from semantic embeddings; supply authenticated ExactKvBlock input to poly-kv directly"
+            .to_string(),
+    ))
 }
 
-/// Convert a PoolBuildReceipt into a ProveKvPoolGenerationV1.
+/// Convert a real poly-kv build receipt into the semantic-memory generation
+/// record without inventing a codec result.
 pub fn receipt_to_generation(
-    receipt: &poly_kv::PoolBuildReceipt,
+    receipt: &poly_kv::PoolBuildReceiptV1,
     snapshot_digest: &str,
 ) -> crate::types::ProveKvPoolGenerationV1 {
     crate::types::ProveKvPoolGenerationV1 {
         schema_version: "provekv_pool_generation_v1".into(),
-        generation_id: receipt.pool_digest.hex().to_string(),
+        generation_id: receipt.manifest_digest.to_string(),
         embedding_snapshot_digest: snapshot_digest.to_string(),
-        source_digest: receipt.pool_digest.hex().to_string(),
-        pool_manifest_digest: String::new(),
-        codec_family: "fib_quant".to_string(),
-        codec_profile: "k4_n32_paper_default".to_string(),
+        source_digest: receipt.input_digest.to_string(),
+        pool_manifest_digest: receipt.manifest_digest.to_string(),
+        codec_family: "poly-kv".to_string(),
+        codec_profile: "alpha_reference".to_string(),
         vector_dim: 0,
-        item_count: receipt.total_tokens as usize,
-        payload_bytes: receipt.pool_size_bytes,
+        item_count: receipt.block_count as usize,
+        payload_bytes: receipt.encoded_bytes as u64,
         created_at: chrono::Utc::now(),
     }
 }
 
-/// Serialize a SharedKVPool to JSON bytes for DB storage.
-pub fn serialize_pool(pool: &poly_kv::SharedKVPool) -> Result<Vec<u8>, MemoryError> {
-    // SharedKVPool doesn't derive Serialize, but its fields do.
-    // Use a manual envelope.
-    #[derive(serde::Serialize)]
-    struct Envelope<'a> {
-        manifest: &'a poly_kv::PoolManifest,
-        layers: &'a [poly_kv::PoolLayer],
-        policy: &'a poly_kv::CompressionPolicy,
-    }
-    let env = Envelope {
-        manifest: &pool.manifest,
-        layers: &pool.layers,
-        policy: &pool.policy,
-    };
-    serde_json::to_vec(&env).map_err(|e| MemoryError::Other(format!("pool serialize: {e}")))
+/// Serialization is deliberately unavailable through the bridge because
+/// `SharedKvPool` keeps its internal fallback and encoded block state private.
+/// Persist the canonical manifest and receipt provided by poly-kv instead.
+pub fn serialize_pool(_pool: &poly_kv::SharedKvPool) -> Result<Vec<u8>, MemoryError> {
+    Err(MemoryError::Other(
+        "poly-kv pool serialization is not exposed by this bridge; persist canonical poly-kv artifacts at the owning boundary"
+            .to_string(),
+    ))
 }
 
-/// Deserialize a SharedKVPool from JSON bytes.
-pub fn deserialize_pool(data: &[u8]) -> Result<poly_kv::SharedKVPool, MemoryError> {
-    #[derive(serde::Deserialize)]
-    struct Envelope {
-        manifest: poly_kv::PoolManifest,
-        layers: Vec<poly_kv::PoolLayer>,
-        policy: poly_kv::CompressionPolicy,
-    }
-    let env: Envelope = serde_json::from_slice(data)
-        .map_err(|e| MemoryError::Other(format!("pool deserialize: {e}")))?;
-    Ok(poly_kv::SharedKVPool {
-        manifest: env.manifest,
-        layers: env.layers,
-        policy: env.policy,
-    })
+/// Deserialization is deliberately unavailable through the bridge. Rehydrate
+/// pools through a verified poly-kv artifact loader at the owning boundary.
+pub fn deserialize_pool(_data: &[u8]) -> Result<poly_kv::SharedKvPool, MemoryError> {
+    Err(MemoryError::Other(
+        "poly-kv pool deserialization is not exposed by this bridge; load verified poly-kv artifacts at the owning boundary"
+            .to_string(),
+    ))
 }
 
-/// Search a pool layer for tokens similar to a query.
+/// Similarity search over a KV cache is not equivalent to semantic embedding
+/// retrieval. This bridge refuses the operation rather than pretending that a
+/// cache-layer decoder provides a semantic nearest-neighbour index.
 pub fn search_pool_layer(
-    pool: &poly_kv::SharedKVPool,
-    layer_idx: usize,
-    query: &[f32],
-    top_k: usize,
+    _pool: &poly_kv::SharedKvPool,
+    _layer_idx: usize,
+    _query: &[f32],
+    _top_k: usize,
 ) -> Result<Vec<(usize, f32)>, MemoryError> {
-    pool.search_similar_tokens(layer_idx, query, top_k)
-        .map_err(|e| MemoryError::Other(format!("pool search failed: {e}")))
+    Err(MemoryError::Other(
+        "poly-kv pool-layer search is not a semantic retrieval primitive".to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embeddings_cannot_be_relabelled_as_a_kv_pool() {
+        let error = build_pool_from_embeddings(&[("doc".to_string(), vec![1.0])], 1, 0)
+            .expect_err("semantic embeddings cannot form a KV pool");
+        assert!(error.to_string().contains("cannot build"));
+    }
+
+    #[test]
+    fn pool_deserialization_fails_closed_without_a_poly_kv_loader() {
+        let error = deserialize_pool(b"not-a-poly-kv-artifact")
+            .expect_err("the bridge must not invent a pool from bytes");
+        assert!(error.to_string().contains("deserialization is not exposed"));
+    }
 }

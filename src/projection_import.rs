@@ -373,9 +373,7 @@ pub(crate) fn query_import_log(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(
             |(
                 envelope_id,
@@ -385,11 +383,19 @@ pub(crate) fn query_import_log(
                 record_count,
                 imported_at,
                 trace_id,
-            )| {
+            )|
+             -> Result<ImportReceipt, MemoryError> {
                 let status_parsed = ImportStatus::from_str_value(&status);
                 let was_duplicate = matches!(status_parsed, ImportStatus::AlreadyImported);
-                ImportReceipt {
-                    envelope_id: EnvelopeId(envelope_id),
+                let envelope_id = EnvelopeId::from_legacy(envelope_id).map_err(|error| {
+                    MemoryError::Database(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    ))
+                })?;
+                Ok(ImportReceipt {
+                    envelope_id,
                     schema_version,
                     content_digest,
                     status: status_parsed,
@@ -397,10 +403,10 @@ pub(crate) fn query_import_log(
                     imported_at,
                     was_duplicate,
                     trace_id: trace_id.map(TraceId::new),
-                }
+                })
             },
         )
-        .collect())
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// Get the most recent import timestamp for a namespace.

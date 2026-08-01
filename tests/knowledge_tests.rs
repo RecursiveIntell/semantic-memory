@@ -17,7 +17,9 @@ fn projection_batch_json(namespace: &str) -> String {
         "source_envelope_id": "env-delete-ns",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": format!("digest-{namespace}"),
+        // Use a canonical computed digest so this fixture reaches the
+        // namespace-deletion behavior rather than import validation.
+        "content_digest": stack_ids::ContentDigest::compute_str("digest-delete-ns"),
         "source_authority": "test",
         "scope_key": { "namespace": namespace },
         "source_exported_at": "2026-03-07T00:00:00Z",

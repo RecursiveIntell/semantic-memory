@@ -296,6 +296,86 @@ pub(crate) fn list_all_graph_edges(conn: &Connection) -> Result<Vec<StoredGraphE
     Ok(rows)
 }
 
+/// List up to `max_rows` stored graph edges, excluding invalidated ones.
+///
+/// The hard limit is intentionally enforced below the caller, so callers can
+/// bound in-memory growth for operationally sensitive paths while retaining
+/// the same query shape in the unlimited helper.
+pub(crate) fn list_all_graph_edges_with_limit(
+    conn: &Connection,
+    max_rows: usize,
+) -> Result<Vec<StoredGraphEdge>, MemoryError> {
+    let max_rows = max_rows.max(1) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
+         FROM graph_edges
+         WHERE is_invalidated = 0
+         ORDER BY recorded_at ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![max_rows], |row| {
+            Ok(StoredGraphEdge {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                target: row.get(2)?,
+                edge_type: row.get(3)?,
+                edge_type_parsed: None,
+                weight: row.get(4)?,
+                metadata: row.get(5)?,
+                content_digest: row.get(6)?,
+                recorded_at: row.get(7)?,
+                is_invalidated: row.get::<_, i64>(8)? != 0,
+                invalidated_at: row.get(9)?,
+                invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// List up to `max_rows` graph edges involving a specific node (as source or
+/// target), excluding invalidated edges.
+pub(crate) fn list_graph_edges_for_node_with_limit(
+    conn: &Connection,
+    node_id: &str,
+    max_rows: usize,
+) -> Result<Vec<StoredGraphEdge>, MemoryError> {
+    let max_rows = max_rows.max(1) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, source, target, edge_type, weight, metadata, content_digest, recorded_at,
+                is_invalidated, invalidated_at, invalidation_reason, valid_time, recorded_time
+         FROM graph_edges
+         WHERE (source = ?1 OR target = ?1) AND is_invalidated = 0
+         ORDER BY recorded_at ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![node_id, max_rows], |row| {
+            Ok(StoredGraphEdge {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                target: row.get(2)?,
+                edge_type: row.get(3)?,
+                edge_type_parsed: None,
+                weight: row.get(4)?,
+                metadata: row.get(5)?,
+                content_digest: row.get(6)?,
+                recorded_at: row.get(7)?,
+                is_invalidated: row.get::<_, i64>(8)? != 0,
+                invalidated_at: row.get(9)?,
+                invalidation_reason: row.get(10)?,
+                valid_time: row.get(11)?,
+                recorded_time: row.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// List graph edges involving a node that were valid as of a domain time and
 /// known as of a recorded/system time. Unlike the live list APIs, this can
 /// return edges that are now invalidated if the invalidation happened after
@@ -599,7 +679,7 @@ fn compute_edge_digest(
     if let Some(recorded_time) = explicit_recorded_time {
         builder.update(recorded_time.as_bytes());
     }
-    builder.finalize().0
+    builder.finalize().to_string()
 }
 
 #[cfg(test)]

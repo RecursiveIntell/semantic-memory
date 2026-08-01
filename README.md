@@ -10,10 +10,10 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 | Contract fact | Current value |
 | --- | --- |
-| Crate version | `0.5.10` |
+| Crate version | `0.5.14` |
 | Minimum Rust version | `1.75` |
 | Default Cargo feature | `usearch-backend` |
-| Maximum schema version | `36` |
+| Maximum schema version | `38` |
 | License | Apache-2.0 |
 
 ## What the crate owns
@@ -39,7 +39,7 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 ```toml
 [dependencies]
-semantic-memory = "0.5.10"
+semantic-memory = "0.5.14"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -47,7 +47,7 @@ The default build enables `usearch-backend`. For an exact pure-Rust backend with
 
 ```toml
 [dependencies]
-semantic-memory = { version = "0.5.10", default-features = false, features = ["brute-force"] }
+semantic-memory = { version = "0.5.14", default-features = false, features = ["brute-force"] }
 ```
 
 ## Quick start
@@ -261,9 +261,9 @@ At least one vector backend (`usearch-backend`, `hnsw`, or `brute-force`) must b
 
 A feature flag proves that code is compiled, not that a default search request exercised it. Use receipts, explained results, tests, or application-level traces for runtime claims.
 
-## Selected schema milestones, V18–V36
+## Selected schema milestones, V18–V38
 
-`MAX_SCHEMA_VERSION` is `36`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
+`MAX_SCHEMA_VERSION` is `38`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
 
 | Version | Durable addition |
 | ---: | --- |
@@ -283,6 +283,8 @@ A feature flag proves that code is compiled, not that a default search request e
 | V34 | Procedural memory |
 | V35 | Opt-in replay inputs |
 | V36 | Sparse vectors and deletion cleanup triggers |
+| V37 | Device-owned mutation journal for replication |
+| V38 | Replication acknowledgement and stream-epoch state |
 
 Projection-import compatibility APIs are migration surfaces. New integrations should use the current batch-import seam and preserve source export time, transformation time, importer commit time, scope, and temporal fields separately.
 

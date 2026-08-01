@@ -5,6 +5,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Replication scope. Only fact-create replication is currently supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplicationMode {
+    #[default]
+    Disabled,
+    FactCreateRequired,
+}
+
 /// Configuration for the memory system.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
@@ -27,6 +36,22 @@ pub struct MemoryConfig {
     /// Resource limits.
     pub limits: MemoryLimits,
 
+    /// Optional device identity for mutation journaling.
+    #[serde(default)]
+    pub journal_device_id: Option<String>,
+
+    /// Optional store identity for mutation journaling.
+    #[serde(default)]
+    pub journal_store_id: Option<String>,
+
+    /// Explicit replication mode. Defaults to disabled for compatibility.
+    #[serde(default)]
+    pub replication_mode: ReplicationMode,
+
+    /// Positive stream epoch required by FactCreateRequired.
+    #[serde(default)]
+    pub replication_stream_epoch: u64,
+
     /// Custom token counter. None = use EstimateTokenCounter (chars / 4).
     #[serde(skip)]
     pub token_counter: Option<Arc<dyn TokenCounter>>,
@@ -46,6 +71,10 @@ impl std::fmt::Debug for MemoryConfig {
             .field("chunking", &self.chunking)
             .field("pool", &self.pool)
             .field("limits", &self.limits)
+            .field("journal_device_id", &self.journal_device_id)
+            .field("journal_store_id", &self.journal_store_id)
+            .field("replication_mode", &self.replication_mode)
+            .field("replication_stream_epoch", &self.replication_stream_epoch)
             .field(
                 "token_counter",
                 &self.token_counter.as_ref().map(|_| "custom"),
@@ -65,6 +94,10 @@ impl Default for MemoryConfig {
             chunking: ChunkingConfig::default(),
             pool: PoolConfig::default(),
             limits: MemoryLimits::default(),
+            journal_device_id: None,
+            journal_store_id: None,
+            replication_mode: ReplicationMode::Disabled,
+            replication_stream_epoch: 0,
             token_counter: None,
             #[cfg(feature = "hnsw")]
             hnsw: crate::hnsw::HnswConfig::default(),
@@ -85,11 +118,61 @@ impl MemoryConfig {
             .normalize_and_validate(self.embedding.dimensions)?;
         self.chunking.normalize_and_validate()?;
         self.pool.normalize_and_validate()?;
+        self.validate_replication()?;
         #[cfg(feature = "hnsw")]
         {
             self.hnsw.dimensions = self.embedding.dimensions;
         }
         Ok(self)
+    }
+
+    fn validate_replication(&self) -> Result<(), MemoryError> {
+        let identity = match (
+            self.journal_device_id.as_deref(),
+            self.journal_store_id.as_deref(),
+        ) {
+            (None, None) => None,
+            (Some(device_id), Some(store_id)) => Some((device_id, store_id)),
+            _ => {
+                return Err(MemoryError::InvalidConfig {
+                    field: "journal_device_id/journal_store_id",
+                    reason: "both identity fields must be set together".to_string(),
+                });
+            }
+        };
+
+        if let Some((device_id, store_id)) = identity {
+            for (field, value) in [
+                ("journal_device_id", device_id),
+                ("journal_store_id", store_id),
+            ] {
+                if value.is_empty()
+                    || value.trim() != value
+                    || value.chars().any(char::is_whitespace)
+                {
+                    return Err(MemoryError::InvalidConfig {
+                        field,
+                        reason: "must be non-empty, trimmed, and contain no whitespace".to_string(),
+                    });
+                }
+            }
+        }
+
+        if self.replication_mode == ReplicationMode::FactCreateRequired {
+            if identity.is_none() {
+                return Err(MemoryError::InvalidConfig {
+                    field: "replication_mode",
+                    reason: "FactCreateRequired requires device and store identity".to_string(),
+                });
+            }
+            if self.replication_stream_epoch == 0 {
+                return Err(MemoryError::InvalidConfig {
+                    field: "replication_stream_epoch",
+                    reason: "FactCreateRequired requires a positive epoch".to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -303,6 +386,18 @@ pub enum DerivedVectorBackendPolicy {
     /// This is deliberately not a replacement for SQLite f32 storage or for prompt/KV
     /// prefix reuse. It is a rebuildable derived artifact over an embedding snapshot.
     ProveKvPoolCandidateOnly,
+    /// Request FibQuant candidate generation.
+    ///
+    /// The policy is part of the public configuration contract, but this source
+    /// currently rejects it explicitly until a truthful FibQuant artifact adapter
+    /// exists; it never silently substitutes raw-vector retrieval.
+    FibQuantCandidateOnly,
+    /// Request per-dimension compressed candidate generation.
+    ///
+    /// The policy is part of the public configuration contract, but this source
+    /// currently rejects it explicitly until a truthful per-dimension artifact
+    /// adapter exists; it never silently substitutes raw-vector retrieval.
+    PerDimCandidateOnly,
 }
 
 const fn default_turbo_quant_bits() -> u8 {
@@ -328,6 +423,11 @@ const fn default_sparse_top_k() -> usize {
 const fn default_sparse_derive_top_k() -> usize {
     128
 }
+
+const MAX_SEARCH_CANDIDATE_POOL_SIZE: usize = 2_000;
+const MAX_SEARCH_DEFAULT_TOP_K: usize = 200;
+const MAX_SPARSE_TOP_K: usize = 1_000;
+const MAX_SPARSE_DERIVE_TOP_K: usize = 1_000;
 
 const fn default_sparse_derive_min_weight() -> f32 {
     0.01
@@ -380,25 +480,41 @@ impl SearchConfig {
     }
 
     pub(crate) fn uses_derived_vector_backend(&self) -> bool {
-        self.uses_turbo_quant_backend() || self.uses_provekv_pool_backend()
+        self.uses_turbo_quant_backend()
+            || self.uses_provekv_pool_backend()
+            || matches!(
+                self.derived_vector_backend,
+                DerivedVectorBackendPolicy::FibQuantCandidateOnly
+                    | DerivedVectorBackendPolicy::PerDimCandidateOnly
+            )
     }
 
     fn normalize_and_validate(&mut self, embedding_dimensions: usize) -> Result<(), MemoryError> {
         #[cfg(not(feature = "turbo-quant-codec"))]
         let _ = embedding_dimensions;
-        if self.candidate_pool_size == 0 {
-            self.candidate_pool_size = 1;
+
+        match self.derived_vector_backend {
+            DerivedVectorBackendPolicy::FibQuantCandidateOnly => {
+                return Err(MemoryError::NotImplemented(
+                    "FibQuant candidate generation is not implemented in this build".to_string(),
+                ));
+            }
+            DerivedVectorBackendPolicy::PerDimCandidateOnly => {
+                return Err(MemoryError::NotImplemented(
+                    "per-dimension candidate generation is not implemented in this build"
+                        .to_string(),
+                ));
+            }
+            _ => {}
         }
-        if self.default_top_k == 0 {
-            self.default_top_k = 1;
-        }
+
+        self.candidate_pool_size = self
+            .candidate_pool_size
+            .clamp(1, MAX_SEARCH_CANDIDATE_POOL_SIZE);
+        self.default_top_k = self.default_top_k.clamp(1, MAX_SEARCH_DEFAULT_TOP_K);
         self.candidate_pool_size = self.candidate_pool_size.max(self.default_top_k);
-        if self.sparse_top_k == 0 {
-            self.sparse_top_k = 1;
-        }
-        if self.sparse_derive_top_k == 0 {
-            self.sparse_derive_top_k = 1;
-        }
+        self.sparse_top_k = self.sparse_top_k.clamp(1, MAX_SPARSE_TOP_K);
+        self.sparse_derive_top_k = self.sparse_derive_top_k.clamp(1, MAX_SPARSE_DERIVE_TOP_K);
         if !self.rrf_k.is_finite() || self.rrf_k <= 0.0 {
             return Err(MemoryError::InvalidConfig {
                 field: "search.rrf_k",

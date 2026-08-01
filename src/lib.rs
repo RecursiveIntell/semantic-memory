@@ -92,6 +92,7 @@ pub(crate) mod db;
 /// Bounded evidence-gap retrieval and state-aware reranking over existing authority/search paths.
 pub mod evidence_gap;
 mod forgetting;
+pub mod journal;
 mod procedural_memory;
 pub mod transition_contracts;
 mod transition_verifier;
@@ -159,11 +160,11 @@ pub(crate) mod knowledge;
 pub mod origin_authority;
 pub use authority::MemoryAuthority;
 pub use authority_contracts::{
-    AuthorityAdmission, AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit,
-    AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1, CapabilityManifestV1, Confidence,
-    CosineSimilarity, InjectionDecisionV1, InjectionDisposition, MemoryEnvelopeV1,
-    NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1, RetrievalWitnessV1,
-    StageOutcomeV1, SupersessionReceiptV1,
+    AuthorityAdmission, AuthorityFaultStage, AuthorityIssuer, AuthorityOperationKind,
+    AuthorityPermit, AuthorityReceiptV1, AuthoritySnapshotId, AuthorityStateV1,
+    CapabilityManifestV1, Confidence, CosineSimilarity, InjectionDecisionV1, InjectionDisposition,
+    MemoryEnvelopeV1, NonNegativeWeight, Probability, RetrievalEpoch, RetrievalResponseV1,
+    RetrievalWitnessV1, StageOutcomeV1, SupersessionReceiptV1,
 };
 pub use forgetting::{
     ForgettingClosureReceiptV1, ForgettingClosureRequestV1, ForgettingDispositionV1,
@@ -222,9 +223,8 @@ pub mod matryoshka;
 /// Multiscale retrieval scheduling pipeline (staged search with budgets).
 #[cfg(feature = "multiscale")]
 pub mod pipeline;
-/// Compatibility-only legacy import surface.
-///
-/// This module exists only for migration compatibility with pre-V11 import paths.
+#[cfg(feature = "poly-kv-codec")]
+pub mod poly_kv_backend;
 #[deprecated(
     since = "0.6.0",
     note = "Legacy V10 import path is migration-only. Use `import_projection_batch()` with `ProjectionImportBatchV3` on the canonical lane."
@@ -280,7 +280,7 @@ pub mod vector_snapshot;
 // Re-export primary public types.
 pub use config::{
     ChunkingConfig, ChunkingStrategy, DerivedVectorBackendPolicy, EmbeddingConfig, MemoryConfig,
-    MemoryLimits, PoolConfig, SearchConfig,
+    MemoryLimits, PoolConfig, ReplicationMode, SearchConfig,
 };
 pub use db::{IntegrityReport, ReconcileAction, VerifyMode};
 #[cfg(feature = "candle-embedder")]
@@ -691,6 +691,9 @@ struct MemoryStoreInner {
     search_cache: std::sync::Mutex<lru::LruCache<String, CachedSearchResult>>,
     pub(crate) authority_fault:
         Arc<std::sync::Mutex<Option<authority_contracts::AuthorityFaultStage>>>,
+    /// Immutable construction-time identity for verified fact-create replication.
+    /// When absent, mutations are local-only and emit no outbox rows.
+    replication_identity: Option<ReplicationIdentity>,
     #[cfg(feature = "hnsw")]
     hnsw_index: std::sync::RwLock<HnswIndex>,
 }
@@ -709,6 +712,44 @@ const EMBEDDING_NORMALIZATION_PROFILE: &str = "provider-output-v1";
 struct CachedSearchResult {
     results: Vec<types::SearchResult>,
     retrieval_epoch: RetrievalEpoch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReplicationIdentity {
+    home_device_id: String,
+    store_id: String,
+    stream_epoch: u64,
+}
+
+fn validate_replication_identity(
+    home_device_id: &str,
+    store_id: &str,
+    stream_epoch: u64,
+) -> Result<ReplicationIdentity, MemoryError> {
+    if stream_epoch == 0 {
+        return Err(MemoryError::InvalidConfig {
+            field: "replication_stream_epoch",
+            reason: "must be positive".to_string(),
+        });
+    }
+    if home_device_id.is_empty()
+        || store_id.is_empty()
+        || home_device_id.trim() != home_device_id
+        || store_id.trim() != store_id
+        || home_device_id.chars().any(char::is_whitespace)
+        || store_id.chars().any(char::is_whitespace)
+    {
+        return Err(MemoryError::InvalidConfig {
+            field: "replication_identity",
+            reason: "device and store IDs must be non-empty, trimmed, and contain no whitespace"
+                .to_string(),
+        });
+    }
+    Ok(ReplicationIdentity {
+        home_device_id: home_device_id.to_string(),
+        store_id: store_id.to_string(),
+        stream_epoch,
+    })
 }
 
 #[cfg(feature = "hnsw")]
@@ -776,6 +817,41 @@ impl MemoryStore {
     /// Return the capability-gated, append-only authority mutation surface.
     pub fn authority(&self) -> MemoryAuthority {
         MemoryAuthority::new(self.clone())
+    }
+
+    /// Deprecated compatibility check. Replication identity is immutable after
+    /// store construction: only an identical preconfigured identity is accepted.
+    #[deprecated(note = "configure replication in MemoryConfig before opening the store")]
+    pub fn configure_replication(
+        &self,
+        home_device_id: &str,
+        store_id: &str,
+    ) -> Result<(), MemoryError> {
+        let Some(configured) = self.inner.replication_identity.as_ref() else {
+            return Err(MemoryError::InvalidConfig {
+                field: "replication_identity",
+                reason: "replication was not enabled at store construction".to_string(),
+            });
+        };
+        let requested =
+            validate_replication_identity(home_device_id, store_id, configured.stream_epoch)?;
+        if requested != *configured {
+            return Err(MemoryError::InvalidConfig {
+                field: "replication_identity",
+                reason: "replication identity is immutable after store construction".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replication_journal_identity(&self) -> Option<(String, String, u64)> {
+        self.inner.replication_identity.as_ref().map(|identity| {
+            (
+                identity.home_device_id.clone(),
+                identity.store_id.clone(),
+                identity.stream_epoch,
+            )
+        })
     }
 
     /// Run read-only work on a pooled reader connection on a blocking thread.
@@ -1095,6 +1171,26 @@ impl MemoryStore {
             }
         };
 
+        let replication_identity =
+            match config.replication_mode {
+                ReplicationMode::Disabled => None,
+                ReplicationMode::FactCreateRequired => Some(validate_replication_identity(
+                    config.journal_device_id.as_deref().ok_or_else(|| {
+                        MemoryError::InvalidConfig {
+                            field: "journal_device_id",
+                            reason: "required for fact-create replication".to_string(),
+                        }
+                    })?,
+                    config.journal_store_id.as_deref().ok_or_else(|| {
+                        MemoryError::InvalidConfig {
+                            field: "journal_store_id",
+                            reason: "required for fact-create replication".to_string(),
+                        }
+                    })?,
+                    config.replication_stream_epoch,
+                )?),
+            };
+
         let store = Self {
             inner: Arc::new(MemoryStoreInner {
                 pool,
@@ -1110,6 +1206,7 @@ impl MemoryStore {
                 ))),
                 search_cache: std::sync::Mutex::new(lru::LruCache::new(nonzero_cache_capacity(64))),
                 authority_fault: Arc::new(std::sync::Mutex::new(None)),
+                replication_identity,
                 #[cfg(feature = "hnsw")]
                 hnsw_index: std::sync::RwLock::new(hnsw_index),
             }),
@@ -1875,6 +1972,38 @@ impl MemoryStore {
         &self,
     ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
         self.with_read_conn(graph_edges::list_all_graph_edges).await
+    }
+
+    /// List stored graph edges with a hard cap.
+    ///
+    /// This is intended for non-querying control-plane reads (health, telemetry,
+    /// and bounded graph reasoning). Use `list_graph_edges_for_neighborhood`
+    /// or targeted filters for workflows that must see complete graph context.
+    pub async fn list_all_graph_edges_with_limit(
+        &self,
+        max_rows: usize,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        if max_rows == 0 {
+            return Ok(Vec::new());
+        }
+        self.with_read_conn(move |conn| {
+            graph_edges::list_all_graph_edges_with_limit(conn, max_rows)
+        })
+        .await
+    }
+
+    /// List graph edges involving a node (as source or target), excluding
+    /// invalidated edges, capped by `max_rows`.
+    pub async fn list_graph_edges_for_node_with_limit(
+        &self,
+        node_id: &str,
+        max_rows: usize,
+    ) -> Result<Vec<graph_edges::StoredGraphEdge>, MemoryError> {
+        let node_id = node_id.to_string();
+        self.with_read_conn(move |conn| {
+            graph_edges::list_graph_edges_for_node_with_limit(conn, &node_id, max_rows)
+        })
+        .await
     }
 
     /// List graph edges within N hops of the given seed node IDs.
@@ -3795,6 +3924,88 @@ mod tests {
         let results = vec![make_result(content)];
         let compressed = compress_search_results(results);
         assert_eq!(compressed[0].content, "First sentence.");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn replication_identity_is_immutable_after_store_construction() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let store = MemoryStore::open_with_embedder(
+            MemoryConfig {
+                base_dir: temp_dir.path().to_path_buf(),
+                journal_device_id: Some("device-1".to_string()),
+                journal_store_id: Some("store-1".to_string()),
+                replication_mode: ReplicationMode::FactCreateRequired,
+                replication_stream_epoch: 7,
+                ..Default::default()
+            },
+            Box::new(MockEmbedder::new(768)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.replication_journal_identity(),
+            Some(("device-1".to_string(), "store-1".to_string(), 7))
+        );
+        store.configure_replication("device-1", "store-1").unwrap();
+        assert!(store.configure_replication("device-2", "store-1").is_err());
+        assert_eq!(
+            store.replication_journal_identity(),
+            Some(("device-1".to_string(), "store-1".to_string(), 7))
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn disabled_store_cannot_be_enabled_after_open() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let store = MemoryStore::open_with_embedder(
+            MemoryConfig {
+                base_dir: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            Box::new(MockEmbedder::new(768)),
+        )
+        .unwrap();
+        assert_eq!(store.replication_journal_identity(), None);
+        assert!(store.configure_replication("device-1", "store-1").is_err());
+    }
+
+    #[test]
+    fn replication_identity_validation_is_strict() {
+        let identity = validate_replication_identity("device-1", "store-1", 1).unwrap();
+        assert_eq!(identity.home_device_id, "device-1");
+        assert_eq!(identity.store_id, "store-1");
+        assert_eq!(identity.stream_epoch, 1);
+
+        for (device_id, store_id, epoch) in [
+            ("", "store", 1),
+            ("device", "", 1),
+            ("device id", "store", 1),
+            (" device", "store", 1),
+            ("device", "store", 0),
+        ] {
+            assert!(validate_replication_identity(device_id, store_id, epoch).is_err());
+        }
+    }
+
+    #[test]
+    fn fact_create_required_rejects_missing_identity_or_epoch() {
+        let missing_identity = MemoryConfig {
+            replication_mode: ReplicationMode::FactCreateRequired,
+            replication_stream_epoch: 1,
+            ..Default::default()
+        };
+        assert!(missing_identity.normalize_and_validate().is_err());
+
+        let missing_epoch = MemoryConfig {
+            journal_device_id: Some("device-1".to_string()),
+            journal_store_id: Some("store-1".to_string()),
+            replication_mode: ReplicationMode::FactCreateRequired,
+            replication_stream_epoch: 0,
+            ..Default::default()
+        };
+        assert!(missing_epoch.normalize_and_validate().is_err());
     }
 
     #[test]

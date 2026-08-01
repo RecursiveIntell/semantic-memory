@@ -18,7 +18,7 @@ use forge_memory_bridge::PROJECTION_IMPORT_BATCH_V1_SCHEMA;
 use semantic_memory::compat::compat_trace_id::TraceId;
 use semantic_memory::compat::legacy_import_envelope::{ImportEnvelope, ImportRecord, ImportStatus};
 use semantic_memory::{MemoryConfig, MemoryStore, MockEmbedder, ProjectionQuery};
-use stack_ids::{ClaimId, ClaimVersionId, EnvelopeId, ScopeKey};
+use stack_ids::{ClaimId, ClaimVersionId, ContentDigest, EnvelopeId, ScopeKey};
 use tempfile::TempDir;
 use tokio::time::{sleep, Duration};
 
@@ -32,12 +32,19 @@ fn test_store() -> (MemoryStore, TempDir) {
     (store, dir)
 }
 
+/// Builds a canonical BLAKE3 content digest while remaining deterministic and
+/// distinct for every semantic label used by projection-import tests.
+fn canonical_test_digest(label: &str) -> String {
+    assert!(!label.is_empty(), "test digest label must not be empty");
+    ContentDigest::compute_str(label).hex().to_owned()
+}
+
 fn make_claim_batch(envelope_id: &str, claim_id: &str, content: &str) -> String {
     serde_json::json!({
         "source_envelope_id": envelope_id,
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": format!("digest-{envelope_id}"),
+        "content_digest": canonical_test_digest(envelope_id),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "trace_ctx": { "trace_id": "trace-001" },
@@ -74,7 +81,7 @@ fn make_multi_record_batch(envelope_id: &str) -> String {
         "source_envelope_id": envelope_id,
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": format!("digest-multi-{envelope_id}"),
+        "content_digest": canonical_test_digest(&format!("multi-{envelope_id}")),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -151,7 +158,7 @@ fn make_multi_record_batch_collision(
         "source_envelope_id": envelope_id,
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": content_digest,
+        "content_digest": canonical_test_digest(content_digest),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": source_exported_at,
@@ -232,7 +239,7 @@ fn make_scoped_claim_batch(
         "source_envelope_id": envelope_id,
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": format!("digest-{envelope_id}"),
+        "content_digest": canonical_test_digest(envelope_id),
         "source_authority": "forge",
         "scope_key": scope_key,
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -270,7 +277,7 @@ fn make_verification_relation_batch(
         "source_envelope_id": envelope_id,
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": format!("digest-{envelope_id}"),
+        "content_digest": canonical_test_digest(envelope_id),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": source_exported_at,
@@ -769,7 +776,7 @@ async fn duplicate_but_different_digest_both_import() {
         "source_envelope_id": "env-dup",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "different-digest",
+        "content_digest": canonical_test_digest("different-digest"),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -927,7 +934,7 @@ async fn unknown_record_kind_rejected() {
         "source_envelope_id": "env-unknown",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-unknown",
+        "content_digest": canonical_test_digest("unknown-record-kind"),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -979,7 +986,7 @@ async fn entity_alias_review_state_persisted() {
         "source_envelope_id": "env-alias",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-alias",
+        "content_digest": canonical_test_digest("entity-alias"),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
@@ -1016,7 +1023,7 @@ async fn evidence_ref_audit_only() {
         "source_envelope_id": "env-evidence",
         "schema_version": PROJECTION_IMPORT_BATCH_V1_SCHEMA,
         "export_schema_version": "export_envelope_v1",
-        "content_digest": "digest-evidence",
+        "content_digest": canonical_test_digest("evidence-ref"),
         "source_authority": "forge",
         "scope_key": { "namespace": "test-ns" },
         "source_exported_at": "2026-03-07T00:00:00Z",
