@@ -14,9 +14,9 @@ use crate::error::MemoryError;
 use crate::vector_backend::{VectorBackend, VectorHit, VectorIndexConfig};
 
 use poly_kv::{
-    BranchConfig, DType, ExactFallback, ExactKvBlock, KvLayout, KvPoolStore, KvRole,
-    KvTensorShape, LayerId, ModelFingerprint, PoolBuilder, QualityGateResultV1,
-    CompressionPolicyV1, SharedKvPool, TokenizerFingerprint,
+    BranchConfig, CompressionPolicyV1, DType, ExactFallback, ExactKvBlock, KvLayout, KvPoolStore,
+    KvRole, KvTensorShape, LayerId, ModelFingerprint, PoolBuilder, QualityGateResultV1,
+    SharedKvPool, TokenizerFingerprint,
 };
 
 /// PolyKV-backed vector index for compressed embedding storage and search.
@@ -57,20 +57,19 @@ impl PolyKvBackend {
         _basename: &str,
         config: VectorIndexConfig,
     ) -> Result<Self, MemoryError> {
-        let store = KvPoolStore::open(dir).map_err(|e| {
-            MemoryError::Other(format!("poly-kv store open: {e}"))
-        })?;
-        let manifests = store.list_pools().map_err(|e| {
-            MemoryError::Other(format!("poly-kv list: {e}"))
-        })?;
+        let store = KvPoolStore::open(dir)
+            .map_err(|e| MemoryError::Other(format!("poly-kv store open: {e}")))?;
+        let manifests = store
+            .list_pools()
+            .map_err(|e| MemoryError::Other(format!("poly-kv list: {e}")))?;
         if manifests.is_empty() {
             return Self::new(config);
         }
         // Load the first pool found.
         let digest = manifests[0].manifest_digest;
-        let (_manifest, _blocks) = store.load(&digest).map_err(|e| {
-            MemoryError::Other(format!("poly-kv load: {e}"))
-        })?;
+        let (_manifest, _blocks) = store
+            .load(&digest)
+            .map_err(|e| MemoryError::Other(format!("poly-kv load: {e}")))?;
         // TODO: rebuild pool from loaded blocks.
         Ok(Self {
             pool: Mutex::new(None),
@@ -102,14 +101,12 @@ impl PolyKvBackend {
         let pool = PoolBuilder::default()
             .shape(shape)
             .model_fingerprint(
-                ModelFingerprint::new("semantic-memory-embeddings").map_err(|e| {
-                    MemoryError::Other(format!("model fp: {e}"))
-                })?,
+                ModelFingerprint::new("semantic-memory-embeddings")
+                    .map_err(|e| MemoryError::Other(format!("model fp: {e}")))?,
             )
             .tokenizer_fingerprint(
-                TokenizerFingerprint::new("none").map_err(|e| {
-                    MemoryError::Other(format!("tokenizer fp: {e}"))
-                })?,
+                TokenizerFingerprint::new("none")
+                    .map_err(|e| MemoryError::Other(format!("tokenizer fp: {e}")))?,
             )
             .exact_fallback(fallback)
             .policy(CompressionPolicyV1 {
@@ -168,7 +165,10 @@ impl VectorBackend for PolyKvBackend {
         // For embeddings, key and value are both the embedding vector.
         let layer_id = LayerId(0);
         let block_shape = KvTensorShape {
-            layers: 1, key_heads: 1, value_heads: 1, seq_len: 1,
+            layers: 1,
+            key_heads: 1,
+            value_heads: 1,
+            seq_len: 1,
             head_dim: self.dim as u32,
             layout: KvLayout::LayersHeadsTokensDim,
             dtype: DType::F32,
@@ -204,7 +204,7 @@ impl VectorBackend for PolyKvBackend {
             let block_idx = idx * 2;
             if block_idx + 1 < pending.len() {
                 pending.remove(block_idx + 1); // value
-                pending.remove(block_idx);     // key
+                pending.remove(block_idx); // key
             }
             key_index.remove(key);
             // Shift indices.
@@ -247,10 +247,8 @@ impl VectorBackend for PolyKvBackend {
 
             let key_index = self.key_index.lock().unwrap();
             // Reverse lookup: token_index → key
-            let idx_to_key: HashMap<usize, String> = key_index
-                .iter()
-                .map(|(k, v)| (*v, k.clone()))
-                .collect();
+            let idx_to_key: HashMap<usize, String> =
+                key_index.iter().map(|(k, v)| (*v, k.clone())).collect();
 
             Ok(selection
                 .hits
@@ -266,21 +264,23 @@ impl VectorBackend for PolyKvBackend {
         #[cfg(not(feature = "fibquant-adapter"))]
         {
             // Fallback: decode full pool and compute cosine.
-            let reader = pool.attach_reader(Default::default())
+            let reader = pool
+                .attach_reader(Default::default())
                 .map_err(|e| MemoryError::Other(format!("reader: {e}")))?;
-            let decoded = reader.decode_layer(LayerId(0))
+            let decoded = reader
+                .decode_layer(LayerId(0))
                 .map_err(|e| MemoryError::Other(format!("decode: {e}")))?;
             let all_values = decoded.value.data;
             let key_index = self.key_index.lock().unwrap();
-            let idx_to_key: HashMap<usize, String> = key_index
-                .iter()
-                .map(|(k, v)| (*v, k.clone()))
-                .collect();
+            let idx_to_key: HashMap<usize, String> =
+                key_index.iter().map(|(k, v)| (*v, k.clone())).collect();
             let mut scored: Vec<(String, f32)> = (0..count)
                 .filter_map(|i| {
                     let start = i * self.dim;
                     let end = start + self.dim;
-                    if end > all_values.len() { return None; }
+                    if end > all_values.len() {
+                        return None;
+                    }
                     let sim = cosine_similarity(query, &all_values[start..end]);
                     Some((idx_to_key.get(&i)?.clone(), sim))
                 })
@@ -289,7 +289,10 @@ impl VectorBackend for PolyKvBackend {
             scored.truncate(top_k);
             Ok(scored
                 .into_iter()
-                .map(|(key, sim)| VectorHit { key, distance: 1.0 - sim })
+                .map(|(key, sim)| VectorHit {
+                    key,
+                    distance: 1.0 - sim,
+                })
                 .collect())
         }
     }
@@ -300,12 +303,11 @@ impl VectorBackend for PolyKvBackend {
 
     fn save(&self, dir: &Path, _basename: &str) -> Result<(), MemoryError> {
         let pool = self.get_or_build_pool()?;
-        let store = KvPoolStore::open(dir).map_err(|e| {
-            MemoryError::Other(format!("poly-kv store open: {e}"))
-        })?;
-        store.persist(&pool).map_err(|e| {
-            MemoryError::Other(format!("poly-kv save: {e}"))
-        })?;
+        let store = KvPoolStore::open(dir)
+            .map_err(|e| MemoryError::Other(format!("poly-kv store open: {e}")))?;
+        store
+            .persist(&pool)
+            .map_err(|e| MemoryError::Other(format!("poly-kv save: {e}")))?;
         Ok(())
     }
 
@@ -315,10 +317,16 @@ impl VectorBackend for PolyKvBackend {
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let (dot, na, nb) = a.iter().zip(b.iter()).fold(
-        (0.0f32, 0.0f32, 0.0f32),
-        |(d, na, nb), (x, y)| (d + x * y, na + x * x, nb + y * y),
-    );
+    let (dot, na, nb) = a
+        .iter()
+        .zip(b.iter())
+        .fold((0.0f32, 0.0f32, 0.0f32), |(d, na, nb), (x, y)| {
+            (d + x * y, na + x * x, nb + y * y)
+        });
     let denom = (na * nb).sqrt();
-    if denom < 1e-12 { 0.0 } else { (dot / denom).clamp(-1.0, 1.0) }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        (dot / denom).clamp(-1.0, 1.0)
+    }
 }
