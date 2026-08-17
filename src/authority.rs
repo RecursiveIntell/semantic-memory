@@ -201,6 +201,7 @@ impl MemoryAuthority {
             None => None,
         };
         let fault = self.store.inner.authority_fault.clone();
+        let journal = self.store.replication_journal_identity();
         let outcome = self
             .store
             .with_write_conn(move |conn| {
@@ -211,6 +212,7 @@ impl MemoryAuthority {
                     candidate,
                     &fault,
                     prepared,
+                    journal,
                 )
             })
             .await?;
@@ -650,6 +652,7 @@ impl MemoryAuthority {
         };
 
         let fault = self.store.inner.authority_fault.clone();
+        let journal = self.store.replication_journal_identity();
         let result = self
             .store
             .with_write_conn(move |conn| {
@@ -660,6 +663,7 @@ impl MemoryAuthority {
                     mutation,
                     &fault,
                     prepared,
+                    journal,
                 )
             })
             .await?;
@@ -897,6 +901,7 @@ fn execute_compiled_transition(
     candidate: MemoryTransitionCandidateV1,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
     prepared: Option<FactEmbedding>,
+    journal: Option<(String, String, u64)>,
 ) -> Result<MemoryTransitionOutcomeV1, MemoryError> {
     let candidate_digest = transition_digest(&candidate)?;
     // Safety: verification, quarantine/evidence persistence, and the existing canonical authority
@@ -927,7 +932,8 @@ fn execute_compiled_transition(
         }
 
         let mutation = mutation_from_candidate(&candidate, &candidate_digest)?;
-        let authority_receipt = execute_mutation_tx(tx, permit, key, mutation, fault, prepared)?;
+        let authority_receipt =
+            execute_mutation_tx(tx, permit, key, mutation, fault, prepared, journal)?;
         let record = build_transition_record(
             key,
             permit,
@@ -1042,11 +1048,12 @@ fn execute_mutation(
     mutation: Mutation,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
     prepared: Option<FactEmbedding>,
+    journal: Option<(String, String, u64)>,
 ) -> Result<AuthorityReceiptV1, MemoryError> {
     // Safety: this closure owns every canonical authority write and only commits after the
     // mutation journal, epoch, lineage, and receipt are complete.
     with_transaction(conn, |tx| {
-        execute_mutation_tx(tx, permit, key, mutation, fault, prepared)
+        execute_mutation_tx(tx, permit, key, mutation, fault, prepared, journal)
     })
 }
 
@@ -1057,6 +1064,7 @@ fn execute_mutation_tx(
     mutation: Mutation,
     fault: &Arc<Mutex<Option<AuthorityFaultStage>>>,
     mut prepared: Option<FactEmbedding>,
+    journal: Option<(String, String, u64)>,
 ) -> Result<AuthorityReceiptV1, MemoryError> {
     let kind = mutation.kind();
     let origin_label = effective_origin_label(tx, permit, &mutation)?;
@@ -1149,6 +1157,42 @@ fn execute_mutation_tx(
             committed_at,
         ],
     )?;
+
+    // Governed appends also enter the verified mutation outbox in this same
+    // transaction. The outbox row carries the exact canonical payload the
+    // replica replays (fact ID, namespace, content, source, metadata) plus the
+    // digest chain allocated by the replication stream. Only fact.create has an
+    // admitted replication contract today; supersede/redact intentionally emit
+    // no outbox row, and a store without construction-time replication identity
+    // remains local-only.
+    if let Some((device_id, store_id, stream_epoch)) = journal {
+        if let Mutation::Append {
+            namespace,
+            content,
+            source,
+            metadata,
+        } = &mutation
+        {
+            let payload = crate::journal::encode_fact_create_payload(
+                &crate::journal::FactCreatePayloadV1 {
+                    fact_id: fact_id.clone(),
+                    namespace: namespace.clone(),
+                    content: content.clone(),
+                    source: source.clone(),
+                    metadata: metadata.clone(),
+                },
+            )?;
+            crate::journal::append_verified_in_tx(
+                tx,
+                &device_id,
+                &store_id,
+                stream_epoch,
+                crate::journal::FACT_CREATE_OPERATION,
+                crate::journal::FACT_CREATE_PAYLOAD_SCHEMA,
+                &payload,
+            )?;
+        }
+    }
     fault_gate(fault, AuthorityFaultStage::AfterJournal)?;
 
     fault_gate(fault, AuthorityFaultStage::BeforeEpoch)?;

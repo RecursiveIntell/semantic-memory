@@ -1,6 +1,6 @@
 use semantic_memory::{
     AuthorityFaultStage, AuthorityOperationKind, AuthorityPermit, MemoryConfig, MemoryError,
-    MemoryStore, MockEmbedder, RetrievalEpoch, StateView,
+    MemoryStore, MockEmbedder, ReplicationMode, RetrievalEpoch, StateView,
 };
 use tempfile::TempDir;
 
@@ -277,4 +277,218 @@ async fn every_fault_gate_rolls_back_the_whole_mutation() {
             .unwrap()
             .is_none());
     }
+}
+
+// ── Governed authority → verified mutation_journal (replication outbox) ──────
+//
+// Canary contract: a governed append_with_metadata must write the exact
+// canonical payload into mutation_journal via append_verified_in_tx in the
+// same SQLite transaction as the fact row, so mnemes-sync-client can export
+// it. Idempotent retry must not journal twice; the stream allocator must
+// continue across operations; supersede/redact have no admitted replication
+// contract and must stay out of the outbox; a store without replication
+// identity must remain local-only.
+
+fn replication_store() -> (MemoryStore, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let store = MemoryStore::open_with_embedder(
+        MemoryConfig {
+            base_dir: tmp.path().to_path_buf(),
+            journal_device_id: Some("canary-device".into()),
+            journal_store_id: Some("canary-store".into()),
+            replication_mode: ReplicationMode::FactCreateRequired,
+            replication_stream_epoch: 1,
+            ..Default::default()
+        },
+        Box::new(MockEmbedder::new(768)),
+    )
+    .unwrap();
+    (store, tmp)
+}
+
+fn journal_conn(tmp: &TempDir) -> rusqlite::Connection {
+    rusqlite::Connection::open(tmp.path().join("memory.db")).unwrap()
+}
+
+#[tokio::test]
+async fn governed_append_writes_verified_fact_create_outbox_row() {
+    let (store, tmp) = replication_store();
+    let authority = store.authority();
+
+    let metadata = serde_json::json!({"channel": "canary", "importance": 3});
+    let receipt = authority
+        .append_with_metadata(
+            permit(AuthorityPermit::APPEND_CAPABILITY),
+            "governed-canary-1".into(),
+            "general".into(),
+            "Canary fact for governed journaling".into(),
+            Some("canary-source".into()),
+            Some(metadata.clone()),
+        )
+        .await
+        .unwrap();
+    let fact_id = receipt.affected_ids[0].clone();
+
+    let conn = journal_conn(&tmp);
+    let (count, seq, op, schema, state): (i64, i64, String, String, String) = conn
+        .query_row(
+            "SELECT COUNT(*), MIN(sequence), MIN(operation_kind), MIN(payload_schema),
+                    MIN(record_state)
+             FROM mutation_journal",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!((count, seq), (1, 1), "one verified row at sequence 1");
+    assert_eq!(op, "fact.create");
+    assert_eq!(schema, "semantic_memory.fact.create.v1");
+    assert_eq!(state, "verified_v1");
+
+    // The outbox payload is the exact canonical payload a replica replays.
+    let payload: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM mutation_journal WHERE sequence = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let decoded: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(decoded["fact_id"], serde_json::json!(fact_id));
+    assert_eq!(decoded["namespace"], serde_json::json!("general"));
+    assert_eq!(
+        decoded["content"],
+        serde_json::json!("Canary fact for governed journaling")
+    );
+    assert_eq!(decoded["source"], serde_json::json!("canary-source"));
+    assert_eq!(decoded["metadata"], metadata);
+
+    // The stream allocator advanced and the first record chains to genesis.
+    let (next_sequence, head_len): (i64, i64) = conn
+        .query_row(
+            "SELECT next_sequence, length(head_digest) FROM replication_streams
+             WHERE home_device_id = 'canary-device' AND store_id = 'canary-store'
+               AND stream_epoch = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(next_sequence, 2);
+    assert_eq!(head_len, 32);
+    let predecessor: Vec<u8> = conn
+        .query_row(
+            "SELECT predecessor_digest FROM mutation_journal WHERE sequence = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(predecessor, vec![0u8; 32], "first record chains to genesis");
+}
+
+#[tokio::test]
+async fn governed_append_idempotent_retry_does_not_duplicate_and_stream_continues() {
+    let (store, tmp) = replication_store();
+    let authority = store.authority();
+
+    let first = authority
+        .append_with_metadata(
+            permit(AuthorityPermit::APPEND_CAPABILITY),
+            "canary-dup-key".into(),
+            "general".into(),
+            "first governed fact".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Idempotent retry: same receipt, no second journal row.
+    let retry = authority
+        .append_with_metadata(
+            permit(AuthorityPermit::APPEND_CAPABILITY),
+            "canary-dup-key".into(),
+            "general".into(),
+            "first governed fact".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.after_epoch, retry.after_epoch);
+    let conn = journal_conn(&tmp);
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "idempotent retry must not journal twice");
+
+    // A second distinct append continues the stream at sequence 2 and chains
+    // to the first envelope digest — the allocator owns continuity, so a
+    // restart can never re-derive a sequence from journal contents.
+    let second = authority
+        .append(
+            permit(AuthorityPermit::APPEND_CAPABILITY),
+            "canary-second".into(),
+            "general".into(),
+            "second governed fact".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.after_epoch, RetrievalEpoch(2));
+    let (seq2_pred, seq1_envelope): (Vec<u8>, Vec<u8>) = conn
+        .query_row(
+            "SELECT (SELECT predecessor_digest FROM mutation_journal WHERE sequence = 2),
+                    (SELECT envelope_digest FROM mutation_journal WHERE sequence = 1)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(seq2_pred, seq1_envelope, "sequence 2 must chain to sequence 1");
+    let next_sequence: i64 = conn
+        .query_row(
+            "SELECT next_sequence FROM replication_streams
+             WHERE home_device_id = 'canary-device' AND store_id = 'canary-store'
+               AND stream_epoch = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(next_sequence, 3);
+
+    // Supersede/redact have no admitted replication operation yet: the outbox
+    // still holds exactly the two fact-create rows.
+    authority
+        .supersede(
+            permit(AuthorityPermit::SUPERSEDE_CAPABILITY),
+            "canary-supersede".into(),
+            first.affected_ids[0].clone(),
+            "superseded content".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "supersede must not emit a replication outbox row");
+}
+
+#[tokio::test]
+async fn governed_append_without_replication_identity_emits_no_outbox() {
+    let (store, tmp) = test_store(); // default MemoryConfig: replication disabled
+    store
+        .authority()
+        .append(
+            permit(AuthorityPermit::APPEND_CAPABILITY),
+            "local-only".into(),
+            "general".into(),
+            "stays local".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let conn = journal_conn(&tmp);
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "local-only store must emit no outbox rows");
 }
