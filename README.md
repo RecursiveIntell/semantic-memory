@@ -6,6 +6,8 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 `semantic-memory` stores facts, documents and chunks, conversations, episodes, embeddings, temporal state, authority ledgers, and search receipts in SQLite. FTS indexes, vector sidecars, sparse representations, and compressed candidate artifacts accelerate retrieval; they do not replace canonical state and can be reconciled from SQLite.
 
+> **No cloud dependencies.** There are no calls to OpenAI, Anthropic, Pinecone, Weaviate, Supabase, or any hosted service. Storage, retrieval, receipts, and governance all run locally; embeddings come from your own Ollama server or the optional in-process Candle embedder, which downloads its model once from Hugging Face and caches it locally.
+
 > **Status:** research-grade library with a tested default retrieval contract. Feature-gated research and orchestration modules are not implicit guarantees of `MemoryStore::search()` behavior.
 
 | Contract fact | Current value |
@@ -13,7 +15,7 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 | Crate version | `0.5.14` |
 | Minimum Rust version | `1.75` |
 | Default Cargo feature | `usearch-backend` |
-| Maximum schema version | `38` |
+| Maximum schema version | `39` |
 | License | Apache-2.0 |
 
 ## What the crate owns
