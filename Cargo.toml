@@ -87,10 +87,9 @@ rl-routing = ["routing"]
 subgraph-pruning = ["subtraction"]
 testing = []
 turbo-quant-codec = ["dep:turbo-quant", "dep:quant-governor", "dep:scr-runtime-compression"]
-# FibQuant-backed PolyKV scoring is available only through the PolyKV adapter
-# feature; forwarding it here keeps the semantic-memory feature contract aligned
-# with the dependency's cfg-gated public methods.
-fib-quant-codec = ["poly-kv-codec", "poly-kv/fibquant-adapter"]
+# Reserved capability gate for FibQuant-backed candidate generation. The runtime
+# path must fail explicitly until a truthful FibQuant artifact adapter is wired.
+fib-quant-codec = []
 # poly-kv two-tier compressed KV cache pool for shared context compression.
 # Enables ProveKvPoolCandidateOnly search policy for approximate candidate
 # generation from compressed embedding pools.
