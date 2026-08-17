@@ -12,7 +12,7 @@ Local-first hybrid retrieval for Rust, with SQLite as authoritative state and re
 
 | Contract fact | Current value |
 | --- | --- |
-| Crate version | `0.5.14` |
+| Crate version | `0.5.15` |
 | Minimum Rust version | `1.75` |
 | Default Cargo feature | `usearch-backend` |
 | Maximum schema version | `39` |

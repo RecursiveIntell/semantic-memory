@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory"
-version = "0.5.14"
+version = "0.5.15"
 edition = "2021"
 rust-version = "1.75"
 description = "Local-first hybrid semantic search (SQLite + FTS5 + usearch 2.25) with bitemporal truth and typed receipts"
@@ -87,9 +87,10 @@ rl-routing = ["routing"]
 subgraph-pruning = ["subtraction"]
 testing = []
 turbo-quant-codec = ["dep:turbo-quant", "dep:quant-governor", "dep:scr-runtime-compression"]
-# Reserved capability gate for FibQuant-backed candidate generation. The runtime
-# path must fail explicitly until a truthful FibQuant artifact adapter is wired.
-fib-quant-codec = []
+# FibQuant-backed PolyKV scoring is available only through the PolyKV adapter
+# feature; forwarding it here keeps the semantic-memory feature contract aligned
+# with the dependency's cfg-gated public methods.
+fib-quant-codec = ["poly-kv-codec", "poly-kv/fibquant-adapter"]
 # poly-kv two-tier compressed KV cache pool for shared context compression.
 # Enables ProveKvPoolCandidateOnly search policy for approximate candidate
 # generation from compressed embedding pools.
