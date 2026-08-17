@@ -261,9 +261,9 @@ At least one vector backend (`usearch-backend`, `hnsw`, or `brute-force`) must b
 
 A feature flag proves that code is compiled, not that a default search request exercised it. Use receipts, explained results, tests, or application-level traces for runtime claims.
 
-## Selected schema milestones, V18–V38
+## Selected schema milestones, V18–V39
 
-`MAX_SCHEMA_VERSION` is `38`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
+`MAX_SCHEMA_VERSION` is `39`. Migrations are monotonic; compatibility columns can exist even when the corresponding feature-gated Rust API is disabled. This table is intentionally partial. Earlier schema versions remain in the migration ledger, and some versions use procedural Rust migrations rather than a non-empty SQL constant.
 
 | Version | Durable addition |
 | ---: | --- |
@@ -285,8 +285,47 @@ A feature flag proves that code is compiled, not that a default search request e
 | V36 | Sparse vectors and deletion cleanup triggers |
 | V37 | Device-owned mutation journal for replication |
 | V38 | Replication acknowledgement and stream-epoch state |
+| V39 | Verified fact-create receiver: inbox, stream head, and durable duplicate evidence |
 
 Projection-import compatibility APIs are migration surfaces. New integrations should use the current batch-import seam and preserve source export time, transformation time, importer commit time, scope, and temporal fields separately.
+
+## Verified fact-create replication
+
+Semantic-memory owns a transactional fact-create outbox for device-primary
+replication (the transport and key admission are owned by caller crates such as
+[Mnemes](https://github.com/RecursiveIntell/mnemes)). When a replication
+identity is configured at store open, every canonical fact creation — the
+ordinary `add_fact` path **and** governed authority appends via
+`append_with_metadata` / `verify_and_commit` — writes one verified
+`mutation_journal` row through `append_verified_in_tx` in the **same SQLite
+transaction** as the fact row, so a failed closure consumes no sequence and no
+row is ever visible without its fact.
+
+```rust,ignore
+let store = MemoryStore::open_with_embedder(MemoryConfig {
+    base_dir: dir.clone(),
+    journal_device_id: Some("laptop-1".into()),
+    journal_store_id: Some("primary".into()),
+    replication_mode: ReplicationMode::FactCreateRequired,
+    replication_stream_epoch: 1,
+    ..Default::default()
+}, Box::new(CandleEmbedder::try_new(&config.embedding)?))?;
+```
+
+Outbox rows carry the exact canonical payload (`FactCreatePayloadV1`: fact ID,
+namespace, content, source, metadata), a domain-separated digest chain with a
+transaction-owned sequence allocator (`replication_streams`), and
+`verified_v1` record state. Idempotent retries return the stored receipt
+without a second row; the allocator guarantees `1..N` continuity across
+restarts. Supersede and redact have no admitted replication contract yet and
+intentionally emit no outbox row; stores opened without replication identity
+remain local-only.
+
+Verified rows are exported contiguously (`export_verified_contiguous`) and
+applied to a fresh replica through the closed receiver
+(`apply_verified_fact_create`), which validates the typed envelope, digest
+chain, epoch, and stream ordering and returns a durable typed decision
+(`Applied` / `Duplicate` / `Fork` / `Gap` / `EpochConflict`).
 
 ## Evaluation
 
