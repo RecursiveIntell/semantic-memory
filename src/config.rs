@@ -356,6 +356,26 @@ pub struct SearchConfig {
     #[serde(default = "default_true")]
     pub turbo_quant_require_exact_rerank: bool,
 
+    /// FibQuant block size for admitted semantic-vector candidate generations.
+    #[serde(default = "default_fib_quant_block_size")]
+    pub fib_quant_block_size: usize,
+
+    /// FibQuant codebook size for admitted semantic-vector candidate generations.
+    #[serde(default = "default_fib_quant_codebook_size")]
+    pub fib_quant_codebook_size: usize,
+
+    /// FibQuant deterministic profile seed.
+    #[serde(default = "default_fib_quant_seed")]
+    pub fib_quant_seed: u64,
+
+    /// Maximum admitted FibQuant value MSE.
+    #[serde(default = "default_fib_quant_max_value_mse")]
+    pub fib_quant_max_value_mse: f64,
+
+    /// Candidate oversampling before namespace/source/session filtering.
+    #[serde(default = "default_fib_quant_candidate_oversample")]
+    pub fib_quant_candidate_oversample: usize,
+
     /// Matryoshka candidate-stage embedding dimensions for 2-stage search.
     /// When set to Some(dim) and the `matryoshka` feature is enabled, the query
     /// embedding is truncated to `dim` dimensions for candidate retrieval, then
@@ -380,17 +400,14 @@ pub enum DerivedVectorBackendPolicy {
     Disabled,
     /// Use TurboQuant only to generate candidates, then exact rerank by default.
     TurboQuantCandidateOnly,
-    /// Use a generation-level proveKV/poly-kv shared pool only to generate candidates,
-    /// then exact-rerank against authoritative f32 embeddings.
-    ///
-    /// This is deliberately not a replacement for SQLite f32 storage or for prompt/KV
-    /// prefix reuse. It is a rebuildable derived artifact over an embedding snapshot.
+    /// Use authoritative exact f32 retrieval while attaching ready proveKV generation
+    /// identity as provenance only. The current implementation does not use proveKV
+    /// payloads for candidate scoring and must not be described as compressed retrieval.
     ProveKvPoolCandidateOnly,
-    /// Request FibQuant candidate generation.
-    ///
-    /// The policy is part of the public configuration contract, but this source
-    /// currently rejects it explicitly until a truthful FibQuant artifact adapter
-    /// exists; it never silently substitutes raw-vector retrieval.
+    /// Use one explicit ready PolyKV/FibQuant generation for approximate candidates,
+    /// then exact-rerank those candidates against authoritative SQLite f32 embeddings.
+    /// Missing, stale, corrupt, incomplete, or profile-mismatched generations fail
+    /// closed to a truthfully labeled exact f32 fallback.
     FibQuantCandidateOnly,
     /// Request per-dimension compressed candidate generation.
     ///
@@ -410,6 +427,26 @@ const fn default_turbo_quant_projections() -> usize {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_fib_quant_block_size() -> usize {
+    4
+}
+
+const fn default_fib_quant_codebook_size() -> usize {
+    32
+}
+
+const fn default_fib_quant_seed() -> u64 {
+    42
+}
+
+const fn default_fib_quant_max_value_mse() -> f64 {
+    0.01
+}
+
+const fn default_fib_quant_candidate_oversample() -> usize {
+    4
 }
 
 const fn default_zero() -> f64 {
@@ -464,6 +501,11 @@ impl Default for SearchConfig {
             turbo_quant_projections: default_turbo_quant_projections(),
             turbo_quant_seed: 0,
             turbo_quant_require_exact_rerank: true,
+            fib_quant_block_size: default_fib_quant_block_size(),
+            fib_quant_codebook_size: default_fib_quant_codebook_size(),
+            fib_quant_seed: default_fib_quant_seed(),
+            fib_quant_max_value_mse: default_fib_quant_max_value_mse(),
+            fib_quant_candidate_oversample: default_fib_quant_candidate_oversample(),
             candidate_dims: default_candidate_dims(),
             compress_results: false,
         }
@@ -493,19 +535,10 @@ impl SearchConfig {
         #[cfg(not(feature = "turbo-quant-codec"))]
         let _ = embedding_dimensions;
 
-        match self.derived_vector_backend {
-            DerivedVectorBackendPolicy::FibQuantCandidateOnly => {
-                return Err(MemoryError::NotImplemented(
-                    "FibQuant candidate generation is not implemented in this build".to_string(),
-                ));
-            }
-            DerivedVectorBackendPolicy::PerDimCandidateOnly => {
-                return Err(MemoryError::NotImplemented(
-                    "per-dimension candidate generation is not implemented in this build"
-                        .to_string(),
-                ));
-            }
-            _ => {}
+        if self.derived_vector_backend == DerivedVectorBackendPolicy::PerDimCandidateOnly {
+            return Err(MemoryError::NotImplemented(
+                "per-dimension candidate generation is not implemented in this build".to_string(),
+            ));
         }
 
         self.candidate_pool_size = self
@@ -513,6 +546,7 @@ impl SearchConfig {
             .clamp(1, MAX_SEARCH_CANDIDATE_POOL_SIZE);
         self.default_top_k = self.default_top_k.clamp(1, MAX_SEARCH_DEFAULT_TOP_K);
         self.candidate_pool_size = self.candidate_pool_size.max(self.default_top_k);
+        self.fib_quant_candidate_oversample = self.fib_quant_candidate_oversample.clamp(1, 64);
         self.sparse_top_k = self.sparse_top_k.clamp(1, MAX_SPARSE_TOP_K);
         self.sparse_derive_top_k = self.sparse_derive_top_k.clamp(1, MAX_SPARSE_DERIVE_TOP_K);
         if !self.rrf_k.is_finite() || self.rrf_k <= 0.0 {
@@ -563,6 +597,17 @@ impl SearchConfig {
                 reason: "min_similarity must be finite and within [-1.0, 1.0]".to_string(),
             });
         }
+        if self.fib_quant_block_size == 0
+            || self.fib_quant_codebook_size == 0
+            || !self.fib_quant_max_value_mse.is_finite()
+            || self.fib_quant_max_value_mse < 0.0
+        {
+            return Err(MemoryError::InvalidConfig {
+                field: "search.fib_quant_profile",
+                reason: "block/codebook sizes must be non-zero and max_value_mse must be finite and >= 0"
+                    .to_string(),
+            });
+        }
         if matches!(self.recency_half_life_days, Some(v) if !v.is_finite()) {
             return Err(MemoryError::InvalidConfig {
                 field: "search.recency_half_life_days",
@@ -604,6 +649,26 @@ impl SearchConfig {
                         reason: "TurboQuant bits must be within 2..=16".to_string(),
                     });
                 }
+            }
+        }
+        if self.derived_vector_backend == DerivedVectorBackendPolicy::FibQuantCandidateOnly {
+            #[cfg(not(feature = "fib-quant-codec"))]
+            {
+                return Err(MemoryError::InvalidConfig {
+                    field: "search.derived_vector_backend",
+                    reason: "fib_quant_candidate_only requires the fib-quant-codec feature"
+                        .to_string(),
+                });
+            }
+            #[cfg(feature = "fib-quant-codec")]
+            if embedding_dimensions % self.fib_quant_block_size != 0 {
+                return Err(MemoryError::InvalidConfig {
+                    field: "search.fib_quant_block_size",
+                    reason: format!(
+                        "embedding dimensions {embedding_dimensions} must be divisible by FibQuant block size {}",
+                        self.fib_quant_block_size
+                    ),
+                });
             }
         }
         if self.uses_derived_vector_backend() && !self.turbo_quant_require_exact_rerank {
@@ -877,5 +942,20 @@ mod duration_secs {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
         let secs = u64::deserialize(d)?;
         Ok(Duration::from_secs(secs))
+    }
+}
+
+#[cfg(all(test, feature = "fib-quant-codec"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fibquant_policy_validation_admits_supported_dimensions() {
+        let mut config = SearchConfig::default();
+        config.derived_vector_backend = DerivedVectorBackendPolicy::FibQuantCandidateOnly;
+        config.turbo_quant_require_exact_rerank = true;
+        config
+            .normalize_and_validate(32)
+            .expect("FibQuant should be admitted with exact rerank");
     }
 }

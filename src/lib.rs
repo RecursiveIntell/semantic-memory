@@ -276,6 +276,7 @@ mod usearch_backend;
 pub mod vector_backend;
 pub mod vector_codec;
 pub mod vector_snapshot;
+pub mod whole_path_receipt;
 
 // Re-export primary public types.
 pub use config::{
@@ -852,6 +853,26 @@ impl MemoryStore {
                 identity.stream_epoch,
             )
         })
+    }
+
+    /// Materialize and atomically publish one authenticated PolyKV/FibQuant generation
+    /// from the current authoritative SQLite f32 embedding snapshot.
+    ///
+    /// The generation is a rebuildable candidate artifact. Search admission rechecks
+    /// the current source snapshot and exact-reranks candidates from SQLite.
+    #[cfg(feature = "fib-quant-codec")]
+    pub async fn rebuild_fibquant_pool_generation(
+        &self,
+    ) -> Result<ProveKvPoolArtifactBuildReceiptV1, MemoryError> {
+        let dim = self.inner.config.embedding.dimensions;
+        let search_config = self.inner.config.search.clone();
+        let receipt = self
+            .with_write_conn(move |conn| {
+                search::rebuild_fibquant_pool_generation(conn, dim, &search_config)
+            })
+            .await?;
+        self.clear_search_cache();
+        Ok(receipt)
     }
 
     /// Run read-only work on a pooled reader connection on a blocking thread.

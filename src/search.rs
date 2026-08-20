@@ -7,6 +7,18 @@ use crate::types::{
     ExplainedResult, ScoreBreakdown, SearchContext, SearchResult, SearchSource, SearchSourceType,
     VectorSearchReceiptV1,
 };
+#[cfg(feature = "fib-quant-codec")]
+use crate::types::{
+    ProveKvPoolArtifactBuildReceiptV1, ProveKvPoolGenerationV1, ProveKvPoolItemMapEntryV1,
+};
+#[cfg(feature = "fib-quant-codec")]
+use chrono::Utc;
+#[cfg(feature = "fib-quant-codec")]
+use poly_kv::{
+    decode_fibquant_pool_bundle, encode_pool_bundle, CompressionPolicyV1, ExactFallback,
+    ExactKvBlock, KvLayout, KvRole, KvTensorShape, LayerId, ModelFingerprint, PoolBuilder,
+    Q8KeyCodec, QualityGateResultV1, TokenizerFingerprint,
+};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 // `OptionalExtension` provides `Result::optional()` for `rusqlite::query_row`.
@@ -1021,13 +1033,515 @@ fn vector_search_with_backend(
             source_types,
             session_ids,
         ),
-        DerivedVectorBackendPolicy::FibQuantCandidateOnly => Err(MemoryError::NotImplemented(
-            "FibQuant candidate generation is not implemented in this build".to_string(),
-        )),
+        DerivedVectorBackendPolicy::FibQuantCandidateOnly => fibquant_vector_outcome(
+            conn,
+            query_embedding,
+            pool_size,
+            min_similarity,
+            config,
+            namespaces,
+            source_types,
+            session_ids,
+        ),
         DerivedVectorBackendPolicy::PerDimCandidateOnly => Err(MemoryError::NotImplemented(
             "per-dimension candidate generation is not implemented in this build".to_string(),
         )),
     }
+}
+
+fn compressed_vector_fallback(
+    conn: &Connection,
+    query_embedding: &[f32],
+    pool_size: usize,
+    min_similarity: f64,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+    backend: &str,
+    reason: &str,
+    mut metadata: VectorReceiptMetadata,
+    degradation: String,
+) -> Result<VectorSearchOutcome, MemoryError> {
+    let mut outcome = brute_force_vector_outcome(
+        conn,
+        query_embedding,
+        pool_size,
+        min_similarity,
+        namespaces,
+        source_types,
+        session_ids,
+    )?;
+    outcome.candidate_backend = backend.to_string();
+    outcome.fallback = Some(reason.to_string());
+    outcome.degradations.push(degradation);
+    metadata.raw_rows_loaded_count = Some(outcome.hits.len());
+    outcome.receipt_metadata = metadata;
+    Ok(outcome)
+}
+
+#[cfg(not(feature = "fib-quant-codec"))]
+#[allow(clippy::too_many_arguments)]
+fn fibquant_vector_outcome(
+    conn: &Connection,
+    query_embedding: &[f32],
+    pool_size: usize,
+    min_similarity: f64,
+    _config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<VectorSearchOutcome, MemoryError> {
+    compressed_vector_fallback(
+        conn,
+        query_embedding,
+        pool_size,
+        min_similarity,
+        namespaces,
+        source_types,
+        session_ids,
+        "exact_f32_fallback",
+        "fibquant_feature_disabled",
+        VectorReceiptMetadata {
+            codec_family: Some("poly_kv_fibquant".to_string()),
+            ..VectorReceiptMetadata::default()
+        },
+        "FibQuant semantic candidate generation requested without the fib-quant-codec feature; authoritative f32 search was used".to_string(),
+    )
+}
+
+#[cfg(feature = "fib-quant-codec")]
+#[derive(Debug)]
+struct FibGenerationRejection {
+    code: &'static str,
+    detail: String,
+}
+
+#[cfg(feature = "fib-quant-codec")]
+impl FibGenerationRejection {
+    fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+#[cfg(feature = "fib-quant-codec")]
+struct AdmittedFibQuantGeneration {
+    generation: ProveKvPoolGenerationV1,
+    pool: poly_kv::SharedKvPool,
+    prepared: poly_kv::pool::PreparedCompressedIndex,
+    item_map: Vec<ProveKvPoolItemMapEntryV1>,
+    rows_by_id: HashMap<String, VectorRow>,
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn admit_fibquant_generation(
+    conn: &Connection,
+    dim: usize,
+    config: &SearchConfig,
+) -> Result<AdmittedFibQuantGeneration, FibGenerationRejection> {
+    use poly_kv::adapters::fibquant::FibQuantValueCodec;
+
+    let generation = crate::db::latest_ready_provekv_pool_generation(conn)
+        .map_err(|error| {
+            FibGenerationRejection::new("fibquant_generation_status_unreadable", error.to_string())
+        })?
+        .ok_or_else(|| {
+            FibGenerationRejection::new(
+                "fibquant_generation_missing",
+                "no ready PolyKV semantic-vector generation is published",
+            )
+        })?
+        .generation;
+    if generation.codec_family != "poly-kv:fibquant" || generation.vector_dim != dim {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_profile_mismatch",
+            format!(
+                "generation family/dimension mismatch: family={}, dim={}, requested_dim={dim}",
+                generation.codec_family, generation.vector_dim
+            ),
+        ));
+    }
+
+    let payload =
+        crate::db::load_provekv_pool_payload(conn, &generation.generation_id).map_err(|error| {
+            FibGenerationRejection::new("fibquant_generation_payload_invalid", error.to_string())
+        })?;
+    if payload.len() as u64 != generation.payload_bytes {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_payload_invalid",
+            format!(
+                "payload length mismatch: declared={}, actual={}",
+                generation.payload_bytes,
+                payload.len()
+            ),
+        ));
+    }
+
+    let mut item_map = crate::db::load_provekv_pool_item_map(conn, &generation.generation_id)
+        .map_err(|error| {
+            FibGenerationRejection::new("fibquant_generation_item_map_invalid", error.to_string())
+        })?;
+    item_map.sort_by_key(|entry| entry.pool_index);
+    let mut seen_items = HashSet::with_capacity(item_map.len());
+    if item_map.len() != generation.item_count
+        || item_map.iter().enumerate().any(|(index, entry)| {
+            entry.pool_index != index
+                || entry.generation_id != generation.generation_id
+                || !seen_items.insert(entry.item_id.as_str())
+        })
+    {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_item_map_invalid",
+            "item map is incomplete, duplicate, non-contiguous, or bound to another generation",
+        ));
+    }
+
+    let expected_codec = FibQuantValueCodec::new(
+        dim,
+        config.fib_quant_block_size,
+        config.fib_quant_codebook_size,
+        config.fib_quant_seed,
+    )
+    .and_then(|codec| codec.with_max_mse(config.fib_quant_max_value_mse))
+    .map_err(|error| {
+        FibGenerationRejection::new("fibquant_generation_profile_mismatch", error.to_string())
+    })?;
+    let expected_profile = expected_codec.fib_profile_digest();
+    if generation.codec_profile != expected_profile {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_profile_mismatch",
+            format!(
+                "active profile {expected_profile} does not match generation profile {}",
+                generation.codec_profile
+            ),
+        ));
+    }
+
+    let pool =
+        decode_fibquant_pool_bundle(&payload, config.fib_quant_max_value_mse).map_err(|error| {
+            FibGenerationRejection::new("fibquant_generation_bundle_invalid", error.to_string())
+        })?;
+    let manifest = pool.manifest();
+    let shape = &manifest.shape;
+    if manifest.manifest_digest.to_string() != generation.pool_manifest_digest
+        || pool.build_receipt().input_digest.to_string() != generation.source_digest
+        || shape.layers != 1
+        || shape.key_heads != 1
+        || shape.value_heads != 1
+        || shape.head_dim as usize != dim
+        || shape.seq_len as usize != generation.item_count
+        || !manifest.policy.quality_gate.passed
+        || manifest
+            .policy
+            .quality_gate
+            .observed_value_mse
+            .map(|mse| mse > config.fib_quant_max_value_mse)
+            .unwrap_or(true)
+    {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_bundle_invalid",
+            "manifest, source, shape, or quality gate does not match the generation contract",
+        ));
+    }
+    let fallback = pool.exact_fallback_ref().ok_or_else(|| {
+        FibGenerationRejection::new(
+            "fibquant_generation_fallback_missing",
+            "the admitted owner bundle has no exact fallback",
+        )
+    })?;
+    for role in [KvRole::Key, KvRole::Value] {
+        let block = fallback.find(role, LayerId(0)).ok_or_else(|| {
+            FibGenerationRejection::new(
+                "fibquant_generation_fallback_missing",
+                format!("exact fallback is missing {role:?} layer 0"),
+            )
+        })?;
+        if block.shape != *shape || block.data.len() != generation.item_count.saturating_mul(dim) {
+            return Err(FibGenerationRejection::new(
+                "fibquant_generation_fallback_invalid",
+                "exact fallback shape or element count does not match the generation",
+            ));
+        }
+    }
+    let prepared = pool.prepare_compressed_index(0, 0).map_err(|error| {
+        FibGenerationRejection::new("fibquant_generation_bundle_invalid", error.to_string())
+    })?;
+    if prepared.fib_profile_digest != generation.codec_profile
+        || prepared.num_tokens != generation.item_count
+    {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_profile_mismatch",
+            "prepared scorer profile or token count does not match the generation",
+        ));
+    }
+
+    let all_sources = [
+        SearchSourceType::Facts,
+        SearchSourceType::Chunks,
+        SearchSourceType::Messages,
+        SearchSourceType::Episodes,
+    ];
+    let mut rows = load_all_vector_rows(conn, Some(&all_sources)).map_err(|error| {
+        FibGenerationRejection::new(
+            "fibquant_authoritative_snapshot_unreadable",
+            error.to_string(),
+        )
+    })?;
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    let current_snapshot = embedding_snapshot_digest(&rows, dim);
+    if current_snapshot != generation.embedding_snapshot_digest
+        || rows.len() != generation.item_count
+    {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_stale",
+            format!(
+                "authoritative snapshot changed: generation={}, current={current_snapshot}",
+                generation.embedding_snapshot_digest
+            ),
+        ));
+    }
+    let rows_by_id = rows
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect::<HashMap<_, _>>();
+    for entry in &item_map {
+        let row = rows_by_id.get(&entry.item_id).ok_or_else(|| {
+            FibGenerationRejection::new(
+                "fibquant_generation_item_map_invalid",
+                format!(
+                    "item {} is absent from the authoritative snapshot",
+                    entry.item_id
+                ),
+            )
+        })?;
+        if source_type_label(row.source_type) != entry.source_type
+            || semantic_embedding_digest(&row.blob, dim) != entry.embedding_digest
+        {
+            return Err(FibGenerationRejection::new(
+                "fibquant_generation_item_map_invalid",
+                format!("item {} source or embedding digest changed", entry.item_id),
+            ));
+        }
+    }
+
+    let expected_generation_id = generation_identity(
+        &generation.embedding_snapshot_digest,
+        &generation.source_digest,
+        &generation.pool_manifest_digest,
+        &generation.codec_profile,
+        dim,
+        &payload,
+        &item_map,
+    );
+    if expected_generation_id != generation.generation_id {
+        return Err(FibGenerationRejection::new(
+            "fibquant_generation_identity_invalid",
+            format!(
+                "expected generation id {expected_generation_id}, stored {}",
+                generation.generation_id
+            ),
+        ));
+    }
+
+    Ok(AdmittedFibQuantGeneration {
+        generation,
+        pool,
+        prepared,
+        item_map,
+        rows_by_id,
+    })
+}
+
+#[cfg(feature = "fib-quant-codec")]
+#[allow(clippy::too_many_arguments)]
+fn fibquant_vector_outcome(
+    conn: &Connection,
+    query_embedding: &[f32],
+    pool_size: usize,
+    min_similarity: f64,
+    config: &SearchConfig,
+    namespaces: Option<&[&str]>,
+    source_types: Option<&[SearchSourceType]>,
+    session_ids: Option<&[&str]>,
+) -> Result<VectorSearchOutcome, MemoryError> {
+    if !config.turbo_quant_require_exact_rerank {
+        return Err(MemoryError::InvalidConfig {
+            field: "search.turbo_quant_require_exact_rerank",
+            reason: "FibQuant candidate backend requires exact f32 rerank".to_string(),
+        });
+    }
+    let dim = query_embedding.len();
+    let mut metadata = VectorReceiptMetadata {
+        codec_family: Some("poly_kv_fibquant".to_string()),
+        filter_strategy: Some(
+            "admitted_global_generation_then_authoritative_filter_and_exact_f32_rerank".to_string(),
+        ),
+        ..VectorReceiptMetadata::default()
+    };
+    if dim == 0 || dim % config.fib_quant_block_size != 0 {
+        return compressed_vector_fallback(
+            conn,
+            query_embedding,
+            pool_size,
+            min_similarity,
+            namespaces,
+            source_types,
+            session_ids,
+            "exact_f32_fallback",
+            "fibquant_shape_unsupported",
+            metadata,
+            format!(
+                "FibQuant requires non-zero dimensions divisible by {}; got {dim}",
+                config.fib_quant_block_size
+            ),
+        );
+    }
+
+    let admitted = match admit_fibquant_generation(conn, dim, config) {
+        Ok(admitted) => admitted,
+        Err(rejection) => {
+            return compressed_vector_fallback(
+                conn,
+                query_embedding,
+                pool_size,
+                min_similarity,
+                namespaces,
+                source_types,
+                session_ids,
+                "exact_f32_fallback",
+                rejection.code,
+                metadata,
+                format!(
+                "PolyKV semantic-vector generation rejected; authoritative f32 fallback used: {}",
+                rejection.detail
+            ),
+            )
+        }
+    };
+    metadata.artifact_generation_id = Some(admitted.generation.generation_id.clone());
+    metadata.vector_artifact_manifest_digest =
+        Some(admitted.generation.pool_manifest_digest.clone());
+    metadata.codec_profile_digest = Some(admitted.generation.codec_profile.clone());
+    metadata.vector_artifact_count = Some(admitted.item_map.len());
+    metadata.raw_rows_loaded_count = Some(admitted.rows_by_id.len());
+
+    let normalized_query =
+        normalized_embedding(bytemuck::cast_slice(query_embedding), dim, "semantic-query")?;
+    let item_count = admitted.item_map.len();
+    let mut candidate_cap = pool_size
+        .saturating_mul(config.fib_quant_candidate_oversample)
+        .max(pool_size)
+        .min(item_count);
+    let score_candidates = |top_k| {
+        admitted.pool.attention_topk_compressed_prepared(
+            &admitted.prepared,
+            &normalized_query,
+            top_k,
+        )
+    };
+    let mut selection = match score_candidates(candidate_cap) {
+        Ok(selection) => selection,
+        Err(error) => {
+            return compressed_vector_fallback(
+                conn,
+                query_embedding,
+                pool_size,
+                min_similarity,
+                namespaces,
+                source_types,
+                session_ids,
+                "exact_f32_fallback",
+                "fibquant_generation_scoring_failed",
+                metadata,
+                format!(
+                    "admitted PolyKV compressed scoring failed; authoritative f32 fallback used: {error}"
+                ),
+            )
+        }
+    };
+
+    let collect_hits = |hits: &[poly_kv::pool::CompressedAttentionHit]| {
+        hits.iter()
+            .enumerate()
+            .filter_map(|(approximate_rank, candidate)| {
+                let entry = admitted.item_map.get(candidate.token_index)?;
+                let row = admitted.rows_by_id.get(&entry.item_id)?;
+                if !vector_row_matches_filters(row, namespaces, source_types, session_ids) {
+                    return None;
+                }
+                let embedding = crate::db::decode_f32_le(&row.blob, dim).ok()?;
+                let similarity = cosine_similarity(query_embedding, &embedding).ok()? as f64;
+                (similarity >= min_similarity).then(|| VectorHit {
+                    id: row.id.clone(),
+                    content: row.content.clone(),
+                    source: row.source.clone(),
+                    similarity,
+                    updated_at: row.updated_at.clone(),
+                    source_rank: Some(approximate_rank + 1),
+                    source_similarity: Some(f64::from(candidate.score)),
+                    reranked_from_f32: true,
+                    temporal_weight: None,
+                    provenance_confidence: None,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut exact_hits = collect_hits(&selection.hits);
+    let mut degradations = Vec::new();
+    if exact_hits.len() < pool_size && candidate_cap < item_count {
+        candidate_cap = item_count;
+        selection = match score_candidates(candidate_cap) {
+            Ok(selection) => selection,
+            Err(error) => {
+                return compressed_vector_fallback(
+                    conn,
+                    query_embedding,
+                    pool_size,
+                    min_similarity,
+                    namespaces,
+                    source_types,
+                    session_ids,
+                    "exact_f32_fallback",
+                    "fibquant_generation_filtered_retry_failed",
+                    metadata,
+                    format!(
+                        "full-generation compressed filter retry failed; authoritative f32 fallback used: {error}"
+                    ),
+                )
+            }
+        };
+        exact_hits = collect_hits(&selection.hits);
+        degradations.push(
+            "post-filter candidates under-returned; compressed scoring expanded to the complete admitted generation before exact rerank"
+                .to_string(),
+        );
+    }
+    metadata.approximate_scanned_count = Some(item_count);
+    metadata.approximate_candidate_count = Some(selection.hits.len());
+    metadata.approximate_returned_count = Some(selection.hits.len());
+    metadata.exact_rerank_count = Some(exact_hits.len());
+    exact_hits.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    exact_hits.truncate(pool_size);
+    let returned_candidates = exact_hits.len();
+    Ok(VectorSearchOutcome {
+        requested_candidates: pool_size,
+        returned_candidates,
+        post_filter_candidates: returned_candidates,
+        hits: exact_hits,
+        candidate_backend: "poly_kv_fibquant_persisted_generation".to_string(),
+        fallback: None,
+        exact_rerank: true,
+        degradations,
+        receipt_metadata: metadata,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1057,8 +1571,8 @@ fn provekv_pool_vector_outcome(
         source_types,
         session_ids,
     )?;
-    outcome.candidate_backend = "provekv_pool_candidate_then_exact_f32".to_string();
-    outcome.receipt_metadata.codec_family = Some("provekv_pool".to_string());
+    outcome.candidate_backend = "exact_f32_fallback".to_string();
+    outcome.receipt_metadata.codec_family = Some("provekv_generation_provenance_only".to_string());
     match crate::db::latest_ready_provekv_pool_generation(conn)? {
         Some(row) => {
             let item_map =
@@ -1599,6 +2113,320 @@ fn load_vector_row_by_item_key(
             .map_err(MemoryError::from),
         _ => Ok(None),
     }
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn source_type_label(source_type: SearchSourceType) -> &'static str {
+    match source_type {
+        SearchSourceType::Facts => "fact",
+        SearchSourceType::Chunks => "chunk",
+        SearchSourceType::Messages => "message",
+        SearchSourceType::Episodes => "episode",
+    }
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn semantic_embedding_digest(blob: &[u8], dim: usize) -> String {
+    let mut builder = DigestBuilder::new();
+    builder
+        .update_str("semantic-memory.poly-kv.embedding.v1")
+        .separator()
+        .update(&(dim as u64).to_le_bytes())
+        .separator()
+        .update(blob);
+    format!("blake3:{}", builder.finalize().hex())
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn normalized_embedding(blob: &[u8], dim: usize, item_id: &str) -> Result<Vec<f32>, MemoryError> {
+    let mut values = crate::db::decode_f32_le(blob, dim)?;
+    let norm_squared = values
+        .iter()
+        .try_fold(0.0_f64, |sum, value| {
+            let value = f64::from(*value);
+            if value.is_finite() {
+                Some(sum + value * value)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            MemoryError::Other(format!(
+                "authoritative embedding {item_id} contains non-finite values"
+            ))
+        })?;
+    if !norm_squared.is_finite() || norm_squared <= f64::EPSILON {
+        return Err(MemoryError::Other(format!(
+            "authoritative embedding {item_id} has zero or invalid norm"
+        )));
+    }
+    let inverse_norm = norm_squared.sqrt().recip() as f32;
+    for value in &mut values {
+        *value *= inverse_norm;
+    }
+    Ok(values)
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn embedding_snapshot_digest(rows: &[VectorRow], dim: usize) -> String {
+    let mut builder = DigestBuilder::new();
+    builder
+        .update_str("semantic-memory.poly-kv.snapshot.v1")
+        .separator()
+        .update(&(dim as u64).to_le_bytes());
+    for row in rows {
+        builder
+            .separator()
+            .update_str(&row.id)
+            .separator()
+            .update_str(source_type_label(row.source_type))
+            .separator()
+            .update_str(&semantic_embedding_digest(&row.blob, dim));
+    }
+    format!("blake3:{}", builder.finalize().hex())
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn generation_identity(
+    snapshot_digest: &str,
+    source_digest: &str,
+    manifest_digest: &str,
+    codec_profile: &str,
+    dim: usize,
+    payload: &[u8],
+    item_map: &[ProveKvPoolItemMapEntryV1],
+) -> String {
+    let mut builder = DigestBuilder::new();
+    builder
+        .update_str("semantic-memory.poly-kv.generation.v1")
+        .separator()
+        .update_str(snapshot_digest)
+        .separator()
+        .update_str(source_digest)
+        .separator()
+        .update_str(manifest_digest)
+        .separator()
+        .update_str(codec_profile)
+        .separator()
+        .update(&(dim as u64).to_le_bytes())
+        .separator()
+        .update_str(&semantic_embedding_digest(payload, payload.len()));
+    for entry in item_map {
+        builder
+            .separator()
+            .update(&(entry.pool_index as u64).to_le_bytes())
+            .separator()
+            .update_str(&entry.item_id)
+            .separator()
+            .update_str(&entry.source_type)
+            .separator()
+            .update_str(&entry.embedding_digest);
+    }
+    format!("blake3:{}", builder.finalize().hex())
+}
+
+/// Rebuild and atomically publish the sole admitted PolyKV/FibQuant semantic-vector generation.
+///
+/// SQLite raw f32 embeddings remain authoritative. The published pool is a derived,
+/// rebuildable candidate artifact and search still exact-reranks from SQLite.
+#[cfg(feature = "fib-quant-codec")]
+pub(crate) fn rebuild_fibquant_pool_generation(
+    conn: &Connection,
+    dim: usize,
+    config: &SearchConfig,
+) -> Result<ProveKvPoolArtifactBuildReceiptV1, MemoryError> {
+    if dim == 0 || dim % config.fib_quant_block_size != 0 {
+        return Err(MemoryError::InvalidConfig {
+            field: "search.fib_quant_block_size",
+            reason: format!(
+                "embedding dimensions {dim} must be non-zero and divisible by {}",
+                config.fib_quant_block_size
+            ),
+        });
+    }
+    let all_sources = [
+        SearchSourceType::Facts,
+        SearchSourceType::Chunks,
+        SearchSourceType::Messages,
+        SearchSourceType::Episodes,
+    ];
+    let mut rows = load_all_vector_rows(conn, Some(&all_sources))?;
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    if rows.is_empty() {
+        return Err(MemoryError::Other(
+            "cannot build a PolyKV generation from an empty embedding snapshot".into(),
+        ));
+    }
+    let item_count = rows.len();
+    let snapshot_digest = embedding_snapshot_digest(&rows, dim);
+    let mut normalized = Vec::with_capacity(item_count.saturating_mul(dim));
+    let mut item_map = Vec::with_capacity(item_count);
+    for (pool_index, row) in rows.iter().enumerate() {
+        normalized.extend(normalized_embedding(&row.blob, dim, &row.id)?);
+        item_map.push(ProveKvPoolItemMapEntryV1 {
+            generation_id: String::new(),
+            item_id: row.id.clone(),
+            source_type: source_type_label(row.source_type).to_string(),
+            pool_index,
+            embedding_digest: semantic_embedding_digest(&row.blob, dim),
+        });
+    }
+
+    let seq_len = u64::try_from(item_count).map_err(|error| {
+        MemoryError::Other(format!("PolyKV generation item count exceeds u64: {error}"))
+    })?;
+    let head_dim = u32::try_from(dim)
+        .map_err(|error| MemoryError::Other(format!("embedding dimension exceeds u32: {error}")))?;
+    let shape = KvTensorShape {
+        layers: 1,
+        key_heads: 1,
+        value_heads: 1,
+        seq_len,
+        head_dim,
+        layout: KvLayout::LayersHeadsTokensDim,
+        dtype: poly_kv::DType::F32,
+    };
+    let key_block =
+        ExactKvBlock::new(KvRole::Key, LayerId(0), shape.clone(), normalized.clone())
+            .map_err(|error| MemoryError::Other(format!("PolyKV semantic key block: {error}")))?;
+    let value_block = ExactKvBlock::new(KvRole::Value, LayerId(0), shape.clone(), normalized)
+        .map_err(|error| MemoryError::Other(format!("PolyKV semantic value block: {error}")))?;
+    let blocks = vec![key_block, value_block];
+    let codec = poly_kv::adapters::fibquant::FibQuantValueCodec::new(
+        dim,
+        config.fib_quant_block_size,
+        config.fib_quant_codebook_size,
+        config.fib_quant_seed,
+    )
+    .and_then(|codec| codec.with_max_mse(config.fib_quant_max_value_mse))
+    .map_err(|error| MemoryError::Other(format!("FibQuant profile admission: {error}")))?;
+    let codec_profile = codec.fib_profile_digest().to_string();
+    let mut policy = CompressionPolicyV1::alpha_reference();
+    policy.quality_gate = QualityGateResultV1 {
+        max_key_mse: 0.01,
+        max_value_mse: config.fib_quant_max_value_mse,
+        passed: true,
+        observed_key_mse: None,
+        observed_value_mse: None,
+        notes: vec![
+            "semantic-vector artifact v1; derived candidate projection, not prompt/KV-cache truth"
+                .to_string(),
+        ],
+    };
+    let pool = PoolBuilder::default()
+        .shape(shape)
+        .model_fingerprint(
+            ModelFingerprint::new(format!("semantic-memory-vector:{snapshot_digest}"))
+                .map_err(|error| MemoryError::Other(error.to_string()))?,
+        )
+        .tokenizer_fingerprint(
+            TokenizerFingerprint::new("semantic-vector:no-tokenizer:v1")
+                .map_err(|error| MemoryError::Other(error.to_string()))?,
+        )
+        .policy(policy)
+        .exact_fallback(ExactFallback::from_blocks(blocks.clone()))
+        .key_codec(Q8KeyCodec::symmetric_per_block())
+        .value_codec(codec)
+        .build_from_blocks(blocks)
+        .map_err(|error| MemoryError::Other(format!("PolyKV generation build: {error}")))?;
+    let payload = encode_pool_bundle(&pool)
+        .map_err(|error| MemoryError::Other(format!("PolyKV bundle encode: {error}")))?;
+    let source_digest = pool.build_receipt().input_digest.to_string();
+    let manifest_digest = pool.manifest().manifest_digest.to_string();
+    let generation_id = generation_identity(
+        &snapshot_digest,
+        &source_digest,
+        &manifest_digest,
+        &codec_profile,
+        dim,
+        &payload,
+        &item_map,
+    );
+    for entry in &mut item_map {
+        entry.generation_id.clone_from(&generation_id);
+    }
+    let generation = ProveKvPoolGenerationV1 {
+        schema_version: "provekv_pool_generation_v1".to_string(),
+        generation_id: generation_id.clone(),
+        embedding_snapshot_digest: snapshot_digest.clone(),
+        source_digest: source_digest.clone(),
+        pool_manifest_digest: manifest_digest.clone(),
+        codec_family: "poly-kv:fibquant".to_string(),
+        codec_profile: codec_profile.clone(),
+        vector_dim: dim,
+        item_count,
+        payload_bytes: payload.len() as u64,
+        created_at: Utc::now(),
+    };
+    crate::db::insert_provekv_pool_generation(conn, &generation, &payload, &item_map)?;
+    Ok(ProveKvPoolArtifactBuildReceiptV1 {
+        schema_version: "provekv_pool_artifact_build_receipt_v1".to_string(),
+        generation_id,
+        embedding_snapshot_digest: snapshot_digest,
+        source_digest,
+        pool_manifest_digest: manifest_digest,
+        codec_family: "poly-kv:fibquant".to_string(),
+        codec_profile,
+        vector_dim: dim,
+        item_count,
+        payload_bytes: payload.len() as u64,
+        exact_rerank_required: true,
+        created_at: generation.created_at,
+    })
+}
+
+#[cfg(feature = "fib-quant-codec")]
+fn load_all_vector_rows(
+    conn: &Connection,
+    source_types: Option<&[SearchSourceType]>,
+) -> Result<Vec<VectorRow>, MemoryError> {
+    let search_facts = source_types
+        .map(|values| values.contains(&SearchSourceType::Facts))
+        .unwrap_or(true);
+    let search_chunks = source_types
+        .map(|values| values.contains(&SearchSourceType::Chunks))
+        .unwrap_or(true);
+    let search_messages = source_types
+        .map(|values| values.contains(&SearchSourceType::Messages))
+        .unwrap_or(false);
+    let search_episodes = source_types
+        .map(|values| values.contains(&SearchSourceType::Episodes))
+        .unwrap_or(true);
+    let mut item_keys = Vec::new();
+
+    if search_facts {
+        let mut stmt = conn.prepare("SELECT id FROM facts WHERE embedding IS NOT NULL")?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            item_keys.push(format!("fact:{}", row?));
+        }
+    }
+    if search_chunks {
+        let mut stmt = conn.prepare("SELECT id FROM chunks WHERE embedding IS NOT NULL")?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            item_keys.push(format!("chunk:{}", row?));
+        }
+    }
+    if search_messages {
+        let mut stmt = conn.prepare("SELECT id FROM messages WHERE embedding IS NOT NULL")?;
+        for row in stmt.query_map([], |row| row.get::<_, i64>(0))? {
+            item_keys.push(format!("msg:{}", row?));
+        }
+    }
+    if search_episodes {
+        let mut stmt =
+            conn.prepare("SELECT episode_id FROM episodes WHERE embedding IS NOT NULL")?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            item_keys.push(episodes::episode_item_key(&row?));
+        }
+    }
+
+    let mut rows = Vec::with_capacity(item_keys.len());
+    for item_key in item_keys {
+        if let Some(row) = load_vector_row_by_item_key(conn, &item_key)? {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3605,6 +4433,484 @@ mod tests {
         assert!(parse_search_timestamp("2026-05-07 12:34:56.123").is_some());
         assert!(parse_search_timestamp("2026-05-07T12:34:56Z").is_some());
         assert!(parse_search_timestamp("not-a-timestamp").is_none());
+    }
+
+    #[test]
+    fn provekv_policy_without_pool_reports_exact_fallback_not_compressed_candidates() {
+        let mut config = SearchConfig::default();
+        config.derived_vector_backend = DerivedVectorBackendPolicy::ProveKvPoolCandidateOnly;
+        config.turbo_quant_require_exact_rerank = true;
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+
+        let outcome =
+            provekv_pool_vector_outcome(&conn, &[1.0, 0.0], 2, -1.0, &config, None, None, None)
+                .expect("exact fallback should remain available");
+
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("provekv_pool_generation_not_materialized")
+        );
+        assert!(outcome.exact_rerank);
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    fn insert_fact_embedding(
+        conn: &rusqlite::Connection,
+        id: &str,
+        namespace: &str,
+        embedding: &[f32],
+    ) {
+        conn.execute(
+            "INSERT INTO facts (id, namespace, content, embedding) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                id,
+                namespace,
+                format!("content {id}"),
+                bytemuck::cast_slice(embedding)
+            ],
+        )
+        .expect("insert fact embedding");
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_policy_consumes_an_explicit_ready_generation_and_exact_reranks() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_fact_embedding(
+            &conn,
+            "a",
+            "keep",
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_fact_embedding(
+            &conn,
+            "b",
+            "keep",
+            &[0.8, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_fact_embedding(
+            &conn,
+            "c",
+            "other",
+            &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_fact_embedding(
+            &conn,
+            "d",
+            "other",
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+
+        let mut config = SearchConfig::default();
+        config.derived_vector_backend = DerivedVectorBackendPolicy::FibQuantCandidateOnly;
+        // This small synthetic fixture needs a wider admission budget than the production default;
+        // the assertion below is about persisted-generation use and exact f32 reranking.
+        config.fib_quant_max_value_mse = 0.05;
+        let receipt = rebuild_fibquant_pool_generation(&conn, 8, &config)
+            .expect("explicit generation rebuild");
+        assert_eq!(receipt.item_count, 4);
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            2,
+            -1.0,
+            &config,
+            Some(&["keep"]),
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("persisted generation search");
+
+        assert_eq!(
+            outcome.candidate_backend,
+            "poly_kv_fibquant_persisted_generation"
+        );
+        assert!(outcome.fallback.is_none());
+        assert!(outcome.exact_rerank);
+        assert_eq!(outcome.hits.len(), 2);
+        assert_eq!(outcome.hits[0].id, "fact:a");
+        assert!(outcome.hits.iter().all(|hit| hit.reranked_from_f32));
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    fn hostile_fibquant_config() -> SearchConfig {
+        let mut config = SearchConfig::default();
+        config.derived_vector_backend = DerivedVectorBackendPolicy::FibQuantCandidateOnly;
+        config.fib_quant_max_value_mse = 0.05;
+        config
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    fn deterministic_fibquant_vector(seed: u64) -> [f32; 8] {
+        let mut state = seed;
+        std::array::from_fn(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let unit = ((state >> 40) as f32) / ((1_u32 << 24) as f32);
+            unit.mul_add(2.0, -1.0)
+        })
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    fn insert_hostile_fibquant_facts(conn: &rusqlite::Connection) {
+        insert_fact_embedding(conn, "a", "keep", &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        insert_fact_embedding(conn, "b", "keep", &[0.8, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        insert_fact_embedding(
+            conn,
+            "c",
+            "other",
+            &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_fact_embedding(
+            conn,
+            "d",
+            "other",
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_generation_survives_fresh_sqlite_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("memory.sqlite3");
+        let config = hostile_fibquant_config();
+        let generation_id = {
+            let conn = rusqlite::Connection::open(&path).expect("open sqlite");
+            crate::db::run_migrations(&conn).expect("schema migrations");
+            insert_hostile_fibquant_facts(&conn);
+            rebuild_fibquant_pool_generation(&conn, 8, &config)
+                .expect("generation rebuild")
+                .generation_id
+        };
+
+        let conn = rusqlite::Connection::open(&path).expect("reopen sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations after reopen");
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            2,
+            -1.0,
+            &config,
+            Some(&["keep"]),
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("fresh-process equivalent search");
+
+        assert_eq!(
+            outcome.candidate_backend,
+            "poly_kv_fibquant_persisted_generation"
+        );
+        assert_eq!(
+            outcome.receipt_metadata.artifact_generation_id.as_deref(),
+            Some(generation_id.as_str())
+        );
+        assert!(outcome.fallback.is_none());
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_corrupt_bundle_fails_closed_to_exact_f32() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let config = hostile_fibquant_config();
+        let receipt =
+            rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+        let mut payload = crate::db::load_provekv_pool_payload(&conn, &receipt.generation_id)
+            .expect("stored payload");
+        payload[0] ^= 0x5a;
+        conn.execute(
+            "UPDATE provekv_pool_generations SET payload = ?2 WHERE generation_id = ?1",
+            rusqlite::params![receipt.generation_id, payload],
+        )
+        .expect("corrupt payload");
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("exact fallback search");
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("fibquant_generation_bundle_invalid")
+        );
+        assert_eq!(outcome.hits[0].id, "fact:a");
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_stale_snapshot_fails_closed_to_exact_f32() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let config = hostile_fibquant_config();
+        rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+        let changed = [0.0_f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        conn.execute(
+            "UPDATE facts SET embedding = ?2 WHERE id = ?1",
+            rusqlite::params!["a", bytemuck::cast_slice(&changed)],
+        )
+        .expect("mutate authoritative embedding");
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("exact fallback search");
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("fibquant_generation_stale")
+        );
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_incomplete_item_map_fails_closed_to_exact_f32() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let config = hostile_fibquant_config();
+        let receipt =
+            rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+        conn.execute(
+            "DELETE FROM provekv_pool_item_map WHERE generation_id = ?1 AND pool_index = 0",
+            [&receipt.generation_id],
+        )
+        .expect("delete item map row");
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("exact fallback search");
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("fibquant_generation_item_map_invalid")
+        );
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_namespace_filter_expands_candidates_before_exact_rerank() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let mut config = hostile_fibquant_config();
+        config.fib_quant_candidate_oversample = 1;
+        rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            Some(&["keep"]),
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("filtered persisted search");
+        assert_eq!(
+            outcome.candidate_backend,
+            "poly_kv_fibquant_persisted_generation"
+        );
+        assert!(outcome.fallback.is_none());
+        assert_eq!(outcome.hits.len(), 1);
+        assert!(matches!(outcome.hits[0].id.as_str(), "fact:a" | "fact:b"));
+        assert!(outcome
+            .degradations
+            .iter()
+            .any(|value| value.contains("expanded")));
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_source_and_session_filters_are_applied_after_persisted_scoring() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_fact_embedding(
+            &conn,
+            "fact-top",
+            "facts",
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        conn.execute("INSERT INTO sessions (id) VALUES ('target'), ('other')", [])
+            .expect("sessions");
+        let target = [0.8_f32, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let other = [1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, embedding) VALUES (?1, 'user', ?2, ?3)",
+            rusqlite::params!["target", "target message", bytemuck::cast_slice(&target)],
+        )
+        .expect("target message");
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, embedding) VALUES (?1, 'user', ?2, ?3)",
+            rusqlite::params!["other", "other message", bytemuck::cast_slice(&other)],
+        )
+        .expect("other message");
+        let mut config = hostile_fibquant_config();
+        config.fib_quant_candidate_oversample = 1;
+        rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &other,
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Messages]),
+            Some(&["target"]),
+        )
+        .expect("source and session filtered search");
+        assert_eq!(
+            outcome.candidate_backend,
+            "poly_kv_fibquant_persisted_generation"
+        );
+        assert_eq!(outcome.hits.len(), 1);
+        assert!(
+            matches!(&outcome.hits[0].source, SearchSource::Message { session_id, .. } if session_id == "target")
+        );
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_exact_rerank_corrects_observed_approximate_order() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        for index in 0..64_u64 {
+            let id = format!("v{index:02}");
+            let vector = deterministic_fibquant_vector(index + 1);
+            insert_fact_embedding(&conn, &id, "vectors", &vector);
+        }
+        let mut config = hostile_fibquant_config();
+        config.fib_quant_codebook_size = 2;
+        config.fib_quant_max_value_mse = 1.0;
+        config.fib_quant_candidate_oversample = 64;
+        rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+        let admitted = admit_fibquant_generation(&conn, 8, &config).expect("admitted generation");
+
+        let mut mismatch = None;
+        for index in 0..64_usize {
+            let query = deterministic_fibquant_vector(index as u64 + 1);
+            let normalized = normalized_embedding(bytemuck::cast_slice(&query), 8, "query")
+                .expect("normalize query");
+            let selection = admitted
+                .pool
+                .attention_topk_compressed_prepared(&admitted.prepared, &normalized, 64)
+                .expect("compressed candidates");
+            let approximate_rank = selection
+                .hits
+                .iter()
+                .position(|hit| hit.token_index == index)
+                .expect("self candidate");
+            if approximate_rank > 0 {
+                mismatch = Some((index, query, approximate_rank + 1));
+                break;
+            }
+        }
+        let (index, query, approximate_rank) = mismatch
+            .expect("fixture must expose at least one approximate/exact ordering disagreement");
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &query,
+            1,
+            -1.0,
+            &config,
+            Some(&["vectors"]),
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("persisted exact rerank search");
+        assert_eq!(outcome.hits[0].id, format!("fact:v{index:02}"));
+        assert_eq!(outcome.hits[0].source_rank, Some(approximate_rank));
+        assert!(approximate_rank > 1);
+        assert!(outcome.hits[0].reranked_from_f32);
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_missing_generation_falls_back_with_explicit_reason() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let config = hostile_fibquant_config();
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("exact fallback search");
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("fibquant_generation_missing")
+        );
+    }
+
+    #[cfg(feature = "fib-quant-codec")]
+    #[test]
+    fn fibquant_profile_substitution_fails_closed_to_exact_f32() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        crate::db::run_migrations(&conn).expect("schema migrations");
+        insert_hostile_fibquant_facts(&conn);
+        let config = hostile_fibquant_config();
+        let receipt =
+            rebuild_fibquant_pool_generation(&conn, 8, &config).expect("generation rebuild");
+        conn.execute(
+            "UPDATE provekv_pool_generations SET codec_profile = 'blake3:substituted' WHERE generation_id = ?1",
+            [&receipt.generation_id],
+        )
+        .expect("substitute profile metadata");
+        let outcome = fibquant_vector_outcome(
+            &conn,
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            1,
+            -1.0,
+            &config,
+            None,
+            Some(&[SearchSourceType::Facts]),
+            None,
+        )
+        .expect("exact fallback search");
+        assert_eq!(outcome.candidate_backend, "exact_f32_fallback");
+        assert_eq!(
+            outcome.fallback.as_deref(),
+            Some("fibquant_generation_profile_mismatch")
+        );
     }
 
     #[test]
