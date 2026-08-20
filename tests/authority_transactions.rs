@@ -336,7 +336,15 @@ async fn governed_append_writes_verified_fact_create_outbox_row() {
                     MIN(record_state)
              FROM mutation_journal",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .unwrap();
     assert_eq!((count, seq), (1, 1), "one verified row at sequence 1");
@@ -416,7 +424,9 @@ async fn governed_append_idempotent_retry_does_not_duplicate_and_stream_continue
     assert_eq!(first.after_epoch, retry.after_epoch);
     let conn = journal_conn(&tmp);
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 1, "idempotent retry must not journal twice");
 
@@ -442,7 +452,10 @@ async fn governed_append_idempotent_retry_does_not_duplicate_and_stream_continue
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(seq2_pred, seq1_envelope, "sequence 2 must chain to sequence 1");
+    assert_eq!(
+        seq2_pred, seq1_envelope,
+        "sequence 2 must chain to sequence 1"
+    );
     let next_sequence: i64 = conn
         .query_row(
             "SELECT next_sequence FROM replication_streams
@@ -467,7 +480,9 @@ async fn governed_append_idempotent_retry_does_not_duplicate_and_stream_continue
         .await
         .unwrap();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 2, "supersede must not emit a replication outbox row");
 }
@@ -488,7 +503,9 @@ async fn governed_append_without_replication_identity_emits_no_outbox() {
         .unwrap();
     let conn = journal_conn(&tmp);
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM mutation_journal", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 0, "local-only store must emit no outbox rows");
 }

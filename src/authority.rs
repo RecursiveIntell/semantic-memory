@@ -1173,15 +1173,14 @@ fn execute_mutation_tx(
             metadata,
         } = &mutation
         {
-            let payload = crate::journal::encode_fact_create_payload(
-                &crate::journal::FactCreatePayloadV1 {
+            let payload =
+                crate::journal::encode_fact_create_payload(&crate::journal::FactCreatePayloadV1 {
                     fact_id: fact_id.clone(),
                     namespace: namespace.clone(),
                     content: content.clone(),
                     source: source.clone(),
                     metadata: metadata.clone(),
-                },
-            )?;
+                })?;
             crate::journal::append_verified_in_tx(
                 tx,
                 &device_id,

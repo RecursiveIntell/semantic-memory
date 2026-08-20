@@ -69,9 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "fact_id={} after_epoch={} operation_id={}",
-        receipt.affected_ids[0],
-        receipt.after_epoch.0,
-        receipt.operation_id
+        receipt.affected_ids[0], receipt.after_epoch.0, receipt.operation_id
     );
     Ok(())
 }
