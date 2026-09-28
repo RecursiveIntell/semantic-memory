@@ -87,6 +87,11 @@ jobs:
           # The testing lane must still compile and execute its replay tests.
           cargo test --locked -q -p semantic-memory --test search_tests \
             --no-default-features --features brute-force,testing
+          # Exercise the source-owned SQLite-commit/sidecar-failure recovery witness.
+          cargo clippy --locked -p semantic-memory --test storage_lifecycle \
+            --no-default-features --features hnsw -- -D warnings
+          cargo test --locked -q -p semantic-memory --test storage_lifecycle \
+            --no-default-features --features hnsw
           cargo test --locked -q -p semantic-memory --lib
           cargo test --locked -q -p semantic-memory --test foreign_key_integrity
           cargo test --locked -q -p semantic-memory --test episode_meta_trait
