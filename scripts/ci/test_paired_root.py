@@ -85,6 +85,26 @@ class PairedRootTests(unittest.TestCase):
             with self.subTest(parents=parents), self.assertRaises(ValueError):
                 paired_root.require_pr_merge_parents(parents, head)
 
+    def test_commit_parent_headers_survive_shallow_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin = root / 'origin'
+            base = self.fixture_repo(origin, {'file.txt': 'base'})
+            subprocess.run(['git', '-C', str(origin), 'checkout', '-qb', 'feature'], check=True)
+            (origin / 'file.txt').write_text('feature')
+            subprocess.run(['git', '-C', str(origin), 'commit', '-qam', 'feature'], check=True)
+            head = subprocess.check_output(['git', '-C', str(origin), 'rev-parse', 'HEAD'], text=True).strip()
+            subprocess.run(['git', '-C', str(origin), 'checkout', '-q', '--detach', base], check=True)
+            subprocess.run(['git', '-C', str(origin), 'merge', '--no-ff', '-qm', 'merge feature', 'feature'], check=True)
+            merged = subprocess.check_output(['git', '-C', str(origin), 'rev-parse', 'HEAD'], text=True).strip()
+            subprocess.run(['git', '-C', str(origin), 'branch', 'merge-fixture'], check=True)
+            shallow = root / 'shallow'
+            subprocess.run(['git', 'clone', '-q', '--branch', 'merge-fixture', '--depth', '1',
+                            'file://' + str(origin), str(shallow)], check=True)
+            self.assertEqual(subprocess.check_output(
+                ['git', '-C', str(shallow), 'show', '-s', '--format=%P', 'HEAD'], text=True).strip(), '')
+            self.assertEqual(paired_root.commit_parents(shallow, merged), [base, head])
+
     def test_real_git_assembly_preserves_source_and_wrong_sha_leaves_no_scratch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

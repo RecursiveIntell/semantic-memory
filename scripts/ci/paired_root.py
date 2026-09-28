@@ -60,6 +60,20 @@ def git(repo: Path, *args: str) -> bytes:
     return subprocess.check_output(['git', '-C', str(repo), *args])
 
 
+def commit_parents(repo: Path, sha: str) -> list[str]:
+    # Git's pretty-format %P hides parents behind a shallow-checkout graft.
+    # The raw commit object retains both parent headers even at depth one.
+    header = git(repo, 'cat-file', '-p', sha).split(b'\n\n', 1)[0]
+    parents = []
+    for line in header.splitlines():
+        if line.startswith(b'parent '):
+            parent = line[len(b'parent '):].decode('ascii', 'strict')
+            if not re.fullmatch(r'[0-9a-f]{40}', parent):
+                raise ValueError('invalid parent in raw Git commit header')
+            parents.append(parent)
+    return parents
+
+
 def tracked_files(repo: Path, sha: str, *, strict: bool) -> dict[str, tuple[str, str]]:
     records: dict[str, tuple[str, str]] = {}
     for row in git(repo, 'ls-tree', '-r', '-z', sha).split(b'\0'):
@@ -134,8 +148,7 @@ def assemble(libraries: Path, mirror: Path, libraries_sha: str, mirror_sha: str,
     require_exact_sha(git(libraries, 'rev-parse', 'HEAD').decode().strip(), libraries_sha, 'Libraries')
     require_exact_sha(git(mirror, 'rev-parse', 'HEAD').decode().strip(), mirror_sha, 'mirror')
     if pr_head_sha:
-        parents = git(mirror, 'show', '-s', '--format=%P', mirror_sha).decode().split()
-        require_pr_merge_parents(parents, pr_head_sha)
+        require_pr_merge_parents(commit_parents(mirror, mirror_sha), pr_head_sha)
     files = tracked_files(mirror, mirror_sha, strict=True)
     # Refuse to overwrite any existing source or artifact, including a symlink.
     scratch.mkdir(parents=True, exist_ok=False)
