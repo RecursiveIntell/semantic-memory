@@ -1064,7 +1064,7 @@ fn run_migration_v9(conn: &Connection) -> Result<(), MemoryError> {
 pub enum VerifyMode {
     /// Quick: counts and basic metadata only.
     Quick,
-    /// Full: includes FTS, JSON/enum decoding, blobs, and SQLite integrity_check.
+    /// Full: includes FTS, JSON/enum decoding, blobs, and SQLite structural/FK checks.
     Full,
 }
 
@@ -3314,6 +3314,31 @@ pub fn verify_integrity_sync(
     }
 
     if mode == VerifyMode::Full {
+        // SQLite integrity_check does not verify referential integrity. Keep
+        // this read-only: an orphan authority/denial row is evidence to report,
+        // never a reason to manufacture a parent or delete a tombstone.
+        let mut fk_statement = conn.prepare(
+            "SELECT \"table\", rowid, parent, fkid FROM pragma_foreign_key_check
+             ORDER BY \"table\", rowid, parent, fkid",
+        )?;
+        let violations = fk_statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        for violation in violations {
+            let (table, rowid, parent, constraint) = violation?;
+            let rowid = rowid.map_or_else(|| "without-rowid".to_owned(), |id| id.to_string());
+            // Report structural coordinates only, not stored identity values,
+            // content, origin labels, revocations, or tombstone payloads.
+            issues.push(format!(
+                "SQLite foreign_key_check: table={table}, rowid={rowid}, parent={parent}, fkid={constraint}"
+            ));
+        }
+
         let dims: usize = conn
             .query_row(
                 "SELECT dimensions FROM embedding_metadata WHERE id = 1",
