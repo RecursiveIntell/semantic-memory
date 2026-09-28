@@ -81,6 +81,12 @@ jobs:
           cargo fmt --package semantic-memory -- --check
           cargo check --locked -p semantic-memory --example governed_append_canary
           cargo clippy --locked -p semantic-memory --all-targets -- -D warnings
+          # Turbo without testing must not import the testing-only ReplayMode.
+          cargo clippy --locked -p semantic-memory --test search_tests \
+            --no-default-features --features brute-force,turbo-quant-codec -- -D warnings
+          # The testing lane must still compile and execute its replay tests.
+          cargo test --locked -q -p semantic-memory --test search_tests \
+            --no-default-features --features brute-force,testing
           cargo test --locked -q -p semantic-memory --lib
           cargo test --locked -q -p semantic-memory --test foreign_key_integrity
           cargo test --locked -q -p semantic-memory --test episode_meta_trait
