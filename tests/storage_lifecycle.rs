@@ -173,3 +173,55 @@ async fn hnsw_files_created_on_flush() {
         "HNSW data file should exist after flush"
     );
 }
+
+#[tokio::test]
+async fn sidecar_sync_failure_preserves_sqlite_commit_and_reconciles_pending_work() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().to_path_buf();
+    let store = MemoryStore::open_with_embedder(
+        MemoryConfig {
+            base_dir: path.clone(),
+            ..Default::default()
+        },
+        Box::new(MockEmbedder::new(768)),
+    )
+    .unwrap();
+
+    // A directory at the graph-file path deterministically makes the derived
+    // HNSW sidecar write fail while leaving the authoritative SQLite DB usable.
+    let graph_path = path.join("memory.hnsw.graph");
+    std::fs::create_dir(&graph_path).unwrap();
+    let fact_id = store
+        .add_fact(
+            "life-03",
+            "canonical commit survives sidecar failure",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let facts = store.list_facts("life-03", 10, 0).await.unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].id, fact_id);
+    let failed_pending: i64 = rusqlite::Connection::open(path.join("memory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_index_ops WHERE attempt_count > 0 AND last_error IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(failed_pending, 1, "sidecar degradation must remain durable");
+
+    std::fs::remove_dir(&graph_path).unwrap();
+    store.flush_hnsw().unwrap();
+    let remaining_pending: i64 = rusqlite::Connection::open(path.join("memory.db"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM pending_index_ops", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining_pending, 0);
+    assert!(graph_path.is_file());
+}
