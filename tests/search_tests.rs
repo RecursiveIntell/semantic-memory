@@ -3,7 +3,7 @@
 use semantic_memory::search::{cosine_similarity, sanitize_fts_query, source_dedup_key};
 #[cfg(feature = "turbo-quant-codec")]
 use semantic_memory::DerivedVectorBackendPolicy;
-#[cfg(any(feature = "testing", feature = "turbo-quant-codec"))]
+#[cfg(feature = "testing")]
 use semantic_memory::ReplayMode;
 use semantic_memory::SearchSource;
 use semantic_memory::{
