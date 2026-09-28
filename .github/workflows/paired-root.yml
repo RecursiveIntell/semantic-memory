@@ -85,3 +85,18 @@ jobs:
           cargo test --locked -q -p semantic-memory --test foreign_key_integrity
           cargo test --locked -q -p semantic-memory --test episode_meta_trait
           cargo package --locked -p semantic-memory --allow-dirty
+          # Cargo normalizes the release archive's workspace dependencies and
+          # path dependencies. Prove that archive independently of the paired
+          # Libraries source tree; do not claim the raw mirror checkout builds.
+          standalone="$RUNNER_TEMP/semantic-memory-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$standalone"
+          mkdir "$standalone"
+          shopt -s nullglob
+          archives=("$CARGO_TARGET_DIR"/package/semantic-memory-*.crate)
+          test "${#archives[@]}" -eq 1
+          package_name="$(basename "${archives[0]}" .crate)"
+          tar -xzf "${archives[0]}" -C "$standalone"
+          manifest="$standalone/$package_name/Cargo.toml"
+          test -f "$manifest"
+          cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" > /dev/null
+          cargo test --locked -q --manifest-path "$manifest" --all-targets
