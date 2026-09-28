@@ -82,3 +82,5 @@ jobs:
           cargo check --locked -p semantic-memory --example governed_append_canary
           cargo clippy --locked -p semantic-memory --all-targets -- -D warnings
           cargo test --locked -q -p semantic-memory --lib
+          cargo test --locked -q -p semantic-memory --test foreign_key_integrity
+          cargo package --locked -p semantic-memory --allow-dirty
