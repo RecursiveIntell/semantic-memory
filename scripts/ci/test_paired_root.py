@@ -96,6 +96,58 @@ class PairedRootTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, path):
                 paired_root.check_forwarded_paths(owner, mirror, owner_sha, missing)
 
+    def test_shared_census_fences_new_drift_but_allows_exact_owner_forward(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owner, baseline, current = root / 'owner', root / 'baseline', root / 'current'
+            owner_sha = self.fixture_repo(owner, {
+                'semantic-memory/src/same.rs': 'same',
+                'semantic-memory/src/held.rs': 'owner',
+                'semantic-memory/src/owner_only.rs': 'future shared',
+            })
+            baseline_sha = self.fixture_repo(baseline, {
+                'src/same.rs': 'same', 'src/held.rs': 'held', 'src/mirror_only.rs': 'ci-only',
+            })
+            current_sha = self.fixture_repo(current, {
+                'src/same.rs': 'same', 'src/held.rs': 'held', 'src/mirror_only.rs': 'updated ci-only',
+            })
+            census = (2, 1, 1, 1, 1)
+            def check(sha):
+                paired_root.check_shared_baseline(owner, baseline, current,
+                    owner_sha, baseline_sha, sha, expected_counts=census)
+            def commit(message):
+                subprocess.run(['git', '-C', str(current), 'add', '-A'], check=True)
+                subprocess.run(['git', '-C', str(current), 'commit', '-qm', message], check=True)
+                return subprocess.check_output(['git', '-C', str(current), 'rev-parse', 'HEAD'], text=True).strip()
+            check(current_sha)
+            (current / 'src/held.rs').write_text('owner')
+            check(commit('exact owner forward'))
+            (current / 'src/held.rs').write_text('third value')
+            with self.assertRaisesRegex(ValueError, 'src/held.rs'):
+                check(commit('unauthorized held edit'))
+            (current / 'src/held.rs').write_text('held')
+            (current / 'src/same.rs').write_text('drift')
+            with self.assertRaisesRegex(ValueError, 'src/same.rs'):
+                check(commit('identical path drift'))
+            (current / 'src/same.rs').write_text('same')
+            (current / 'src/same.rs').chmod(0o755)
+            with self.assertRaisesRegex(ValueError, 'src/same.rs'):
+                check(commit('mode drift'))
+            (current / 'src/same.rs').unlink()
+            with self.assertRaisesRegex(ValueError, 'shared owner/mirror path set'):
+                check(commit('missing shared path'))
+            (current / 'src/same.rs').write_text('same')
+            (current / 'src/same.rs').chmod(0o644)
+            (current / 'src/owner_only.rs').write_text('future shared')
+            with self.assertRaisesRegex(ValueError, 'shared owner/mirror path set'):
+                check(commit('new shared path'))
+            with self.assertRaisesRegex(ValueError, '40-hex'):
+                paired_root.check_shared_baseline(owner, baseline, current, owner_sha,
+                    'invalid', current_sha, expected_counts=census)
+            with self.assertRaisesRegex(ValueError, 'baseline census changed'):
+                paired_root.check_shared_baseline(owner, baseline, current, owner_sha,
+                    baseline_sha, current_sha, expected_counts=(3, 1, 1, 1, 1))
+
     def test_archive_member_rejects_duplicates_and_file_directory_collisions(self):
         seen = {}
         paired_root.claim_archive_member('src', 'directory', seen)

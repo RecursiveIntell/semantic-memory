@@ -24,6 +24,9 @@ FORWARDED_EXACT_PATHS = (
     'tests/search_tests.rs',
     'tests/storage_lifecycle.rs',
 )
+# Derived from pinned owner 0b099ec4 and baseline mirror 8d2bb2a7 Git trees.
+# This census is a review tripwire, not a schema or semantic authority.
+BASELINE_SHARED_COUNTS = (170, 157, 13, 117, 4)
 
 
 def require_exact_sha(observed: str, expected: str, owner: str) -> None:
@@ -112,6 +115,42 @@ def check_forwarded_paths(libraries: Path, mirror: Path, libraries_sha: str, mir
         if owner_blob is None or mirror_blob is None or owner_blob != mirror_blob:
             raise ValueError(f'forwarded path differs from pinned Libraries owner: {path}')
     print(f'{len(FORWARDED_EXACT_PATHS)} forwarded paths match exact owner Git blobs and modes')
+
+
+def check_shared_baseline(libraries: Path, baseline: Path, mirror: Path,
+                          libraries_sha: str, baseline_sha: str, mirror_sha: str,
+                          *, expected_counts: tuple[int, int, int, int, int] = BASELINE_SHARED_COUNTS) -> None:
+    """Fence shared committed paths, never interpret held differences as parity."""
+    for sha in (libraries_sha, baseline_sha, mirror_sha):
+        if not re.fullmatch(r'[0-9a-f]{40}', sha):
+            raise ValueError('exact 40-hex source revisions required')
+    owner_tree = tracked_files(libraries, libraries_sha, strict=False)
+    owner = {path[len('semantic-memory/'):]: entry for path, entry in owner_tree.items()
+             if path.startswith('semantic-memory/')}
+    prior = tracked_files(baseline, baseline_sha, strict=True)
+    current = tracked_files(mirror, mirror_sha, strict=True)
+    shared = owner.keys() & prior.keys()
+    identical = {path for path in shared if owner[path] == prior[path]}
+    held = shared - identical
+    census = (len(shared), len(identical), len(held), len(owner.keys() - prior.keys()),
+              len(prior.keys() - owner.keys()))
+    if census != expected_counts:
+        raise ValueError(f'pinned baseline census changed: {census} != {expected_counts}')
+    if owner.keys() & current.keys() != shared:
+        raise ValueError('shared owner/mirror path set changed from pinned baseline')
+    for path in sorted(shared):
+        validate_entry(path, owner[path][0])
+        allowed = {owner[path]}
+        if path in held:
+            allowed.add(prior[path])
+        if current[path] not in allowed:
+            raise ValueError(f'shared path changed outside pinned owner/baseline tuples: {path}')
+    trees = [git(repo, 'rev-parse', sha + '^{tree}').decode().strip()
+             for repo, sha in ((libraries, libraries_sha), (baseline, baseline_sha), (mirror, mirror_sha))]
+    print(json.dumps({'schema': 'SharedGitPathFenceV1', 'libraries_sha': libraries_sha,
+                      'baseline_mirror_sha': baseline_sha, 'candidate_mirror_sha': mirror_sha,
+                      'tree_ids': trees, 'owner_prefix': 'semantic-memory/', 'census': census,
+                      'result': 'shared tuples restricted to pinned owner or held baseline'}, sort_keys=True))
 
 
 def extract_archive(repo: Path, sha: str, destination: Path, *, owner: bool) -> None:
@@ -207,6 +246,9 @@ def main() -> None:
     forwarded = sub.add_parser('check-forwarded')
     for flag in ('libraries', 'mirror', 'libraries-sha', 'mirror-sha'):
         forwarded.add_argument('--' + flag, required=True)
+    shared = sub.add_parser('check-shared-baseline')
+    for flag in ('libraries', 'baseline', 'mirror', 'libraries-sha', 'baseline-sha', 'mirror-sha'):
+        shared.add_argument('--' + flag, required=True)
     args = parser.parse_args()
     if args.action == 'assemble':
         assemble(Path(args.libraries), Path(args.mirror), args.libraries_sha, args.mirror_sha,
@@ -214,8 +256,11 @@ def main() -> None:
     elif args.action == 'check-lock':
         validate_lock_delta(tomllib.loads(Path(args.before).read_text()), tomllib.loads(Path(args.after).read_text()))
         print('scratch lock delta is exactly the declared PolyKV FibQuant dependency drop')
-    else:
+    elif args.action == 'check-forwarded':
         check_forwarded_paths(Path(args.libraries), Path(args.mirror), args.libraries_sha, args.mirror_sha)
+    else:
+        check_shared_baseline(Path(args.libraries), Path(args.baseline), Path(args.mirror),
+                              args.libraries_sha, args.baseline_sha, args.mirror_sha)
 
 
 if __name__ == '__main__':
