@@ -47,8 +47,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Production governed path: an operator-token issuer mints the permit.
-    let issuer = AuthorityIssuer::from_operator_token("canary-operator-token")
-        .expect("operator token must be valid");
+    let issuer =
+        AuthorityIssuer::from_operator_token("canary-operator-token").ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "operator token must be valid",
+            )
+        })?;
     let permit = issuer.mint_operator_system(
         "canary:principal",
         "canary:caller",
