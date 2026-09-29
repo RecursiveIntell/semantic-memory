@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 45
     env:
       LIBRARIES_SHA: 0b099ec416de60f6adafb182f1d1e83795d05c56
+      BASELINE_MIRROR_SHA: 8d2bb2a7f1cb6b05d5e0eaa51298929451976432
       # pull_request uses the synthetic base+head merge revision whose workflow
       # file GitHub executes; push/dispatch use their exact event commit.
       MIRROR_SHA: ${{ github.sha }}
@@ -39,6 +40,12 @@ jobs:
           repository: RecursiveIntell/Libraries
           path: Libraries
           ref: ${{ env.LIBRARIES_SHA }}
+          persist-credentials: false
+      - name: Checkout exact held-difference baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: baseline-mirror
+          ref: ${{ env.BASELINE_MIRROR_SHA }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -58,6 +65,14 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 mirror/scripts/ci/paired_root.py check-forwarded \
             --libraries Libraries --mirror mirror \
             --libraries-sha "$LIBRARIES_SHA" --mirror-sha "$MIRROR_SHA"
+      - name: Fence shared Git path debt against exact baseline
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline-mirror rev-parse HEAD)" = "$BASELINE_MIRROR_SHA"
+          PYTHONDONTWRITEBYTECODE=1 python3 mirror/scripts/ci/paired_root.py check-shared-baseline \
+            --libraries Libraries --baseline baseline-mirror --mirror mirror \
+            --libraries-sha "$LIBRARIES_SHA" --baseline-sha "$BASELINE_MIRROR_SHA" \
+            --mirror-sha "$MIRROR_SHA"
       - name: Assemble pinned disposable source pair
         id: assemble
         shell: bash
