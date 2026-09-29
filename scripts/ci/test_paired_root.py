@@ -63,6 +63,39 @@ class PairedRootTests(unittest.TestCase):
             paired_root.require_exact_sha('short', 'short', 'mirror')
         paired_root.require_exact_sha('a' * 40, 'a' * 40, 'Libraries')
 
+    def test_forwarded_blobs_bind_exact_paths_and_modes_not_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owner, mirror = root / 'owner', root / 'mirror'
+            forwarded = {path: 'owner:' + path for path in paired_root.FORWARDED_EXACT_PATHS}
+            owner_sha = self.fixture_repo(owner, {
+                **{'semantic-memory/' + path: value for path, value in forwarded.items()},
+                'semantic-memory/src/db.rs': 'partial owner-only change',
+            })
+            mirror_sha = self.fixture_repo(mirror, {**forwarded, 'src/db.rs': 'intentional partial difference'})
+            paired_root.check_forwarded_paths(owner, mirror, owner_sha, mirror_sha)
+            with self.assertRaisesRegex(ValueError, 'exact 40-hex'):
+                paired_root.check_forwarded_paths(owner, mirror, 'bad', mirror_sha)
+            path = next(iter(forwarded))
+            (mirror / path).write_text('different')
+            subprocess.run(['git', '-C', str(mirror), 'commit', '-qam', 'changed bytes'], check=True)
+            changed = subprocess.check_output(['git', '-C', str(mirror), 'rev-parse', 'HEAD'], text=True).strip()
+            with self.assertRaisesRegex(ValueError, path):
+                paired_root.check_forwarded_paths(owner, mirror, owner_sha, changed)
+            (mirror / path).write_text(forwarded[path])
+            (mirror / path).chmod(0o755)
+            subprocess.run(['git', '-C', str(mirror), 'add', '--', path], check=True)
+            subprocess.run(['git', '-C', str(mirror), 'commit', '-qm', 'changed mode'], check=True)
+            mode_changed = subprocess.check_output(['git', '-C', str(mirror), 'rev-parse', 'HEAD'], text=True).strip()
+            with self.assertRaisesRegex(ValueError, path):
+                paired_root.check_forwarded_paths(owner, mirror, owner_sha, mode_changed)
+            (mirror / path).chmod(0o644)
+            subprocess.run(['git', '-C', str(mirror), 'rm', '-qf', '--', path], check=True)
+            subprocess.run(['git', '-C', str(mirror), 'commit', '-qm', 'missing path'], check=True)
+            missing = subprocess.check_output(['git', '-C', str(mirror), 'rev-parse', 'HEAD'], text=True).strip()
+            with self.assertRaisesRegex(ValueError, path):
+                paired_root.check_forwarded_paths(owner, mirror, owner_sha, missing)
+
     def test_archive_member_rejects_duplicates_and_file_directory_collisions(self):
         seen = {}
         paired_root.claim_archive_member('src', 'directory', seen)

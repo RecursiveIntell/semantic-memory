@@ -14,6 +14,16 @@ from pathlib import Path, PurePosixPath
 
 
 REQUIRED_POLY_KV_DROP = 'fib-quant 0.1.0-alpha.1'
+# Only whole files already reviewed and forwarded from this owner revision.
+# Partial src/db.rs is deliberately absent: its FK fix does not equal the
+# owner file. This is byte/mode drift detection, not semantic equivalence.
+FORWARDED_EXACT_PATHS = (
+    'examples/governed_append_canary.rs',
+    'src/types.rs',
+    'tests/foreign_key_integrity.rs',
+    'tests/search_tests.rs',
+    'tests/storage_lifecycle.rs',
+)
 
 
 def require_exact_sha(observed: str, expected: str, owner: str) -> None:
@@ -90,6 +100,18 @@ def tracked_files(repo: Path, sha: str, *, strict: bool) -> dict[str, tuple[str,
     if not records:
         raise ValueError(f'no tracked files in {repo}')
     return records
+
+def check_forwarded_paths(libraries: Path, mirror: Path, libraries_sha: str, mirror_sha: str) -> None:
+    if not re.fullmatch(r'[0-9a-f]{40}', libraries_sha) or not re.fullmatch(r'[0-9a-f]{40}', mirror_sha):
+        raise ValueError('exact 40-hex source revisions required')
+    owner = tracked_files(libraries, libraries_sha, strict=False)
+    mirrored = tracked_files(mirror, mirror_sha, strict=True)
+    for path in FORWARDED_EXACT_PATHS:
+        owner_blob = owner.get('semantic-memory/' + path)
+        mirror_blob = mirrored.get(path)
+        if owner_blob is None or mirror_blob is None or owner_blob != mirror_blob:
+            raise ValueError(f'forwarded path differs from pinned Libraries owner: {path}')
+    print(f'{len(FORWARDED_EXACT_PATHS)} forwarded paths match exact owner Git blobs and modes')
 
 
 def extract_archive(repo: Path, sha: str, destination: Path, *, owner: bool) -> None:
@@ -182,13 +204,18 @@ def main() -> None:
     lock = sub.add_parser('check-lock')
     lock.add_argument('--before', required=True)
     lock.add_argument('--after', required=True)
+    forwarded = sub.add_parser('check-forwarded')
+    for flag in ('libraries', 'mirror', 'libraries-sha', 'mirror-sha'):
+        forwarded.add_argument('--' + flag, required=True)
     args = parser.parse_args()
     if args.action == 'assemble':
         assemble(Path(args.libraries), Path(args.mirror), args.libraries_sha, args.mirror_sha,
                  Path(args.scratch), args.pr_head_sha)
-    else:
+    elif args.action == 'check-lock':
         validate_lock_delta(tomllib.loads(Path(args.before).read_text()), tomllib.loads(Path(args.after).read_text()))
         print('scratch lock delta is exactly the declared PolyKV FibQuant dependency drop')
+    else:
+        check_forwarded_paths(Path(args.libraries), Path(args.mirror), args.libraries_sha, args.mirror_sha)
 
 
 if __name__ == '__main__':
