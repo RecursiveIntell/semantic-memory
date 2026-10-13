@@ -1,0 +1,140 @@
+name: Pinned paired-root source proof
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semantic-memory-paired-root-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  paired-root:
+    # Forks require separate maintainer admission; do not execute their scripts
+    # with the repository's Actions token merely because a PR was opened.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LIBRARIES_SHA: 0b099ec416de60f6adafb182f1d1e83795d05c56
+      BASELINE_MIRROR_SHA: 8d2bb2a7f1cb6b05d5e0eaa51298929451976432
+      # pull_request uses the synthetic base+head merge revision whose workflow
+      # file GitHub executes; push/dispatch use their exact event commit.
+      MIRROR_SHA: ${{ github.sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+    steps:
+      - name: Checkout exact mirror source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: mirror
+          ref: ${{ env.MIRROR_SHA }}
+          # Verify the immutable README admission source in candidate ancestry.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout exact Libraries owner source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: RecursiveIntell/Libraries
+          path: Libraries
+          ref: ${{ env.LIBRARIES_SHA }}
+          # Verify the exact later owner correction without changing this pin.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout exact held-difference baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: baseline-mirror
+          ref: ${{ env.BASELINE_MIRROR_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential libssl-dev
+      - name: Test paired-root admission rules
+        working-directory: mirror
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.ci.test_paired_root -v
+      - name: Check exact forwarded owner blobs
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 mirror/scripts/ci/paired_root.py check-forwarded \
+            --libraries Libraries --mirror mirror \
+            --libraries-sha "$LIBRARIES_SHA" --mirror-sha "$MIRROR_SHA"
+      - name: Fence shared Git path debt against exact baseline
+        run: |
+          set -euo pipefail
+          test "$(git -C baseline-mirror rev-parse HEAD)" = "$BASELINE_MIRROR_SHA"
+          PYTHONDONTWRITEBYTECODE=1 python3 mirror/scripts/ci/paired_root.py check-shared-baseline \
+            --libraries Libraries --baseline baseline-mirror --mirror mirror \
+            --libraries-sha "$LIBRARIES_SHA" --baseline-sha "$BASELINE_MIRROR_SHA" \
+            --mirror-sha "$MIRROR_SHA"
+      - name: Assemble pinned disposable source pair
+        id: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/semantic-memory-pair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          PYTHONDONTWRITEBYTECODE=1 python3 mirror/scripts/ci/paired_root.py assemble \
+            --libraries Libraries --mirror mirror \
+            --libraries-sha "$LIBRARIES_SHA" --mirror-sha "$MIRROR_SHA" \
+            --pr-head-sha "$PR_HEAD_SHA" \
+            --scratch "$scratch"
+          printf 'root=%s\n' "$scratch/Libraries" >> "$GITHUB_OUTPUT"
+          printf 'lock_before=%s\n' "$scratch/original-Cargo.lock" >> "$GITHUB_OUTPUT"
+      - name: Compile, bind scratch lock delta, and test selected lanes
+        working-directory: ${{ steps.assemble.outputs.root }}
+        shell: bash
+        env:
+          ORIGINAL_LOCK: ${{ steps.assemble.outputs.lock_before }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/semantic-memory-paired-target
+        run: |
+          set -euo pipefail
+          # This first resolution may update only the disposable paired lock.
+          cargo check -p semantic-memory --example governed_append_canary
+          PYTHONDONTWRITEBYTECODE=1 python3 "$GITHUB_WORKSPACE/mirror/scripts/ci/paired_root.py" \
+            check-lock --before "$ORIGINAL_LOCK" --after Cargo.lock
+          cargo fmt --package semantic-memory -- --check
+          cargo check --locked -p semantic-memory --example governed_append_canary
+          cargo clippy --locked -p semantic-memory --all-targets -- -D warnings
+          # Turbo without testing must not import the testing-only ReplayMode.
+          cargo clippy --locked -p semantic-memory --test search_tests \
+            --no-default-features --features brute-force,turbo-quant-codec -- -D warnings
+          # The testing lane must still compile and execute its replay tests.
+          cargo test --locked -q -p semantic-memory --test search_tests \
+            --no-default-features --features brute-force,testing
+          # Exercise the source-owned SQLite-commit/sidecar-failure recovery witness.
+          cargo clippy --locked -p semantic-memory --test storage_lifecycle \
+            --no-default-features --features hnsw -- -D warnings
+          cargo test --locked -q -p semantic-memory --test storage_lifecycle \
+            --no-default-features --features hnsw
+          cargo test --locked -q -p semantic-memory --lib
+          # Execute the forwarded owner's clamp-boundary regression.
+          cargo test --locked -q -p semantic-memory --test step3_verification \
+            test_limit_memory_limits_validated
+          cargo test --locked -q -p semantic-memory --test foreign_key_integrity
+          cargo test --locked -q -p semantic-memory --test episode_meta_trait
+          cargo package --locked -p semantic-memory --allow-dirty
+          # Cargo normalizes the release archive's workspace dependencies and
+          # path dependencies. Prove that archive independently of the paired
+          # Libraries source tree; do not claim the raw mirror checkout builds.
+          standalone="$RUNNER_TEMP/semantic-memory-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$standalone"
+          mkdir "$standalone"
+          shopt -s nullglob
+          archives=("$CARGO_TARGET_DIR"/package/semantic-memory-*.crate)
+          test "${#archives[@]}" -eq 1
+          package_name="$(basename "${archives[0]}" .crate)"
+          tar -xzf "${archives[0]}" -C "$standalone"
+          manifest="$standalone/$package_name/Cargo.toml"
+          test -f "$manifest"
+          cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" > /dev/null
+          cargo test --locked -q --manifest-path "$manifest" --all-targets

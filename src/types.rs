@@ -1144,7 +1144,7 @@ impl SearchSource {
 // ─── Episode Types ─────────────────────────────────────────────
 
 /// Metadata for a causal episode (PRIMITIVES_CONTRACT §4).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EpisodeMeta {
     /// IDs of the facts/chunks/messages that caused this episode.
     pub cause_ids: Vec<String>,

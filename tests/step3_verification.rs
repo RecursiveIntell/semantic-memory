@@ -244,23 +244,28 @@ async fn test_limit_namespace_full() {
     assert!(result.is_ok());
 }
 
-#[tokio::test]
-async fn test_limit_memory_limits_validated() {
-    // Concurrency hard-capped at 32
-    let limits = MemoryLimits {
-        max_embedding_concurrency: 100,
-        ..Default::default()
+#[test]
+fn test_limit_memory_limits_validated() {
+    for (input, expected) in [
+        (0, 1),
+        (1, 1),
+        (8, 8),
+        (31, 31),
+        (32, 32),
+        (33, 32),
+        (usize::MAX, 32),
+    ] {
+        let limits = MemoryLimits {
+            max_embedding_concurrency: input,
+            ..Default::default()
+        };
+        let normalized = limits
+            .clone()
+            .normalize_and_validate()
+            .expect("otherwise valid limits must normalize");
+        assert_eq!(normalized.max_embedding_concurrency, expected);
+        assert_eq!(limits.validated().max_embedding_concurrency, expected);
     }
-    .validated();
-    assert_eq!(limits.max_embedding_concurrency, 32);
-
-    // Zero concurrency clamped to 1
-    let limits = MemoryLimits {
-        max_embedding_concurrency: 0,
-        ..Default::default()
-    }
-    .validated();
-    assert_eq!(limits.max_embedding_concurrency, 1);
 }
 
 // ─── PoolConfig Tests ──────────────────────────────────────────

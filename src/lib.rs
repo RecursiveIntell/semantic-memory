@@ -1733,7 +1733,9 @@ impl MemoryStore {
     /// Verify database integrity.
     ///
     /// In `Quick` mode, checks table existence and row counts.
-    /// In `Full` mode, also verifies FTS consistency and runs SQLite integrity_check.
+    /// In `Full` mode, also verifies FTS consistency and runs SQLite integrity_check
+    /// and foreign_key_check. FK violations are reported without repairing rows;
+    /// failure to execute the FK check returns a database error.
     pub async fn verify_integrity(
         &self,
         mode: db::VerifyMode,
