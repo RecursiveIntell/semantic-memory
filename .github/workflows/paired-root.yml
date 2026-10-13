@@ -42,6 +42,8 @@ jobs:
           repository: RecursiveIntell/Libraries
           path: Libraries
           ref: ${{ env.LIBRARIES_SHA }}
+          # Verify the exact later owner correction without changing this pin.
+          fetch-depth: 0
           persist-credentials: false
       - name: Checkout exact held-difference baseline
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -115,6 +117,9 @@ jobs:
           cargo test --locked -q -p semantic-memory --test storage_lifecycle \
             --no-default-features --features hnsw
           cargo test --locked -q -p semantic-memory --lib
+          # Execute the forwarded owner's clamp-boundary regression.
+          cargo test --locked -q -p semantic-memory --test step3_verification \
+            test_limit_memory_limits_validated
           cargo test --locked -q -p semantic-memory --test foreign_key_integrity
           cargo test --locked -q -p semantic-memory --test episode_meta_trait
           cargo package --locked -p semantic-memory --allow-dirty

@@ -220,6 +220,66 @@ class PairedRootTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'admission provenance'):
                 check(source_sha, disconnected)
 
+    def test_owner_lint_admissions_bind_exact_correction_descendant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owner, baseline, current = root / 'owner', root / 'baseline', root / 'current'
+            paths = ('src/config.rs', 'tests/step3_verification.rs')
+            before = {path: 'original:' + path for path in paths}
+            after = {path: 'corrected:' + path for path in paths}
+            owner_sha = self.fixture_repo(owner, {
+                **{'semantic-memory/' + p: v for p, v in before.items()},
+                'semantic-memory/src/other.rs': 'same',
+            })
+            baseline_sha = self.fixture_repo(baseline, {**before, 'src/other.rs': 'same'})
+            current_sha = self.fixture_repo(current, {**after, 'src/other.rs': 'same'})
+            for p, value in after.items():
+                (owner / 'semantic-memory' / p).write_text(value)
+            subprocess.run(['git', '-C', str(owner), 'commit', '-qam', 'canonical correction'], check=True)
+            source_sha = paired_root.git(owner, 'rev-parse', 'HEAD').decode().strip()
+            tree = paired_root.tracked_files(owner, source_sha, strict=False)
+            tuples = tuple((p, *tree['semantic-memory/' + p]) for p in paths)
+            rule = (owner_sha, baseline_sha, source_sha, tuples)
+
+            def check(sha=current_sha, declaration=rule):
+                with mock.patch.object(paired_root, 'OWNER_LINT_ADMISSIONS', declaration):
+                    out = io.StringIO()
+                    with redirect_stdout(out):
+                        paired_root.check_shared_baseline(owner, baseline, current,
+                            owner_sha, baseline_sha, sha, expected_counts=(3, 3, 0, 0, 0))
+                    return json.loads(out.getvalue())
+
+            self.assertEqual(len(check()['admissions']), 2)
+            self.assertTrue(all(a['source_role'] == 'Libraries correction'
+                                for a in check()['admissions']))
+            for index in (0, 1):
+                invalid = list(rule)
+                invalid[index] = 'f' * 40
+                with self.assertRaisesRegex(ValueError, 'src/config.rs'):
+                    check(declaration=tuple(invalid))
+            for source in ('0' * 40, owner_sha):
+                with self.assertRaisesRegex(ValueError, 'owner correction provenance'):
+                    check(declaration=(owner_sha, baseline_sha, source, tuples))
+            bad_tuple = (paths[0], '100644', '0' * 40)
+            with self.assertRaisesRegex(ValueError, 'owner correction provenance'):
+                check(declaration=(owner_sha, baseline_sha, source_sha, (bad_tuple, tuples[1])))
+            for path, changed_value, mode in (
+                (paths[0], 'unauthorized code', 0o644),
+                (paths[1], after[paths[1]], 0o755),
+                ('src/other.rs', 'unrelated drift', 0o644),
+            ):
+                target = current / path
+                old = target.read_text()
+                target.write_text(changed_value)
+                target.chmod(mode)
+                subprocess.run(['git', '-C', str(current), 'add', '-A'], check=True)
+                subprocess.run(['git', '-C', str(current), 'commit', '-qm', 'negative witness'], check=True)
+                changed = paired_root.git(current, 'rev-parse', 'HEAD').decode().strip()
+                with self.assertRaisesRegex(ValueError, path):
+                    check(changed)
+                target.write_text(old)
+                target.chmod(0o644)
+
     def test_archive_member_rejects_duplicates_and_file_directory_collisions(self):
         seen = {}
         paired_root.claim_archive_member('src', 'directory', seen)

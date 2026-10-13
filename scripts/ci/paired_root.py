@@ -62,6 +62,51 @@ def readme_admission(mirror: Path, libraries_sha: str, baseline_sha: str,
             'libraries_sha': owner, 'baseline_mirror_sha': baseline}
 
 
+# Forward only the two reviewed, whole-file lint correction tuples from the
+# canonical owner. This does not replace the pinned workspace or debt baseline.
+OWNER_LINT_ADMISSIONS = (
+    '0b099ec416de60f6adafb182f1d1e83795d05c56',
+    '8d2bb2a7f1cb6b05d5e0eaa51298929451976432',
+    '7ceb736c4586ee213b7e03ecec2947b60ae18b44',
+    (
+        ('src/config.rs', '100755', '7a3a231d3ed815160b6e7a2e4fcbb857fcf2eccf'),
+        ('tests/step3_verification.rs', '100755', '75afdc393e50127de16ef675d95b7f32736afc91'),
+    ),
+)
+
+
+def owner_lint_admissions(libraries: Path, libraries_sha: str,
+                          baseline_sha: str) -> list[dict]:
+    owner, baseline, source, entries = OWNER_LINT_ADMISSIONS
+    if (libraries_sha, baseline_sha) != (owner, baseline):
+        return []
+    paths = [entry[0] for entry in entries]
+    if set(paths) != {'src/config.rs', 'tests/step3_verification.rs'} or len(paths) != 2:
+        raise ValueError('owner correction provenance paths are invalid')
+    if not re.fullmatch(r'[0-9a-f]{40}', source):
+        raise ValueError('owner correction provenance source is invalid')
+    try:
+        source_tree = tracked_files(libraries, source, strict=False)
+        descendant = subprocess.run(
+            ['git', '-C', str(libraries), 'merge-base', '--is-ancestor', owner, source],
+            capture_output=True, check=False,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ValueError('owner correction provenance source is unavailable') from error
+    if descendant.returncode != 0:
+        raise ValueError('owner correction provenance is not a descendant of pinned owner')
+    admissions = []
+    for path, mode, blob in entries:
+        validate_entry(path, mode)
+        if not re.fullmatch(r'[0-9a-f]{40}', blob) or source_tree.get('semantic-memory/' + path) != (mode, blob):
+            raise ValueError('owner correction provenance tuple differs')
+        admissions.append({'path': path, 'mode': mode, 'blob': blob,
+                           'source_sha': source, 'source_role': 'Libraries correction',
+                           'source_path': 'semantic-memory/' + path,
+                           'libraries_sha': owner, 'baseline_mirror_sha': baseline})
+    return admissions
+
+
 def require_exact_sha(observed: str, expected: str, owner: str) -> None:
     if not re.fullmatch(r'[0-9a-f]{40}', expected) or observed != expected:
         raise ValueError(f'{owner} source SHA differs from pinned exact 40-hex revision')
@@ -172,17 +217,21 @@ def check_shared_baseline(libraries: Path, baseline: Path, mirror: Path,
     if owner.keys() & current.keys() != shared:
         raise ValueError('shared owner/mirror path set changed from pinned baseline')
     admission = readme_admission(mirror, libraries_sha, baseline_sha, mirror_sha)
+    reviewed_admissions = owner_lint_admissions(libraries, libraries_sha, baseline_sha)
+    if admission is not None:
+        reviewed_admissions.append(admission)
     applied_admissions = []
     for path in sorted(shared):
         validate_entry(path, owner[path][0])
         allowed = {owner[path]}
         if path in held:
             allowed.add(prior[path])
-        if admission is not None and path == admission['path']:
-            admitted_tuple = (admission['mode'], admission['blob'])
-            allowed.add(admitted_tuple)
-            if current[path] == admitted_tuple:
-                applied_admissions.append(admission)
+        for reviewed in reviewed_admissions:
+            if path == reviewed['path']:
+                admitted_tuple = (reviewed['mode'], reviewed['blob'])
+                allowed.add(admitted_tuple)
+                if current[path] == admitted_tuple:
+                    applied_admissions.append(reviewed)
         if current[path] not in allowed:
             raise ValueError(f'shared path changed outside pinned owner/baseline/admission tuples: {path}')
     trees = [git(repo, 'rev-parse', sha + '^{tree}').decode().strip()

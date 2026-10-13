@@ -890,13 +890,8 @@ impl MemoryLimits {
                 reason: "must be at least 1".to_string(),
             });
         }
-        // Hard cap: concurrency at 32
-        if self.max_embedding_concurrency > 32 {
-            self.max_embedding_concurrency = 32;
-        }
-        if self.max_embedding_concurrency == 0 {
-            self.max_embedding_concurrency = 1;
-        }
+        // Preserve a nonzero concurrency limit, with a hard cap of 32.
+        self.max_embedding_concurrency = self.max_embedding_concurrency.clamp(1, 32);
         if self.embedding_timeout.is_zero() {
             self.embedding_timeout = Duration::from_secs(1);
         }
