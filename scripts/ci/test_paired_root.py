@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import copy
 import gc
+import io
+import json
 import subprocess
+from contextlib import redirect_stdout
+from unittest import mock
 import tempfile
 import unittest
 import warnings
@@ -147,6 +151,74 @@ class PairedRootTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'baseline census changed'):
                 paired_root.check_shared_baseline(owner, baseline, current, owner_sha,
                     baseline_sha, current_sha, expected_counts=(3, 1, 1, 1, 1))
+
+    def test_readme_admission_is_exact_source_bound_and_does_not_widen_other_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owner, baseline, current = root / 'owner', root / 'baseline', root / 'current'
+            owner_sha = self.fixture_repo(owner, {
+                'semantic-memory/README.md': 'original',
+                'semantic-memory/src/same.rs': 'same',
+            })
+            baseline_sha = self.fixture_repo(baseline, {
+                'README.md': 'original', 'src/same.rs': 'same',
+            })
+            source_sha = self.fixture_repo(current, {
+                'README.md': 'reviewed documentation', 'src/same.rs': 'same',
+            })
+            entry = paired_root.tracked_files(current, source_sha, strict=True)['README.md']
+            admission = (owner_sha, baseline_sha, source_sha, 'README.md', *entry)
+
+            def commit(message):
+                subprocess.run(['git', '-C', str(current), 'add', '-A'], check=True)
+                subprocess.run(['git', '-C', str(current), 'commit', '-qm', message], check=True)
+                return paired_root.git(current, 'rev-parse', 'HEAD').decode().strip()
+
+            def check(sha, rule=admission):
+                with mock.patch.object(paired_root, 'README_ADMISSION', rule):
+                    out = io.StringIO()
+                    with redirect_stdout(out):
+                        paired_root.check_shared_baseline(owner, baseline, current,
+                            owner_sha, baseline_sha, sha, expected_counts=(2, 2, 0, 0, 0))
+                    return json.loads(out.getvalue())
+
+            receipt = check(source_sha)
+            self.assertEqual(receipt['schema'], 'SharedGitPathFenceV2')
+            self.assertEqual(receipt['admissions'][0]['source_sha'], source_sha)
+            self.assertEqual(receipt['admissions'][0]['path'], 'README.md')
+            self.assertEqual(receipt['admissions'][0]['blob'], entry[1])
+            for index in (0, 1):
+                wrong_pair = list(admission)
+                wrong_pair[index] = 'f' * 40
+                with self.subTest(pair=index), self.assertRaisesRegex(ValueError, 'README.md'):
+                    check(source_sha, tuple(wrong_pair))
+            for rule in (
+                (*admission[:2], '0' * 40, *admission[3:]),
+                (*admission[:5], '0' * 40),
+                (*admission[:4], '100755', admission[5]),
+            ):
+                with self.subTest(rule=rule), self.assertRaisesRegex(ValueError, 'admission provenance'):
+                    check(source_sha, rule)
+            (current / 'README.md').write_text('unreviewed documentation')
+            with self.assertRaisesRegex(ValueError, 'README.md'):
+                check(commit('different README'))
+            (current / 'README.md').write_text('reviewed documentation')
+            (current / 'README.md').chmod(0o755)
+            with self.assertRaisesRegex(ValueError, 'README.md'):
+                check(commit('README mode drift'))
+            (current / 'README.md').chmod(0o644)
+            (current / 'src/same.rs').write_text('unauthorized code')
+            with self.assertRaisesRegex(ValueError, 'src/same.rs'):
+                check(commit('unrelated drift'))
+            # A same-blob commit on a disconnected lineage is not the admitted source.
+            other = root / 'other'
+            other_sha = self.fixture_repo(other, {
+                'README.md': 'reviewed documentation', 'other.txt': 'disconnected',
+            })
+            subprocess.run(['git', '-C', str(current), 'fetch', '-q', str(other), other_sha], check=True)
+            disconnected = (*admission[:2], other_sha, *admission[3:])
+            with self.assertRaisesRegex(ValueError, 'admission provenance'):
+                check(source_sha, disconnected)
 
     def test_archive_member_rejects_duplicates_and_file_directory_collisions(self):
         seen = {}

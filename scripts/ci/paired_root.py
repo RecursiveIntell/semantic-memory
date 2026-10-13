@@ -27,6 +27,39 @@ FORWARDED_EXACT_PATHS = (
 # Derived from pinned owner 0b099ec4 and baseline mirror 8d2bb2a7 Git trees.
 # This census is a review tripwire, not a schema or semantic authority.
 BASELINE_SHARED_COUNTS = (170, 157, 13, 117, 4)
+# Explicit README-only admission, not owner parity or a new debt baseline.
+# The document landed on mirror main after this pair was pinned. Its exact
+# source commit must be present in candidate ancestry and supply this tuple.
+# Any change to these pins requires a separately reviewed admission transition.
+README_ADMISSION = (
+    '0b099ec416de60f6adafb182f1d1e83795d05c56',
+    '8d2bb2a7f1cb6b05d5e0eaa51298929451976432',
+    '0b63fa4cd4308c22ba48c1f8cc5ebeee31eea007',
+    'README.md', '100644', '3809232e684062f5af56e7301219129c65b89091',
+)
+
+
+def readme_admission(mirror: Path, libraries_sha: str, baseline_sha: str,
+                     mirror_sha: str) -> dict | None:
+    owner, baseline, source, path, mode, blob = README_ADMISSION
+    if (libraries_sha, baseline_sha) != (owner, baseline):
+        return None
+    if path != 'README.md' or mode != '100644' or not all(
+        re.fullmatch(r'[0-9a-f]{40}', sha) for sha in (source, blob)
+    ):
+        raise ValueError('README admission provenance declaration is invalid')
+    try:
+        source_entry = tracked_files(mirror, source, strict=True).get(path)
+        ancestor = subprocess.run(
+            ['git', '-C', str(mirror), 'merge-base', '--is-ancestor', source, mirror_sha],
+            capture_output=True, check=False,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ValueError('README admission provenance source is unavailable') from error
+    if source_entry != (mode, blob) or ancestor.returncode != 0:
+        raise ValueError('README admission provenance tuple or ancestry differs')
+    return {'path': path, 'mode': mode, 'blob': blob, 'source_sha': source,
+            'libraries_sha': owner, 'baseline_mirror_sha': baseline}
 
 
 def require_exact_sha(observed: str, expected: str, owner: str) -> None:
@@ -138,19 +171,27 @@ def check_shared_baseline(libraries: Path, baseline: Path, mirror: Path,
         raise ValueError(f'pinned baseline census changed: {census} != {expected_counts}')
     if owner.keys() & current.keys() != shared:
         raise ValueError('shared owner/mirror path set changed from pinned baseline')
+    admission = readme_admission(mirror, libraries_sha, baseline_sha, mirror_sha)
+    applied_admissions = []
     for path in sorted(shared):
         validate_entry(path, owner[path][0])
         allowed = {owner[path]}
         if path in held:
             allowed.add(prior[path])
+        if admission is not None and path == admission['path']:
+            admitted_tuple = (admission['mode'], admission['blob'])
+            allowed.add(admitted_tuple)
+            if current[path] == admitted_tuple:
+                applied_admissions.append(admission)
         if current[path] not in allowed:
-            raise ValueError(f'shared path changed outside pinned owner/baseline tuples: {path}')
+            raise ValueError(f'shared path changed outside pinned owner/baseline/admission tuples: {path}')
     trees = [git(repo, 'rev-parse', sha + '^{tree}').decode().strip()
              for repo, sha in ((libraries, libraries_sha), (baseline, baseline_sha), (mirror, mirror_sha))]
-    print(json.dumps({'schema': 'SharedGitPathFenceV1', 'libraries_sha': libraries_sha,
+    print(json.dumps({'schema': 'SharedGitPathFenceV2', 'libraries_sha': libraries_sha,
                       'baseline_mirror_sha': baseline_sha, 'candidate_mirror_sha': mirror_sha,
                       'tree_ids': trees, 'owner_prefix': 'semantic-memory/', 'census': census,
-                      'result': 'shared tuples restricted to pinned owner or held baseline'}, sort_keys=True))
+                      'admissions': applied_admissions,
+                      'result': 'shared tuples restricted to pinned owner, held baseline, or explicit admission'}, sort_keys=True))
 
 
 def extract_archive(repo: Path, sha: str, destination: Path, *, owner: bool) -> None:
