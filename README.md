@@ -1,5 +1,7 @@
 # semantic-memory
 
+<!-- last-verified: 2026-10-23 -->
+
 Local-first hybrid retrieval for Rust, with SQLite as authoritative state and receipts for execution evidence.
 
 ![semantic-memory system and trust boundaries](docs/assets/semantic-memory-boundaries.svg)

@@ -1,5 +1,7 @@
 # BEIR SciFact retrieval evaluation
 
+<!-- last-verified: 2026-10-23 -->
+
 Receipt-bearing evaluation of `semantic-memory` retrieval APIs on the official BEIR SciFact test corpus.
 
 ![BEIR SciFact evaluation workflow](../../assets/scifact-evaluation.svg)
